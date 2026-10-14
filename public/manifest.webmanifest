@@ -1,0 +1,12 @@
+{
+  "name": "Horde Mayhem",
+  "short_name": "Horde Mayhem",
+  "description": "Top-down zombie horde shooter.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0d0f0c",
+  "theme_color": "#0d0f0c",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

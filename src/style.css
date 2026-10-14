@@ -1,0 +1,286 @@
+:root {
+  --bg: #0d0f0c;
+  --panel: rgba(18, 22, 17, 0.94);
+  --edge: #3b4a2f;
+  --text: #e8ecd9;
+  --muted: #9aa58a;
+  --accent: #e8c547;
+  --red: #e0483e;
+  --common: #9aa58a;
+  --rare: #4aa3ff;
+  --epic: #c065ff;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+.hidden {
+  display: none;
+}
+
+.panel {
+  background: var(--panel);
+  border: 2px solid var(--edge);
+  border-radius: 14px;
+  padding: 20px 22px;
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  margin: auto;
+}
+
+.panel.wide {
+  max-width: 760px;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 44px;
+  line-height: 0.95;
+  letter-spacing: 2px;
+  font-weight: 900;
+}
+
+h1 span {
+  color: var(--red);
+}
+
+h2 {
+  margin: 0 0 4px;
+  font-size: 26px;
+}
+
+h2.red {
+  color: var(--red);
+}
+
+.tag {
+  color: var(--muted);
+  margin: 4px 0 14px;
+}
+
+.tag b {
+  color: var(--accent);
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  border: none;
+}
+
+button.big {
+  display: block;
+  width: 100%;
+  padding: 14px;
+  margin-top: 10px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  background: var(--red);
+  border-radius: 10px;
+  box-shadow: 0 4px 0 #8a2620;
+}
+
+button.big:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 #8a2620;
+}
+
+button.ghost {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px;
+  background: transparent;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+.best {
+  color: var(--muted);
+  margin: 12px 0 0;
+}
+
+.help {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: left;
+}
+
+.help p {
+  margin: 6px 0;
+}
+
+.cards {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.card {
+  flex: 1 1 180px;
+  max-width: 230px;
+  min-height: 140px;
+  background: #1b2118;
+  border: 2px solid var(--common);
+  border-radius: 12px;
+  padding: 14px 12px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.card:active {
+  transform: scale(0.97);
+}
+
+.card .icon {
+  font-size: 34px;
+  line-height: 1;
+}
+
+.card .name {
+  font-weight: 800;
+  font-size: 17px;
+}
+
+.card .desc {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.card .rarity {
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.card.common {
+  border-color: var(--common);
+}
+
+.card.rare {
+  border-color: var(--rare);
+}
+
+.card.rare .rarity {
+  color: var(--rare);
+}
+
+.card.epic {
+  border-color: var(--epic);
+  box-shadow: 0 0 18px rgba(192, 101, 255, 0.35);
+}
+
+.card.epic .rarity {
+  color: var(--epic);
+}
+
+.shop-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.shop-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 10px 12px;
+  background: #1b2118;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+}
+
+.shop-item .label {
+  font-weight: 700;
+}
+
+.shop-item .sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.shop-item .price {
+  color: var(--accent);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.shop-item:disabled {
+  opacity: 0.4;
+}
+
+.stats {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.stats b {
+  color: var(--text);
+}
+
+@media (max-height: 500px) {
+  .panel {
+    padding: 12px 16px;
+  }
+  h1 {
+    font-size: 34px;
+  }
+  .help {
+    display: none;
+  }
+  .card {
+    min-height: 0;
+    padding: 10px;
+  }
+  .card .icon {
+    font-size: 26px;
+  }
+}

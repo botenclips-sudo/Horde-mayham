@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d0f0c" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Horde Mayhem</title>
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <div id="menu" class="overlay">
+      <div class="panel">
+        <h1>HORDE<br /><span>MAYHEM</span></h1>
+        <p class="tag">Survive the waves. Grab perks. Get greedy.</p>
+        <button id="play" class="big">PLAY</button>
+        <p class="best">Best: <b id="best">wave 0</b></p>
+        <div class="help">
+          <p><b>Phone:</b> left thumb moves, right thumb aims and fires. Buttons dash, swap and reload.</p>
+          <p><b>PC:</b> WASD move, mouse aim and fire, Space dash, Q / 1-3 swap, R reload, P pause.</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="perks" class="overlay hidden">
+      <div class="panel wide">
+        <h2 id="perks-title">Wave cleared!</h2>
+        <p class="tag">Pick a perk</p>
+        <div id="perk-cards" class="cards"></div>
+      </div>
+    </div>
+
+    <div id="shop" class="overlay hidden">
+      <div class="panel wide">
+        <h2>Armory</h2>
+        <p class="tag">Cash: <b id="shop-cash">$0</b></p>
+        <div id="shop-items" class="shop-items"></div>
+        <button id="next-wave" class="big">NEXT WAVE</button>
+      </div>
+    </div>
+
+    <div id="pause" class="overlay hidden">
+      <div class="panel">
+        <h2>Paused</h2>
+        <button id="resume" class="big">RESUME</button>
+        <button id="quit" class="ghost">Quit run</button>
+      </div>
+    </div>
+
+    <div id="over" class="overlay hidden">
+      <div class="panel">
+        <h2 class="red">You got eaten</h2>
+        <p id="over-stats" class="stats"></p>
+        <button id="again" class="big">PLAY AGAIN</button>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

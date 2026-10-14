@@ -1,0 +1,18 @@
+{
+  "name": "horde-mayhem",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "build:single": "tsc --noEmit && vite build --mode single",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --host"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}
