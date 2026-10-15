@@ -6,6 +6,8 @@ Survive escalating waves, pick a roguelite perk after every wave, spend your cas
 
 Between runs you keep **brains** 🧠 and XP: unlock and master guns, train permanent stats, level up to unlock perks and a second loadout slot, and clear three daily missions. Progress is saved on the device and can be moved with a save code. Special zombies (shield brutes, leapers, screamers, crawlers, dog packs, necromancers, armored soldiers, electric zombies) join from wave 5, and elite zombies with auras from wave 15. When you die you get a share card of your run.
 
+Three maps (Parking Lot, Gas Station with exploding fuel pumps, Subway Yard with trains) and four modes: Endless, a Daily Challenge (same map and two mutators for everyone each day), Boss Rush and Hardcore.
+
 ## Controls
 
 - **Phone:** left thumb moves, right thumb aims and fires (drag anywhere on that half). Buttons for dash, swap weapon and reload.
@@ -28,6 +30,7 @@ Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (
 - `src/data.ts` – weapons, zombie types and perks (tweak balance here)
 - `src/input.ts` – keyboard/mouse and twin touch joysticks
 - `src/audio.ts` – synthesized sound effects
+- `src/maps.ts` – map layouts, ground textures and train tracks
 - `src/meta.ts` – save data, brains, XP and levels, training, gun mastery, daily missions
 - `src/share.ts` – the game-over share card
 - `src/main.ts` – menus, base screen, perk picker, shop and the frame loop

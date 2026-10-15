@@ -5,7 +5,7 @@ import type { RunSummary } from './game';
 
 const FONT = "'Black Ops One', 'Arial Black', system-ui, sans-serif";
 
-export function makeShareCard(s: RunSummary, scene: HTMLCanvasElement, level: number, newBest: boolean): HTMLCanvasElement {
+export function makeShareCard(s: RunSummary, scene: HTMLCanvasElement, level: number, newBest: boolean, label: string): HTMLCanvasElement {
   const W = 1200;
   const H = 630;
   const c = document.createElement('canvas');
@@ -47,6 +47,7 @@ export function makeShareCard(s: RunSummary, scene: HTMLCanvasElement, level: nu
   text('HORDE', 60, 105, 64, '#e8ecd9');
   text('MAYHEM', 60, 165, 58, '#e0483e');
 
+  text(label, 60, 212, 20, '#e8c547');
   text('I SURVIVED TO', 60, 255, 30, '#c9d1b8');
   text(`WAVE ${s.wave}`, 60, 350, 104, newBest ? '#ffd23f' : '#ffffff');
   if (newBest) text('NEW PERSONAL BEST!', 60, 395, 26, '#ffd23f');

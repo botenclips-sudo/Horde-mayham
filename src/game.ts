@@ -1,28 +1,20 @@
 import { MusicMood, Sfx, SfxKind } from './audio';
 import { baseStats, BOSS_NAMES, COMBO_TIERS, EliteKind, ELITES, PERKS, PerkDef, POWERUPS, PowerKind, RARITY_WEIGHT, Stats, WEAPONS, WeaponDef, ZOMBIES, ZombieDef, ZombieKind } from './data';
-import { meta, RunReport } from './meta';
+import { dailySetup, meta, RunReport } from './meta';
+import { BORDER, mapById, MapDef, WORLD_H, WORLD_W } from './maps';
+
+export { WORLD_H, WORLD_W };
+
+const groundCache = new Map<string, HTMLCanvasElement>();
+const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 
-export const WORLD_W = 2200;
-export const WORLD_H = 1600;
 const PLAYER_R = 16;
-const BORDER = 40;
 const DASH_TIME = 0.18;
 const DASH_COOLDOWN = 2.2;
 const COMBO_TIME = 2.5;
 const FLASHLIGHT = 560;
 const DARKNESS = 0.86;
-
-type WallKind = 'border' | 'concrete' | 'car' | 'crate';
-
-interface Wall {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  kind: WallKind;
-  color?: string;
-}
 
 interface Bullet {
   kind: 'bullet' | 'flame' | 'rocket' | 'frost';
@@ -78,6 +70,19 @@ interface Zombie {
   zapT: number; // electric zombie charging a zap
   jug?: { slam: number; windup: number };
 }
+
+interface Train {
+  y: number; // track center
+  dir: 1 | -1;
+  phase: 'idle' | 'warn' | 'go';
+  t: number;
+  x: number; // left edge
+  hitPlayer: boolean;
+  hitBoss: number[];
+}
+
+const TRAIN_LEN = 1100;
+const TRAIN_SPEED = 1600;
 
 interface Bolt {
   x1: number;
@@ -185,6 +190,7 @@ interface Barrel {
   hp: number;
   fuse: number;
   dead: boolean;
+  big: boolean; // gas pump: bigger and a much bigger blast
 }
 
 interface OwnedWeapon {
@@ -221,79 +227,31 @@ export interface Hooks {
 
 export type State = 'menu' | 'playing' | 'between' | 'paused' | 'over';
 
-const WALLS: Wall[] = [
-  // Arena border
-  { x: 0, y: 0, w: WORLD_W, h: BORDER, kind: 'border' },
-  { x: 0, y: WORLD_H - BORDER, w: WORLD_W, h: BORDER, kind: 'border' },
-  { x: 0, y: 0, w: BORDER, h: WORLD_H, kind: 'border' },
-  { x: WORLD_W - BORDER, y: 0, w: BORDER, h: WORLD_H, kind: 'border' },
-  // Cover
-  { x: 480, y: 330, w: 130, h: 60, kind: 'car', color: '#8a2c2c' },
-  { x: 630, y: 334, w: 52, h: 52, kind: 'crate' },
-  { x: 1480, y: 340, w: 240, h: 40, kind: 'concrete' },
-  { x: 480, y: 1220, w: 240, h: 40, kind: 'concrete' },
-  { x: 1560, y: 1200, w: 130, h: 60, kind: 'car', color: '#2c4f8a' },
-  { x: 1496, y: 1206, w: 48, h: 48, kind: 'crate' },
-  { x: 300, y: 680, w: 40, h: 240, kind: 'concrete' },
-  { x: 1844, y: 690, w: 60, h: 130, kind: 'car', color: '#c9a227' },
-  { x: 1040, y: 520, w: 56, h: 56, kind: 'crate' },
-  { x: 1102, y: 532, w: 44, h: 44, kind: 'crate' },
-  { x: 1036, y: 1010, w: 130, h: 60, kind: 'car', color: '#3f6b3a' },
-];
-
-const GATES = [
-  { x: WORLD_W / 2, y: BORDER + 10 },
-  { x: WORLD_W / 2, y: WORLD_H - BORDER - 10 },
-  { x: BORDER + 10, y: WORLD_H / 2 },
-  { x: WORLD_W - BORDER - 10, y: WORLD_H / 2 },
-  { x: 200, y: BORDER + 10 },
-  { x: WORLD_W - 200, y: BORDER + 10 },
-  { x: 200, y: WORLD_H - BORDER - 10 },
-  { x: WORLD_W - 200, y: WORLD_H - BORDER - 10 },
-];
-
-const LAMPS = [
-  { x: 260, y: 240, flicker: false },
-  { x: 1940, y: 240, flicker: true },
-  { x: 260, y: 1360, flicker: true },
-  { x: 1940, y: 1360, flicker: false },
-  { x: 1100, y: 250, flicker: false },
-  { x: 1100, y: 1350, flicker: true },
-];
-
-const BARREL_SPOTS = [
-  { x: 760, y: 430 },
-  { x: 1420, y: 430 },
-  { x: 770, y: 1170 },
-  { x: 1430, y: 1150 },
-  { x: 600, y: 800 },
-  { x: 1620, y: 790 },
-  { x: 1180, y: 470 },
-  { x: 980, y: 1120 },
-  { x: 420, y: 470 },
-  { x: 1800, y: 1120 },
-];
-
 // Flow field for zombie pathing: a BFS distance map from the player over a coarse grid.
 const CELL = 40;
 const FLOW_W = Math.ceil(WORLD_W / CELL);
 const FLOW_H = Math.ceil(WORLD_H / CELL);
-const BLOCKED = (() => {
-  const b = new Uint8Array(FLOW_W * FLOW_H);
+/** Which flow-field cells are inside (or hugging) a wall, per map. */
+function blockedFor(map: MapDef): Uint8Array {
+  let b = blockedCache.get(map.id);
+  if (b) return b;
+  b = new Uint8Array(FLOW_W * FLOW_H);
   const pad = 14;
   for (let cy = 0; cy < FLOW_H; cy++)
     for (let cx = 0; cx < FLOW_W; cx++) {
       const x0 = cx * CELL;
       const y0 = cy * CELL;
-      for (const w of WALLS) {
+      for (const w of map.walls) {
         if (x0 + CELL > w.x - pad && x0 < w.x + w.w + pad && y0 + CELL > w.y - pad && y0 < w.y + w.h + pad) {
           b[cy * FLOW_W + cx] = 1;
           break;
         }
       }
     }
+  blockedCache.set(map.id, b);
   return b;
-})();
+}
+
 const FLOW_QUEUE = new Int32Array(FLOW_W * FLOW_H);
 const NEIGHBORS = [
   [1, 0],
@@ -363,7 +321,9 @@ export class Game {
   private zoom = 1;
   private zoomKick = 0;
   private cam = { x: WORLD_W / 2, y: WORLD_H / 2 };
-  private ground: HTMLCanvasElement;
+  private ground!: HTMLCanvasElement;
+  map: MapDef = mapById('lot');
+  private blocked: Uint8Array = new Uint8Array(0);
   private decals: HTMLCanvasElement;
   private dctx: CanvasRenderingContext2D;
   private light: HTMLCanvasElement;
@@ -432,6 +392,11 @@ export class Game {
   private corpses: { x: number; y: number }[] = [];
   private nadeBlast = false;
   private bolts: Bolt[] = [];
+  private trains: Train[] = [];
+  mode = 'endless';
+  mutators = new Set<string>();
+  private trainWarned = false;
+  modeLabel = '';
   brainsPulse = 0;
   private clean = false;
   private moodLevel = -1;
@@ -449,7 +414,7 @@ export class Game {
     this.dctx = this.decals.getContext('2d')!;
     this.light = document.createElement('canvas');
     this.lctx = this.light.getContext('2d')!;
-    this.ground = this.buildGround();
+    this.setMap(meta.data.map);
     this.resize();
     window.addEventListener('resize', () => this.resize());
     this.newRun();
@@ -471,97 +436,43 @@ export class Game {
     this.zoom = clamp(Math.min(this.w, this.h) / 460, 0.7, 1.8);
   }
 
-  /** Bakes the asphalt lot (lines, cracks, stains) into one big canvas. */
-  private buildGround(): HTMLCanvasElement {
-    const g = document.createElement('canvas');
+  /** Bakes the map's ground into one big canvas (once per map). */
+  private buildGround(map: MapDef): HTMLCanvasElement {
+    let g = groundCache.get(map.id);
+    if (g) return g;
+    g = document.createElement('canvas');
     g.width = WORLD_W / 2;
     g.height = WORLD_H / 2;
     const c = g.getContext('2d')!;
     c.scale(0.5, 0.5);
-    c.fillStyle = '#2b2e33';
-    c.fillRect(0, 0, WORLD_W, WORLD_H);
-    for (let i = 0; i < 9000; i++) {
-      c.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.035)' : 'rgba(0,0,0,0.09)';
-      const s = rand(2, 7);
-      c.fillRect(rand(0, WORLD_W), rand(0, WORLD_H), s, s);
-    }
-    // Big asphalt patches
-    for (let i = 0; i < 26; i++) {
-      c.fillStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.025)';
-      c.beginPath();
-      c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(80, 260), rand(60, 200), rand(0, 3), 0, Math.PI * 2);
-      c.fill();
-    }
-    // Parking bays
-    c.strokeStyle = 'rgba(230,230,210,0.22)';
-    c.lineWidth = 6;
-    for (let x = 160; x < WORLD_W - 120; x += 110) {
-      for (const y0 of [60, WORLD_H - 230]) {
-        if (Math.abs(x - WORLD_W / 2) < 120) continue;
-        c.beginPath();
-        c.moveTo(x, y0);
-        c.lineTo(x, y0 + 170);
-        c.stroke();
-      }
-    }
-    // Center road with dashed yellow line
-    c.fillStyle = 'rgba(0,0,0,0.18)';
-    c.fillRect(BORDER, WORLD_H / 2 - 150, WORLD_W - BORDER * 2, 300);
-    c.strokeStyle = 'rgba(232,197,71,0.45)';
-    c.lineWidth = 8;
-    c.setLineDash([60, 50]);
-    c.beginPath();
-    c.moveTo(BORDER, WORLD_H / 2);
-    c.lineTo(WORLD_W - BORDER, WORLD_H / 2);
-    c.stroke();
-    c.setLineDash([]);
-    c.strokeStyle = 'rgba(230,230,210,0.25)';
-    c.lineWidth = 5;
-    for (const y of [WORLD_H / 2 - 150, WORLD_H / 2 + 150]) {
-      c.beginPath();
-      c.moveTo(BORDER, y);
-      c.lineTo(WORLD_W - BORDER, y);
-      c.stroke();
-    }
-    // Cracks
-    c.strokeStyle = 'rgba(0,0,0,0.5)';
-    c.lineWidth = 2;
-    for (let i = 0; i < 60; i++) {
-      let x = rand(0, WORLD_W);
-      let y = rand(0, WORLD_H);
-      c.beginPath();
-      c.moveTo(x, y);
-      for (let k = 0; k < 6; k++) {
-        x += rand(-40, 40);
-        y += rand(-40, 40);
-        c.lineTo(x, y);
-      }
-      c.stroke();
-    }
-    // Oil stains and a couple of manholes
-    for (let i = 0; i < 30; i++) {
-      c.fillStyle = 'rgba(10,10,14,0.35)';
-      c.beginPath();
-      c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(15, 45), rand(10, 30), rand(0, 3), 0, Math.PI * 2);
-      c.fill();
-    }
-    for (const [mx, my] of [
-      [700, 640],
-      [1500, 960],
-    ]) {
-      c.fillStyle = '#1d1f22';
-      c.beginPath();
-      c.arc(mx, my, 28, 0, Math.PI * 2);
-      c.fill();
-      c.strokeStyle = '#3a3d42';
-      c.lineWidth = 3;
-      for (let r = 8; r < 28; r += 7) {
-        c.beginPath();
-        c.arc(mx, my, r, 0, Math.PI * 2);
-        c.stroke();
-      }
-    }
+    map.ground(c);
+    groundCache.set(map.id, g);
     return g;
+  }
+
+  /** Picks the mode (and with it the map and mutators) for the next run. */
+  configure(mode: string) {
+    this.mode = mode;
+    if (mode === 'daily') {
+      const d = dailySetup();
+      this.mutators = new Set(d.mutators);
+      this.setMap(d.map);
+    } else {
+      this.mutators = new Set();
+      this.setMap(meta.data.map);
+    }
+  }
+
+  has(m: string) {
+    return this.mutators.has(m);
+  }
+
+  /** Switches the arena; takes effect for the next run and the title screen. */
+  setMap(id: string) {
+    this.map = mapById(id);
+    this.blocked = blockedFor(this.map);
+    this.ground = this.buildGround(this.map);
+    this.resetBarrels();
   }
 
   static emptyReport(): RunReport {
@@ -587,7 +498,14 @@ export class Game {
     this.wave = 0;
     this.grenadesMax = 2 + t('nades');
     this.grenadeCount = this.grenadesMax;
-    this.reviveLeft = t('revive');
+    this.reviveLeft = this.mode === 'hardcore' ? 0 : t('revive');
+    if (this.has('glass')) {
+      this.stats.damage *= 2;
+      this.stats.maxHp = Math.round(this.stats.maxHp * 0.5);
+    }
+    if (this.has('rich')) this.stats.cash *= 2;
+    this.trains = (this.map.tracks ?? []).map((y, i) => ({ y, dir: i % 2 ? -1 : 1, phase: 'idle', t: rand(9, 14) + i * 5, x: 0, hitPlayer: false, hitBoss: [] }));
+    this.trainWarned = false;
     this.report = Game.emptyReport();
     this.corpses = [];
     this.bolts = [];
@@ -623,7 +541,7 @@ export class Game {
   }
 
   private resetBarrels() {
-    this.barrels = BARREL_SPOTS.map((b) => ({ x: b.x, y: b.y, hp: 30, fuse: 0, dead: false }));
+    this.barrels = this.map.barrels.map((b) => ({ x: b.x, y: b.y, hp: b.big ? 60 : 30, fuse: 0, dead: false, big: !!b.big }));
   }
 
   private makeWeapon(def: WeaponDef): OwnedWeapon {
@@ -632,9 +550,12 @@ export class Game {
 
   startWave() {
     this.wave++;
+    // Boss Rush jumps straight from boss wave to boss wave.
+    if (this.mode === 'bossrush') this.wave = Math.ceil(this.wave / 10) * 10;
     const boss = this.wave % 10 === 0;
     this.toSpawn = 10 + this.wave * 5;
-    if (boss) this.toSpawn = Math.round(this.toSpawn * 0.5);
+    if (boss) this.toSpawn = Math.round(this.toSpawn * (this.mode === 'bossrush' ? 0.3 : 0.5));
+    if (this.has('horde')) this.toSpawn = Math.round(this.toSpawn * 1.5);
     this.spawnT = 1.2;
     this.clearT = -1;
     this.state = 'playing';
@@ -710,7 +631,7 @@ export class Game {
     const items: ShopItem[] = [];
     const heal = 30 + this.wave * 6;
     const missing = this.stats.maxHp - this.p.hp;
-    items.push({ id: 'heal', label: '🩹 Medkit', sub: `Heal to full (${Math.ceil(this.p.hp)}/${this.stats.maxHp})`, price: heal, enabled: missing > 0.5 && this.cash >= heal });
+    if (this.mode !== 'hardcore') items.push({ id: 'heal', label: '🩹 Medkit', sub: `Heal to full (${Math.ceil(this.p.hp)}/${this.stats.maxHp})`, price: heal, enabled: missing > 0.5 && this.cash >= heal });
     const armorLvl = Math.round((this.armor - 0.03 * meta.train('armor')) / 0.08);
     if (armorLvl < 5) {
       const price = 150 * (armorLvl + 1);
@@ -805,6 +726,7 @@ export class Game {
     this.updateBullets(dt);
     this.updateGrenades(dt);
     this.updateHazards(dt);
+    this.updateTrains(dt);
     this.updateOrbitals(dt);
     this.updatePickups(dt);
     this.updateEffects(dt, rawDt);
@@ -985,9 +907,10 @@ export class Game {
       const dx = p.x - b.x;
       const dy = p.y - b.y;
       const d = Math.hypot(dx, dy);
-      if (d < PLAYER_R + 14 && d > 0) {
-        p.x = b.x + (dx / d) * (PLAYER_R + 14);
-        p.y = b.y + (dy / d) * (PLAYER_R + 14);
+      const br = PLAYER_R + (b.big ? 20 : 14);
+      if (d < br && d > 0) {
+        p.x = b.x + (dx / d) * br;
+        p.y = b.y + (dy / d) * br;
       }
     }
 
@@ -1088,9 +1011,9 @@ export class Game {
   }
 
   private farthestGate() {
-    let best = GATES[0];
+    let best = this.map.gates[0];
     let bd = -1;
-    for (const g of GATES) {
+    for (const g of this.map.gates) {
       const d = Math.hypot(g.x - this.p.x, g.y - this.p.y);
       if (d > bd) {
         bd = d;
@@ -1103,10 +1026,10 @@ export class Game {
   private updateSpawning(dt: number) {
     if (this.toSpawn <= 0) return;
     this.spawnT -= dt;
-    const cap = Math.min(30 + this.wave * 4, 100);
+    const cap = Math.min(30 + this.wave * 4, 100) + (this.has('horde') ? 30 : 0);
     if (this.spawnT > 0 || this.zombies.length >= cap) return;
     this.spawnT = Math.max(0.22, 0.85 - this.wave * 0.05);
-    const far = GATES.filter((g) => Math.hypot(g.x - this.p.x, g.y - this.p.y) > 520);
+    const far = this.map.gates.filter((g) => Math.hypot(g.x - this.p.x, g.y - this.p.y) > 520);
     const gate = far.length ? far[Math.floor(Math.random() * far.length)] : this.farthestGate();
     const group = Math.min(this.toSpawn, 1 + Math.floor(Math.random() * (2 + this.wave / 3)));
     const w = this.wave;
@@ -1124,7 +1047,8 @@ export class Game {
       ['electric', w >= 14 && this.countKind('electric') < 3 ? Math.min(0.05, 0.03 + (w - 14) * 0.003) : 0],
       ['runner', w >= 2 ? Math.min(0.36, 0.12 + (w - 2) * 0.04) : 0],
     ];
-    const eliteChance = w >= 15 ? Math.min(0.15, 0.04 + (w - 15) * 0.006) : 0;
+    let eliteChance = w >= 15 ? Math.min(0.15, 0.04 + (w - 15) * 0.006) : 0;
+    if (this.has('elites')) eliteChance = Math.max(eliteChance, 0.12);
     for (let i = 0; i < group; i++) {
       let roll = Math.random();
       let kind: ZombieKind = 'walker';
@@ -1170,7 +1094,7 @@ export class Game {
       ky: 0,
       hp,
       maxHp: hp,
-      speed: def.speed * spScale * rand(0.9, 1.1) * (elite === 'fast' ? 1.55 : 1) * (mini ? 1.15 : 1),
+      speed: def.speed * spScale * rand(0.9, 1.1) * (elite === 'fast' ? 1.55 : 1) * (mini ? 1.15 : 1) * (this.has('fast') ? 1.25 : 1),
       dmg: def.damage * (1 + 0.05 * (wv - 1)) * (elite ? 1.25 : 1),
       r,
       flash: 0,
@@ -1223,7 +1147,7 @@ export class Game {
         const ny = cy + NEIGHBORS[k][1];
         if (nx < 0 || ny < 0 || nx >= FLOW_W || ny >= FLOW_H) continue;
         const j = ny * FLOW_W + nx;
-        if (f[j] >= 0 || BLOCKED[j]) continue;
+        if (f[j] >= 0 || this.blocked[j]) continue;
         f[j] = f[i] + 1;
         queue[tail++] = j;
       }
@@ -1767,7 +1691,7 @@ export class Game {
       let alive = true;
       for (const br of this.barrels) {
         if (br.dead || br.fuse > 0) continue;
-        if (Math.hypot(br.x - b.x, br.y - b.y) < 16) {
+        if (Math.hypot(br.x - b.x, br.y - b.y) < (br.big ? 22 : 16)) {
           if (b.kind === 'rocket') {
             this.explode(b.x, b.y, b.dmg, 115, 0);
             alive = false;
@@ -1916,8 +1840,100 @@ export class Game {
       b.fuse -= dt;
       if (b.fuse <= 0) {
         b.dead = true;
-        this.explode(b.x, b.y, 240 * this.stats.damage, 150, 30, true);
+        if (b.big) {
+          // Fuel pump: a fireball that clears the whole forecourt.
+          this.explode(b.x, b.y, 450 * this.stats.damage, 230, 40, true);
+          this.flash = { t: 0.3, color: '#ffb050', max: 0.3 };
+          this.slowT = Math.max(this.slowT, 0.4);
+        } else this.explode(b.x, b.y, 240 * this.stats.damage, 150, 30, true);
       }
+    }
+  }
+
+  private updateTrains(dt: number) {
+    for (const tr of this.trains) {
+      tr.t -= dt;
+      if (tr.phase === 'idle' && tr.t <= 0) {
+        tr.phase = 'warn';
+        tr.t = 2.2;
+        this.sfx.play('horn');
+        if (!this.trainWarned) {
+          this.trainWarned = true;
+          this.showShout('TRAIN INCOMING!', '#ff5a4a');
+        }
+      } else if (tr.phase === 'warn' && tr.t <= 0) {
+        tr.phase = 'go';
+        tr.x = tr.dir > 0 ? -TRAIN_LEN - 100 : WORLD_W + 100;
+        tr.hitPlayer = false;
+        tr.hitBoss = [];
+        this.sfx.play('train');
+        this.addShake(0.3);
+      } else if (tr.phase === 'go') {
+        tr.x += tr.dir * TRAIN_SPEED * dt;
+        if ((tr.dir > 0 && tr.x > WORLD_W + 100) || (tr.dir < 0 && tr.x + TRAIN_LEN < -100)) {
+          tr.phase = 'idle';
+          tr.t = rand(11, 17);
+          continue;
+        }
+        const x0 = tr.x;
+        const x1 = tr.x + TRAIN_LEN;
+        const front = tr.dir > 0 ? x1 : x0;
+        this.addLight(front, tr.y, 260, 0.06, '#fff2c0');
+        for (const z of this.zombies) {
+          if (z.dead || Math.abs(z.y - tr.y) > 48 + z.r || z.x < x0 || z.x > x1) continue;
+          if (isBoss(z)) {
+            if (tr.hitBoss.includes(z.id)) continue;
+            tr.hitBoss.push(z.id);
+            this.damageZombie(z, z.maxHp * 0.12, tr.dir > 0 ? 0 : Math.PI, false, 0);
+          } else this.killZombie(z, tr.dir > 0 ? rand(-0.5, 0.5) : Math.PI + rand(-0.5, 0.5));
+        }
+        const p = this.p;
+        if (!tr.hitPlayer && Math.abs(p.y - tr.y) < 48 + PLAYER_R && p.x > x0 && p.x < x1 && this.dashT <= 0) {
+          tr.hitPlayer = true;
+          this.hurtPlayer(55, null);
+          p.vy += (p.y < tr.y ? -1 : 1) * 900;
+          p.vx += tr.dir * 500;
+        }
+      }
+    }
+  }
+
+  private drawTrains() {
+    const ctx = this.ctx;
+    for (const tr of this.trains) {
+      if (tr.phase === 'warn') {
+        const on = Math.floor(this.clock * 6) % 2 === 0;
+        ctx.fillStyle = `rgba(255,40,40,${on ? 0.18 : 0.08})`;
+        ctx.fillRect(BORDER, tr.y - 50, WORLD_W - BORDER * 2, 100);
+        for (const x of [BORDER + 20, WORLD_W - BORDER - 20]) {
+          ctx.fillStyle = on ? '#ff3030' : '#501010';
+          ctx.beginPath();
+          ctx.arc(x, tr.y - 60, 9, 0, Math.PI * 2);
+          ctx.fill();
+          if (on) this.addLight(x, tr.y - 60, 140, 0.05, '#ff3030');
+        }
+      }
+      if (tr.phase !== 'go') continue;
+      const cars = 4;
+      const carLen = TRAIN_LEN / cars;
+      for (let i = 0; i < cars; i++) {
+        const x = tr.x + i * carLen;
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        ctx.fillRect(x + 6, tr.y - 40, carLen - 8, 92);
+        ctx.fillStyle = '#b8bec6';
+        ctx.fillRect(x, tr.y - 46, carLen - 10, 92);
+        ctx.fillStyle = '#2a5ab8';
+        ctx.fillRect(x, tr.y - 6, carLen - 10, 12);
+        ctx.fillStyle = '#1b2633';
+        for (let wx = x + 18; wx < x + carLen - 40; wx += 44) {
+          ctx.fillRect(wx, tr.y - 36, 26, 18);
+          ctx.fillRect(wx, tr.y + 18, 26, 18);
+        }
+      }
+      const front = tr.dir > 0 ? tr.x + TRAIN_LEN - 10 : tr.x;
+      ctx.fillStyle = '#fff6c0';
+      ctx.fillRect(front - (tr.dir > 0 ? 6 : 0), tr.y - 36, 6, 14);
+      ctx.fillRect(front - (tr.dir > 0 ? 6 : 0), tr.y + 22, 6, 14);
     }
   }
 
@@ -2004,6 +2020,7 @@ export class Game {
       }
       this.sfx.play('shatter');
     }
+    if (this.has('boom') && !boss && kind !== 'egg' && z.elite !== 'explosive') this.explode(z.x, z.y, 45 * this.stats.damage, 80, 10);
     if (z.elite === 'explosive') this.explode(z.x, z.y, 70 * this.stats.damage, 110, 22);
     const big = boss || kind === 'tank' || kind === 'shield';
     const n = boss ? 60 : big ? 22 : 12;
@@ -2042,7 +2059,7 @@ export class Game {
       const s = coins > 1 ? rand(60, 220) : rand(20, 60);
       this.pickups.push({ x: z.x, y: z.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, kind: 'cash', value: value / coins, pulled: false });
     }
-    const healthChance = boss ? 1 : kind === 'tank' || kind === 'shield' ? 0.25 : z.elite ? 0.3 : 0.025;
+    const healthChance = this.mode === 'hardcore' ? 0 : boss ? 1 : kind === 'tank' || kind === 'shield' ? 0.25 : z.elite ? 0.3 : 0.025;
     if (Math.random() < healthChance) this.pickups.push({ x: z.x, y: z.y, vx: rand(-40, 40), vy: rand(-40, 40), kind: 'health', value: 25, pulled: false });
     if (this.state === 'playing' && (boss || (Math.random() < 0.022 && this.powers.length < 2))) {
       const kinds: PowerKind[] = boss ? ['rage'] : ['nuke', 'rage', 'freeze', 'ammo', 'cash'];
@@ -2296,7 +2313,7 @@ export class Game {
 
   private collideWalls(o: { x: number; y: number }, r: number): boolean {
     let hit = false;
-    for (const w of WALLS) {
+    for (const w of this.map.walls) {
       const cx = clamp(o.x, w.x, w.x + w.w);
       const cy = clamp(o.y, w.y, w.y + w.h);
       const dx = o.x - cx;
@@ -2325,7 +2342,7 @@ export class Game {
   }
 
   private pointInWall(x: number, y: number) {
-    for (const w of WALLS) if (x > w.x && x < w.x + w.w && y > w.y && y < w.y + w.h) return true;
+    for (const w of this.map.walls) if (x > w.x && x < w.x + w.w && y > w.y && y < w.y + w.h) return true;
     return false;
   }
 
@@ -2373,6 +2390,7 @@ export class Game {
     for (const z of this.zombies) this.drawZombieShadow(z);
     for (const z of this.zombies) this.drawZombie(z);
     if (this.state !== 'over' && playing) this.drawPlayer();
+    this.drawTrains();
     this.drawGrenades();
     for (const q of this.particles) {
       if (q.glow) continue;
@@ -2442,7 +2460,7 @@ export class Game {
       l.drawImage(glowSprite('#000000'), x - r, y - r, r * 2, r * 2);
       l.globalAlpha = 1;
     };
-    for (const lamp of LAMPS) {
+    for (const lamp of this.map.lamps) {
       let a = 0.9;
       if (lamp.flicker) {
         const f = Math.sin(this.clock * 23 + lamp.x) + Math.sin(this.clock * 7.3 + lamp.y);
@@ -2471,8 +2489,9 @@ export class Game {
       cone(WORLD_W / 2, WORLD_H / 2, sa + Math.PI, 900, 0.3, 0.95);
     } else if (this.state !== 'over') {
       hole(p.x, p.y, 150, 0.85);
-      cone(p.x, p.y, p.angle, FLASHLIGHT * 1.1, 0.75, 0.4);
-      cone(p.x, p.y, p.angle, FLASHLIGHT, 0.42, 0.95);
+      const fl = FLASHLIGHT * (this.has('dark') ? 0.55 : 1);
+      cone(p.x, p.y, p.angle, fl * 1.1, 0.75, 0.4);
+      cone(p.x, p.y, p.angle, fl, 0.42, 0.95);
     }
     void zoom;
   }
@@ -2485,7 +2504,7 @@ export class Game {
     };
     // Colored light tints
     for (const lt of this.lights) glowDot(lt.x, lt.y, lt.r * 0.7, lt.color, 0.35 * (lt.life / lt.max));
-    for (const lamp of LAMPS) glowDot(lamp.x, lamp.y, 120, '#ffcf7a', 0.12);
+    for (const lamp of this.map.lamps) glowDot(lamp.x, lamp.y, 120, '#ffcf7a', 0.12);
     ctx.globalAlpha = 1;
 
     // Zombie eyes glow in the dark
@@ -2742,7 +2761,7 @@ export class Game {
 
   private drawGates() {
     const ctx = this.ctx;
-    for (const g of GATES) {
+    for (const g of this.map.gates) {
       const horiz = g.y < BORDER * 2 || g.y > WORLD_H - BORDER * 2;
       ctx.fillStyle = '#120d0b';
       if (horiz) ctx.fillRect(g.x - 50, g.y - 22, 100, 24);
@@ -2771,7 +2790,7 @@ export class Game {
 
   private drawWalls() {
     const ctx = this.ctx;
-    for (const w of WALLS) {
+    for (const w of this.map.walls) {
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fillRect(w.x + 7, w.y + 9, w.w, w.h);
       if (w.kind === 'border') {
@@ -2820,6 +2839,27 @@ export class Game {
           }
         }
         ctx.restore();
+      } else if (w.kind === 'brick') {
+        ctx.fillStyle = '#6a3a2a';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+        ctx.lineWidth = 2;
+        const horiz = w.w > w.h;
+        const len = horiz ? w.w : w.h;
+        const thick = horiz ? w.h : w.w;
+        for (let i = 0; i < len; i += 24)
+          for (let r = 0; r < thick; r += 10) {
+            const off = (r / 10) % 2 ? 12 : 0;
+            if (horiz) ctx.strokeRect(w.x + i + off, w.y + r, 24, 10);
+            else ctx.strokeRect(w.x + r, w.y + i + off, 10, 24);
+          }
+      } else if (w.kind === 'pillar') {
+        ctx.fillStyle = '#6a6a66';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.fillStyle = '#85857f';
+        ctx.fillRect(w.x + 5, w.y + 5, w.w - 10, w.h - 10);
+        ctx.fillStyle = '#e8c547';
+        ctx.fillRect(w.x, w.y + w.h - 8, w.w, 4);
       } else if (w.kind === 'crate') {
         ctx.fillStyle = '#6b4a2a';
         ctx.fillRect(w.x, w.y, w.w, w.h);
@@ -2865,7 +2905,7 @@ export class Game {
       }
     }
     // Re-open the gate holes on top of the border walls.
-    for (const g of GATES) {
+    for (const g of this.map.gates) {
       const horiz = g.y < BORDER * 2 || g.y > WORLD_H - BORDER * 2;
       ctx.fillStyle = '#0d0907';
       if (horiz) ctx.fillRect(g.x - 50, g.y < WORLD_H / 2 ? 0 : WORLD_H - BORDER, 100, BORDER);
@@ -2878,7 +2918,7 @@ export class Game {
 
   private drawLampPosts() {
     const ctx = this.ctx;
-    for (const l of LAMPS) {
+    for (const l of this.map.lamps) {
       ctx.fillStyle = 'rgba(0,0,0,0.4)';
       ctx.beginPath();
       ctx.arc(l.x + 4, l.y + 6, 11, 0, Math.PI * 2);
@@ -2903,6 +2943,21 @@ export class Game {
       ctx.arc(b.x + 3, b.y + 5, 15, 0, Math.PI * 2);
       ctx.fill();
       const hot = b.fuse > 0 && Math.floor(this.clock * 30) % 2 === 0;
+      if (b.big) {
+        // Fuel pump
+        ctx.fillStyle = hot ? '#ffffff' : '#d8d8d0';
+        ctx.fillRect(b.x - 16, b.y - 20, 32, 40);
+        ctx.fillStyle = '#c0201a';
+        ctx.fillRect(b.x - 16, b.y - 20, 32, 10);
+        ctx.fillStyle = '#1b2633';
+        ctx.fillRect(b.x - 10, b.y - 5, 20, 10);
+        ctx.fillStyle = '#e8c547';
+        ctx.font = `900 9px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('FUEL', b.x, b.y + 13);
+        continue;
+      }
       ctx.fillStyle = hot ? '#ffffff' : '#b52a1f';
       ctx.beginPath();
       ctx.arc(b.x, b.y, 14, 0, Math.PI * 2);
@@ -3358,7 +3413,7 @@ export class Game {
     ctx.fillText(`WAVE ${this.wave}`, this.w / 2, pad + 10);
     ctx.font = '600 12px system-ui, sans-serif';
     ctx.fillStyle = '#c9d1b8';
-    ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left`, this.w / 2, pad + 31);
+    ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left${this.modeLabel ? `  ·  ${this.modeLabel}` : ''}`, this.w / 2, pad + 31);
 
     let rowY = pad + 50;
     const boss = this.zombies.find(isBoss);

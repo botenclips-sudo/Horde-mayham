@@ -39,7 +39,9 @@ export type SfxKind =
   | 'zap'
   | 'slam'
   | 'shatter'
-  | 'plate';
+  | 'plate'
+  | 'horn'
+  | 'train';
 
 export type MusicMood = 'menu' | 'calm' | 'fight' | 'boss' | 'off';
 
@@ -372,6 +374,14 @@ export class Sfx {
       case 'plate':
         this.tone(now, 0.15, 900, 500, 0.2, 'square', bus);
         this.burst(now, 0.1, 3000, 0.25, 'bandpass', bus);
+        break;
+      case 'horn':
+        this.tone(now, 1.1, 220, 215, 0.3, 'sawtooth', bus);
+        this.tone(now, 1.1, 277, 272, 0.25, 'sawtooth', bus);
+        break;
+      case 'train':
+        this.burst(now, 1.6, 300, 0.9, 'lowpass', bus);
+        this.tone(now, 1.4, 60, 45, 0.5, 'sawtooth', bus);
         break;
       case 'levelup':
         [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(now + i * 0.09, 0.22, f, f, 0.16, 'triangle', bus));

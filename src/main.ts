@@ -2,7 +2,8 @@ import './style.css';
 import { Sfx } from './audio';
 import { Game, RunSummary } from './game';
 import { Input } from './input';
-import { GUN_UNLOCK, LEVEL_REWARDS, MASTERY_MAX, masteryCost, meta, MISSIONS, RunResult, TRAINING, trainingCost, xpToNext } from './meta';
+import { dailySetup, GUN_UNLOCK, LEVEL_REWARDS, MASTERY_MAX, masteryCost, meta, MISSIONS, MODES, MUTATORS, RunResult, today, TRAINING, trainingCost, xpToNext } from './meta';
+import { MAPS, mapById } from './maps';
 import { WEAPONS } from './data';
 import { makeShareCard, shareCard } from './share';
 
@@ -13,7 +14,7 @@ const input = new Input(canvas);
 input.touchMode = window.matchMedia('(pointer: coarse)').matches;
 const sfx = new Sfx();
 
-const screens = ['menu', 'base', 'perks', 'shop', 'pause', 'over'];
+const screens = ['menu', 'modes', 'base', 'perks', 'shop', 'pause', 'over'];
 function show(id: string | null) {
   for (const s of screens) $(s).classList.toggle('hidden', s !== id);
   canvas.style.cursor = id === null && !input.touchMode ? 'none' : 'default';
@@ -72,7 +73,7 @@ let lastRun: RunSummary | null = null;
 
 function showGameOver(s: RunSummary) {
   const scene = game.snapshot();
-  const res = meta.finishRun(s.report);
+  const res = meta.finishRun(s.report, game.mode);
   if (res.levelsGained.length) sfx.play('levelup');
   lastRun = s;
   const m = Math.floor(s.time / 60);
@@ -80,10 +81,11 @@ function showGameOver(s: RunSummary) {
     .toString()
     .padStart(2, '0');
   $('over-stats').innerHTML =
-    `Reached <b>wave ${s.wave}</b>${res.newBest ? ' 🏆 new best!' : ` (best: wave ${meta.data.best})`}<br>` +
+    `${esc(runLabel())}<br>` +
+    `Reached <b>wave ${s.wave}</b>${res.newBest ? ' 🏆 new best!' : ` (best: wave ${meta.data.bests[game.mode] ?? 0})`}<br>` +
     `<b>${s.kills}</b> zombies killed<br>Best combo <b>x${s.bestCombo}</b><br><b>$${s.cash}</b> earned · survived <b>${m}:${sec}</b>`;
   $('over-rewards').innerHTML = rewardsHtml(res);
-  shareCanvas = makeShareCard(s, scene, meta.data.level, res.newBest);
+  shareCanvas = makeShareCard(s, scene, meta.data.level, res.newBest, runLabel().toUpperCase());
   $<HTMLImageElement>('share-img').src = shareCanvas.toDataURL('image/jpeg', 0.8);
   $('share-msg').textContent = '';
   refreshMenu();
@@ -261,16 +263,84 @@ function goFullscreen() {
   }
 }
 
+function runLabel() {
+  const m = MODES.find((x) => x.id === game.mode)!;
+  const muts = [...game.mutators].map((id) => MUTATORS.find((x) => x.id === id)!.name);
+  return [m.name, game.map.name, ...muts].join(' · ');
+}
+
+// ------------------------------------------------------------------ mode & map picker
+
+function openModes() {
+  sfx.unlock();
+  renderModes();
+  show('modes');
+}
+
+function renderModes() {
+  const d = meta.data;
+  const cards = $('mode-cards');
+  cards.innerHTML = '';
+  for (const m of MODES) {
+    const locked = d.level < m.unlock;
+    const b = document.createElement('button');
+    b.className = `mode-card${d.mode === m.id ? ' on' : ''}`;
+    b.disabled = locked;
+    const best = d.bests[m.id] ? `Best: wave ${d.bests[m.id]}` : 'Not played yet';
+    b.innerHTML = `<div class="mi">${m.icon}</div><div class="name">${esc(m.name)}</div><div class="sub">${locked ? `Unlocks at level ${m.unlock}` : esc(m.desc)}</div><div class="sub dim">${locked ? '' : best}</div>`;
+    b.addEventListener('click', () => {
+      d.mode = m.id;
+      meta.save();
+      game.configure(m.id);
+      renderModes();
+    });
+    cards.appendChild(b);
+  }
+  const row = $('map-row');
+  row.innerHTML = '';
+  const info = $('mode-info');
+  if (d.mode === 'daily') {
+    const ds = dailySetup();
+    const muts = ds.mutators.map((id) => MUTATORS.find((x) => x.id === id)!);
+    const played = d.daily.day === today() ? d.daily : { best: 0, runs: 0 };
+    info.innerHTML = `Today: <b>${esc(mapById(ds.map).name)}</b> with ${muts.map((x) => `<b>${esc(x.name)}</b> (${esc(x.desc.toLowerCase())})`).join(' and ')}.<br>${played.runs ? `Your best today: wave ${played.best}` : 'First run today pays +50 🧠'}`;
+  } else {
+    info.textContent = '';
+    for (const mp of MAPS) {
+      const locked = d.level < mp.unlock;
+      const b = document.createElement('button');
+      b.className = `map-chip${d.map === mp.id ? ' on' : ''}`;
+      b.disabled = locked;
+      b.innerHTML = `<b>${esc(mp.name)}</b><span>${locked ? `Level ${mp.unlock}` : esc(mp.desc)}</span>`;
+      b.addEventListener('click', () => {
+        d.map = mp.id;
+        meta.save();
+        game.configure(d.mode);
+        renderModes();
+      });
+      row.appendChild(b);
+    }
+  }
+}
+
 function startRun() {
   sfx.unlock();
   goFullscreen();
+  const d = meta.data;
+  // Fall back if a saved choice is no longer unlocked (e.g. after loading a save code).
+  if (d.level < (MODES.find((m) => m.id === d.mode)?.unlock ?? 1)) d.mode = 'endless';
+  if (d.level < mapById(d.map).unlock) d.map = 'lot';
+  game.configure(d.mode);
+  game.modeLabel = d.mode === 'endless' ? '' : MODES.find((m) => m.id === d.mode)!.name.toUpperCase();
   game.newRun();
   show(null);
   game.startWave();
 }
 
 refreshMenu();
-$('play').addEventListener('click', startRun);
+$('play').addEventListener('click', openModes);
+$('start').addEventListener('click', startRun);
+$('modes-back').addEventListener('click', () => show('menu'));
 $('again').addEventListener('click', startRun);
 $('next-wave').addEventListener('click', () => {
   sfx.unlock();
@@ -284,7 +354,7 @@ $('resume').addEventListener('click', () => {
 });
 $('quit').addEventListener('click', () => {
   // Quitting still banks XP, brains and mission progress.
-  if (game.wave > 0) meta.finishRun(game.summary().report);
+  if (game.wave > 0) meta.finishRun(game.summary().report, game.mode);
   refreshMenu();
   game.newRun();
   game.state = 'menu';

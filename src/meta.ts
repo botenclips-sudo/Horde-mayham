@@ -2,6 +2,7 @@
 // unlocked guns and their mastery, permanent training, and daily missions.
 
 import { WEAPONS, ZombieKind } from './data';
+import { MAPS } from './maps';
 
 const SAVE_KEY = 'horde-save';
 const SAVE_VERSION = 1;
@@ -25,6 +26,10 @@ export interface SaveData {
   missionDay: string;
   missions: MissionState[];
   totals: { runs: number; kills: number; bosses: number };
+  map: string;
+  mode: string;
+  daily: { day: string; best: number; runs: number };
+  bests: Record<string, number>; // best wave per mode
 }
 
 // ------------------------------------------------------------------ training
@@ -57,6 +62,56 @@ export const trainingCost = (t: TrainingDef, lv: number) => Math.round(t.base * 
 export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400 };
 export const MASTERY_MAX = 10;
 export const masteryCost = (lv: number) => Math.round(40 * Math.pow(1.45, lv));
+
+// ------------------------------------------------------------------ modes
+
+export interface ModeDef {
+  id: string;
+  name: string;
+  icon: string;
+  desc: string;
+  unlock: number;
+  brains: number; // multiplier on brains earned
+}
+
+export const MODES: ModeDef[] = [
+  { id: 'endless', name: 'Endless', icon: '♾️', desc: 'Survive as long as you can. A boss every 10 waves.', unlock: 1, brains: 1 },
+  { id: 'daily', name: 'Daily Challenge', icon: '📅', desc: 'Same map and twists for everyone today. First run of the day pays +50 🧠.', unlock: 1, brains: 1 },
+  { id: 'bossrush', name: 'Boss Rush', icon: '💀', desc: 'Every wave is a boss. Brains x1.5.', unlock: 3, brains: 1.5 },
+  { id: 'hardcore', name: 'Hardcore', icon: '☠️', desc: 'No medkits, no health drops, no Second Wind. Brains x2.', unlock: 5, brains: 2 },
+];
+
+export interface MutatorDef {
+  id: string;
+  name: string;
+  desc: string;
+}
+
+export const MUTATORS: MutatorDef[] = [
+  { id: 'horde', name: 'Double Horde', desc: '50% more zombies every wave' },
+  { id: 'glass', name: 'Glass Cannon', desc: 'Double damage, half health' },
+  { id: 'boom', name: 'Everything Explodes', desc: 'Every zombie blows up when it dies' },
+  { id: 'fast', name: 'Fast Zombies', desc: 'Zombies move 25% faster' },
+  { id: 'rich', name: 'Gold Rush', desc: 'Double cash from kills' },
+  { id: 'dark', name: 'Blackout', desc: 'Your flashlight is much shorter' },
+  { id: 'elites', name: 'Elite Squad', desc: 'Elite zombies from wave 1' },
+];
+
+function hashDay(day: string, salt: number) {
+  let h = 2166136261 ^ salt;
+  for (const c of day) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+  h = Math.imul(h ^ (h >>> 15), 2246822507);
+  return (h ^ (h >>> 13)) >>> 0;
+}
+
+/** Today's challenge: a map and two mutators, the same for everyone on this date. */
+export function dailySetup(day = today()) {
+  const map = MAPS[hashDay(day, 1) % MAPS.length].id;
+  const a = hashDay(day, 2) % MUTATORS.length;
+  let b = hashDay(day, 3) % MUTATORS.length;
+  if (b === a) b = (b + 1) % MUTATORS.length;
+  return { map, mutators: [MUTATORS[a].id, MUTATORS[b].id] };
+}
 
 // ------------------------------------------------------------------ levels
 
@@ -137,7 +192,7 @@ export const MISSIONS: MissionDef[] = [
   { id: 'minigun', text: 'Kill 400 zombies holding the Minigun', goal: 400, reward: 60, measure: gunKills('minigun') },
 ];
 
-const today = () => {
+export const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 };
@@ -178,6 +233,10 @@ function fresh(): SaveData {
     missionDay: '',
     missions: [],
     totals: { runs: 0, kills: 0, bosses: 0 },
+    map: 'lot',
+    mode: 'endless',
+    daily: { day: '', best: 0, runs: 0 },
+    bests: {},
   };
 }
 
@@ -200,6 +259,11 @@ function sanitize(raw: unknown): SaveData {
   if (typeof r.missionDay === 'string') d.missionDay = r.missionDay;
   if (Array.isArray(r.missions)) d.missions = r.missions.filter((m) => m && MISSIONS.some((x) => x.id === m.id)).map((m) => ({ id: m.id, progress: num(m.progress, 0), done: !!m.done }));
   if (r.totals) d.totals = { runs: num(r.totals.runs, 0), kills: num(r.totals.kills, 0), bosses: num(r.totals.bosses, 0) };
+  if (typeof r.map === 'string' && MAPS.some((m) => m.id === r.map)) d.map = r.map;
+  if (typeof r.mode === 'string' && MODES.some((m) => m.id === r.mode)) d.mode = r.mode;
+  if (r.daily && typeof r.daily.day === 'string') d.daily = { day: r.daily.day, best: num(r.daily.best, 0), runs: num(r.daily.runs, 0) };
+  if (r.bests && typeof r.bests === 'object') for (const [k, v] of Object.entries(r.bests)) if (MODES.some((m) => m.id === k)) d.bests[k] = num(v, 0);
+  d.bests.endless = Math.max(d.bests.endless ?? 0, d.best);
   return d;
 }
 
@@ -305,16 +369,29 @@ class Meta {
     this.save();
   }
 
-  finishRun(r: RunReport): RunResult {
+  finishRun(r: RunReport, mode = 'endless'): RunResult {
     const d = this.data;
     this.refreshMissions();
-    const res: RunResult = { xpGained: 0, brainsGained: r.brains, levelsGained: [], rewards: [], missionsDone: [], newBest: false };
+    const mdef = MODES.find((m) => m.id === mode) ?? MODES[0];
+    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains), levelsGained: [], rewards: [], missionsDone: [], newBest: false };
     d.totals.runs++;
     d.totals.kills += r.kills;
     d.totals.bosses += r.bosses;
-    if (r.wave > d.best) {
-      d.best = r.wave;
+    // The headline "best wave" is for normal runs; every mode also keeps its own best.
+    if ((mode === 'endless' || mode === 'hardcore') && r.wave > d.best) d.best = r.wave;
+    if (r.wave > (d.bests[mode] ?? 0)) {
+      d.bests[mode] = r.wave;
       res.newBest = true;
+    }
+    if (mode === 'daily') {
+      const day = today();
+      if (d.daily.day !== day) d.daily = { day, best: 0, runs: 0 };
+      if (d.daily.runs === 0) {
+        res.brainsGained += 50;
+        res.rewards.push('First daily run today: +50 🧠');
+      }
+      d.daily.runs++;
+      d.daily.best = Math.max(d.daily.best, r.wave);
     }
     for (const m of d.missions) {
       if (m.done) continue;
