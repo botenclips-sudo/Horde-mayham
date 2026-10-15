@@ -41,3 +41,7 @@ Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (
 - `src/gear.ts` – armor and trinket loot with rarities
 - `src/clips.ts` – rolling replay recorder for video clips
 - `src/main.ts` – menus, base screen, perk picker, shop and the frame loop
+
+## License
+
+All rights reserved. The source is public to read, not to reuse; see [LICENSE](LICENSE).
