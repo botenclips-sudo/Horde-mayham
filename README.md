@@ -30,7 +30,7 @@ Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (
 
 ## Leaderboards
 
-Endless and Daily Challenge runs can be posted to global leaderboards on Supabase. One-time setup: run `supabase/leaderboard.sql` in the Supabase SQL editor, then put the project's anon (public) key in `KEY` in `src/leaderboard.ts`. Leaderboards stay hidden while the key is empty.
+Endless and Daily Challenge runs can be posted to global leaderboards on Supabase. One-time setup: run `supabase/leaderboard.sql` in the Supabase SQL editor, then put the project's publishable key in `KEY` in `src/leaderboard.ts` (never a secret key). Leaderboards stay hidden while the key is empty.
 
 ## Code map
 

@@ -1,9 +1,10 @@
-// Global leaderboards on Supabase (plain REST, no SDK). The anon key is public by design:
+// Global leaderboards on Supabase (plain REST, no SDK). The publishable key is public by design:
 // the table's row-level security only lets anyone read scores and insert sane new ones.
 // The table and its rules are in supabase/leaderboard.sql.
 
 const URL = 'https://xmxxxetnjyyvkmvakzji.supabase.co';
-const KEY = ''; // Supabase anon (public) key; leaderboards stay hidden until it is set
+// Supabase publishable key: safe in client code. Never put a secret (sb_secret_ / service_role) key here.
+const KEY = 'sb_publishable_jsKS5CBD7kRKoTmoPATsZw_C1Uwyo5a';
 
 export const leaderboardsOn = () => !!KEY;
 
@@ -24,7 +25,8 @@ export const cleanName = (n: string) =>
     .trim()
     .slice(0, 16);
 
-const headers = () => ({ apikey: KEY, Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' });
+// Publishable keys aren't JWTs, so they go in the apikey header only (no Authorization header).
+const headers = () => ({ apikey: KEY, 'Content-Type': 'application/json' });
 
 /** Top scores on a board, one row per player name (their best). */
 export async function topScores(board: string, n = 10): Promise<Score[]> {
