@@ -9,19 +9,23 @@
     <title>Horde Mayhem</title>
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Ops+One&display=swap" />
   </head>
   <body>
     <canvas id="game"></canvas>
 
-    <div id="menu" class="overlay">
-      <div class="panel">
-        <h1>HORDE<br /><span>MAYHEM</span></h1>
-        <p class="tag">Survive the waves. Grab perks. Get greedy.</p>
+    <div id="menu" class="overlay title">
+      <div class="title-wrap">
+        <h1>HORDE<span>MAYHEM</span></h1>
+        <p class="tag">The night is long. The horde is endless.</p>
         <button id="play" class="big">PLAY</button>
         <p class="best">Best: <b id="best">wave 0</b></p>
+        <button id="sound" class="ghost slim">🔊 Sound on</button>
         <div class="help">
-          <p><b>Phone:</b> left thumb moves, right thumb aims and fires. Buttons dash, swap and reload.</p>
-          <p><b>PC:</b> WASD move, mouse aim and fire, Space dash, Q / 1-3 swap, R reload, P pause.</p>
+          <p><b>Phone:</b> left thumb moves, right thumb aims and fires. Buttons for dash, grenade, swap and reload.</p>
+          <p><b>PC:</b> WASD move, mouse aim and fire, Space dash, G grenade, Q or 1-7 swap, R reload, M mute, P pause.</p>
         </div>
       </div>
     </div>
@@ -47,6 +51,7 @@
       <div class="panel">
         <h2>Paused</h2>
         <button id="resume" class="big">RESUME</button>
+        <button id="sound2" class="ghost">🔊 Sound on</button>
         <button id="quit" class="ghost">Quit run</button>
       </div>
     </div>

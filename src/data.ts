@@ -1,8 +1,11 @@
 // Static game data: weapons, zombie types and perks.
 
+export type WeaponKind = 'bullet' | 'flame' | 'rocket';
+
 export interface WeaponDef {
   id: string;
   name: string;
+  kind: WeaponKind;
   damage: number;
   fireRate: number; // shots per second
   mag: number;
@@ -15,16 +18,22 @@ export interface WeaponDef {
   upgradeBase: number;
   shake: number;
   color: string;
+  length: number; // drawn barrel length
+  spinup?: number; // seconds to reach full fire rate (minigun)
+  moveSlow?: number; // movement multiplier while firing
 }
 
 export const WEAPONS: WeaponDef[] = [
-  { id: 'pistol', name: 'Pistol', damage: 22, fireRate: 4.5, mag: 12, reload: 0.9, spread: 0.04, pellets: 1, speed: 950, life: 0.6, price: 0, upgradeBase: 80, shake: 0.12, color: '#ffe08a' },
-  { id: 'smg', name: 'SMG', damage: 13, fireRate: 12, mag: 36, reload: 1.5, spread: 0.14, pellets: 1, speed: 900, life: 0.5, price: 250, upgradeBase: 140, shake: 0.08, color: '#ffd166' },
-  { id: 'shotgun', name: 'Shotgun', damage: 15, fireRate: 1.5, mag: 6, reload: 1.9, spread: 0.42, pellets: 8, speed: 820, life: 0.38, price: 450, upgradeBase: 180, shake: 0.35, color: '#ffb36b' },
-  { id: 'rifle', name: 'Assault Rifle', damage: 26, fireRate: 9, mag: 30, reload: 1.7, spread: 0.06, pellets: 1, speed: 1150, life: 0.6, price: 900, upgradeBase: 260, shake: 0.14, color: '#a0f0ff' },
+  { id: 'pistol', name: 'Pistol', kind: 'bullet', damage: 22, fireRate: 4.5, mag: 12, reload: 0.9, spread: 0.04, pellets: 1, speed: 950, life: 0.6, price: 0, upgradeBase: 80, shake: 0.12, color: '#ffe08a', length: 22 },
+  { id: 'smg', name: 'SMG', kind: 'bullet', damage: 13, fireRate: 12, mag: 36, reload: 1.5, spread: 0.14, pellets: 1, speed: 900, life: 0.5, price: 250, upgradeBase: 140, shake: 0.08, color: '#ffd166', length: 26 },
+  { id: 'shotgun', name: 'Shotgun', kind: 'bullet', damage: 15, fireRate: 1.5, mag: 6, reload: 1.9, spread: 0.42, pellets: 8, speed: 820, life: 0.38, price: 450, upgradeBase: 180, shake: 0.35, color: '#ffb36b', length: 30 },
+  { id: 'rifle', name: 'Assault Rifle', kind: 'bullet', damage: 26, fireRate: 9, mag: 30, reload: 1.7, spread: 0.06, pellets: 1, speed: 1150, life: 0.6, price: 900, upgradeBase: 260, shake: 0.14, color: '#a0f0ff', length: 34 },
+  { id: 'flamer', name: 'Flamethrower', kind: 'flame', damage: 7, fireRate: 28, mag: 140, reload: 2.2, spread: 0.32, pellets: 1, speed: 430, life: 0.42, price: 1300, upgradeBase: 380, shake: 0.02, color: '#ff8a2b', length: 30 },
+  { id: 'rocket', name: 'Rocket Launcher', kind: 'rocket', damage: 130, fireRate: 1.1, mag: 4, reload: 2.4, spread: 0.02, pellets: 1, speed: 620, life: 1.4, price: 1900, upgradeBase: 520, shake: 0.4, color: '#ffcf5a', length: 36 },
+  { id: 'minigun', name: 'Minigun', kind: 'bullet', damage: 15, fireRate: 24, mag: 180, reload: 3.2, spread: 0.17, pellets: 1, speed: 1050, life: 0.55, price: 2800, upgradeBase: 700, shake: 0.07, color: '#ffe9a0', length: 38, spinup: 0.7, moveSlow: 0.6 },
 ];
 
-export type ZombieKind = 'walker' | 'runner' | 'tank' | 'boss';
+export type ZombieKind = 'walker' | 'runner' | 'tank' | 'bloater' | 'spitter' | 'boss';
 
 export interface ZombieDef {
   kind: ZombieKind;
@@ -35,15 +44,36 @@ export interface ZombieDef {
   cash: number;
   body: string;
   dark: string;
+  eye: string;
   mass: number;
 }
 
 export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
-  walker: { kind: 'walker', hp: 45, speed: 82, damage: 9, radius: 15, cash: 4, body: '#6b8f4e', dark: '#3f5a2c', mass: 1 },
-  runner: { kind: 'runner', hp: 26, speed: 165, damage: 6, radius: 12, cash: 6, body: '#a3a35a', dark: '#5f5f2c', mass: 0.7 },
-  tank: { kind: 'tank', hp: 320, speed: 52, damage: 24, radius: 27, cash: 25, body: '#4f6b5e', dark: '#2b3d34', mass: 4 },
-  boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', mass: 20 },
+  walker: { kind: 'walker', hp: 45, speed: 82, damage: 9, radius: 15, cash: 4, body: '#6b8f4e', dark: '#3f5a2c', eye: '#e8f060', mass: 1 },
+  runner: { kind: 'runner', hp: 26, speed: 165, damage: 6, radius: 12, cash: 6, body: '#a3a35a', dark: '#5f5f2c', eye: '#ff3b2f', mass: 0.7 },
+  tank: { kind: 'tank', hp: 320, speed: 52, damage: 24, radius: 27, cash: 25, body: '#4f6b5e', dark: '#2b3d34', eye: '#ff6a2b', mass: 4 },
+  bloater: { kind: 'bloater', hp: 70, speed: 64, damage: 0, radius: 20, cash: 10, body: '#8fb83a', dark: '#4e6b17', eye: '#c8ff3a', mass: 1.6 },
+  spitter: { kind: 'spitter', hp: 55, speed: 95, damage: 12, radius: 14, cash: 12, body: '#6a5a8f', dark: '#3a2f55', eye: '#d06bff', mass: 0.9 },
+  boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
 };
+
+export type PowerKind = 'nuke' | 'rage' | 'freeze' | 'ammo' | 'cash';
+
+export const POWERUPS: Record<PowerKind, { name: string; color: string; icon: string; duration: number }> = {
+  nuke: { name: 'NUKE', color: '#ffffff', icon: '☢', duration: 0 },
+  rage: { name: 'RAGE', color: '#ff3b3b', icon: '🔥', duration: 8 },
+  freeze: { name: 'DEEP FREEZE', color: '#7fd8ff', icon: '❄', duration: 5 },
+  ammo: { name: 'BOTTOMLESS', color: '#ffd23f', icon: '∞', duration: 10 },
+  cash: { name: 'DOUBLE CASH', color: '#5dff7a', icon: '$', duration: 15 },
+};
+
+export const COMBO_TIERS: [number, string][] = [
+  [10, 'RAMPAGE!'],
+  [25, 'MASSACRE!'],
+  [50, 'UNSTOPPABLE!'],
+  [100, 'GODLIKE!'],
+  [200, 'HORDE MAYHEM!!'],
+];
 
 // Everything a perk can change lives here.
 export interface Stats {

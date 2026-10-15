@@ -71,7 +71,7 @@ function showGameOver(s: RunSummary) {
     .padStart(2, '0');
   $('over-stats').innerHTML =
     `Reached <b>wave ${s.wave}</b>${s.newBest ? ' 🏆 new best!' : ` (best: wave ${s.best})`}<br>` +
-    `<b>${s.kills}</b> zombies killed<br><b>$${s.cash}</b> earned<br>Survived <b>${m}:${sec}</b>`;
+    `<b>${s.kills}</b> zombies killed<br>Best combo <b>x${s.bestCombo}</b><br><b>$${s.cash}</b> earned<br>Survived <b>${m}:${sec}</b>`;
   $('best').textContent = `wave ${s.best}`;
   show('over');
 }
@@ -123,6 +123,22 @@ document.addEventListener('visibilitychange', () => {
     show('pause');
   }
 });
+function syncSoundLabels() {
+  for (const id of ['sound', 'sound2']) $(id).textContent = sfx.muted ? '🔇 Sound off' : '🔊 Sound on';
+}
+for (const id of ['sound', 'sound2'])
+  $(id).addEventListener('click', () => {
+    sfx.unlock();
+    sfx.toggleMute();
+    syncSoundLabels();
+  });
+window.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'm') {
+    sfx.toggleMute();
+    syncSoundLabels();
+  }
+});
+syncSoundLabels();
 // Any first touch anywhere unlocks audio on mobile browsers.
 window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
 
