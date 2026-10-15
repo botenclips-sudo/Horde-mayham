@@ -2,6 +2,7 @@ import { MusicMood, Sfx, SfxKind } from './audio';
 import { baseStats, BOSS_NAMES, COMBO_TIERS, EliteKind, ELITES, PERKS, PerkDef, POWERUPS, PowerKind, RARITY_WEIGHT, Stats, WEAPONS, WeaponDef, ZOMBIES, ZombieDef, ZombieKind } from './data';
 import { Challenge, dailySetup, meta, RunReport } from './meta';
 import { BORDER, mapById, MapDef, WORLD_H, WORLD_W } from './maps';
+import { emptyBonus, GearBonus, gearDef, GearItem, gearValue, RARITY_COLOR, rollGear } from './gear';
 
 export { WORLD_H, WORLD_W };
 
@@ -124,10 +125,31 @@ interface Pickup {
   y: number;
   vx: number;
   vy: number;
-  kind: 'cash' | 'health';
-  value: number;
+  kind: 'cash' | 'health' | 'crate';
+  value: number; // for crates: loot luck
   pulled: boolean;
 }
+
+export type DeployKind = 'turret' | 'mine' | 'barricade' | 'medic';
+
+interface Deployable {
+  kind: DeployKind;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  t: number; // fire cooldown / mine arming / heal pulse
+  life: number; // seconds left (Infinity for barricades and mines)
+  angle: number;
+  r: number;
+}
+
+export const DEPLOYS: Record<DeployKind, { icon: string; name: string; desc: string; price: (wave: number) => number }> = {
+  turret: { icon: '🔫', name: 'Auto-turret', desc: 'Shoots the nearest zombie for 60s', price: (w) => 200 + w * 8 },
+  mine: { icon: '💥', name: 'Land mines (x3)', desc: 'Blow up whatever steps on them', price: (w) => 90 + w * 3 },
+  barricade: { icon: '🧱', name: 'Sandbag wall', desc: 'Blocks zombies until they chew through', price: (w) => 110 + w * 4 },
+  medic: { icon: '⛑️', name: 'Healing station', desc: 'Heals you while you stand near it, 40s', price: (w) => 160 + w * 5 },
+};
 
 interface PowerDrop {
   x: number;
@@ -401,6 +423,11 @@ export class Game {
   private toasts: { text: string; t: number }[] = [];
   private killCam = { x: 0, y: 0, t: 0 };
   challenge: Challenge | null = null;
+  private gear: GearBonus = emptyBonus();
+  /** Gear found this run (already added to the stash). */
+  loot: GearItem[] = [];
+  kit: DeployKind[] = [];
+  private deploys: Deployable[] = [];
   private bolts: Bolt[] = [];
   private trains: Train[] = [];
   mode = 'endless';
@@ -503,14 +530,24 @@ export class Game {
     this.stats.crit += 0.02 * t('crit');
     this.stats.cash += 0.08 * t('greed');
     this.perkCounts.clear();
+    // Equipped gear from the base screen.
+    const g = (this.gear = meta.gearBonus());
+    this.stats.maxHp += g.hp;
+    this.stats.damage += g.dmg;
+    this.stats.speed += g.speed;
+    this.stats.crit += g.crit;
+    this.stats.cash += g.cash;
+    this.loot = [];
+    this.kit = [];
+    this.deploys = [];
     const loadout = meta.data.loadout.slice(0, meta.slots());
     this.weapons = loadout.map((id) => this.makeWeapon(WEAPONS.find((w) => w.id === id) ?? WEAPONS[0]));
     for (const w of this.weapons) w.ammo = this.weaponMag(w);
     this.wi = 0;
     this.cash = 75 * t('cash');
-    this.armor = 0.03 * t('armor');
+    this.armor = 0.03 * t('armor') + g.dr;
     this.wave = 0;
-    this.grenadesMax = 2 + t('nades');
+    this.grenadesMax = 2 + t('nades') + g.nades;
     this.grenadeCount = this.grenadesMax;
     this.reviveLeft = this.mode === 'hardcore' ? 0 : t('revive');
     if (this.has('glass')) {
@@ -675,15 +712,21 @@ export class Game {
     const heal = 30 + this.wave * 6;
     const missing = this.stats.maxHp - this.p.hp;
     if (this.mode !== 'hardcore') items.push({ id: 'heal', label: '🩹 Medkit', sub: `Heal to full (${Math.ceil(this.p.hp)}/${this.stats.maxHp})`, price: heal, enabled: missing > 0.5 && this.cash >= heal });
-    const armorLvl = Math.round((this.armor - 0.03 * meta.train('armor')) / 0.08);
+    const armorLvl = Math.round((this.armor - 0.03 * meta.train('armor') - this.gear.dr) / 0.08);
     if (armorLvl < 5) {
       const price = 150 * (armorLvl + 1);
       items.push({ id: 'armor', label: '🛡️ Armor plate', sub: `Take ${Math.round((this.armor + 0.08) * 100)}% less damage`, price, enabled: this.cash >= price });
     }
-    if (this.grenadesMax < 6 + meta.train('nades')) {
-      const price = 120 * (this.grenadesMax - 1 - meta.train('nades'));
+    if (this.grenadesMax < 6 + meta.train('nades') + this.gear.nades) {
+      const price = 120 * (this.grenadesMax - 1 - meta.train('nades') - this.gear.nades);
       items.push({ id: 'nade', label: '💣 Grenade belt', sub: `Carry ${this.grenadesMax + 1} grenades per wave`, price, enabled: this.cash >= price });
     }
+    if (this.kit.length < 4)
+      for (const [k, d] of Object.entries(DEPLOYS) as [DeployKind, (typeof DEPLOYS)[DeployKind]][]) {
+        const price = d.price(this.wave);
+        const have = this.kit.filter((x) => x === k).length;
+        items.push({ id: `kit:${k}`, label: `${d.icon} ${d.name}`, sub: `${d.desc}${have ? ` · ${have} in kit` : ''}`, price, enabled: this.cash >= price });
+      }
     for (const def of WEAPONS) {
       const owned = this.weapons.find((w) => w.def.id === def.id);
       if (!owned) {
@@ -705,6 +748,7 @@ export class Game {
     if (id === 'heal') this.p.hp = this.stats.maxHp;
     else if (id === 'armor') this.armor = Math.round((this.armor + 0.08) * 100) / 100;
     else if (id === 'nade') this.grenadesMax++;
+    else if (id.startsWith('kit:')) this.kit.push(id.slice(4) as DeployKind);
     else if (id.startsWith('buy:')) {
       const def = WEAPONS.find((w) => w.id === id.slice(4))!;
       const w = this.makeWeapon(def);
@@ -756,6 +800,7 @@ export class Game {
     for (let i = 0; i < 9; i++) if (inp.consume(String(i + 1)) && this.weapons[i]) this.setWeapon(i);
     if (inp.consume('r') || inp.consume('reload')) this.startReload();
     if (inp.consume('g') || inp.consume('e') || inp.consume('nade')) this.throwGrenade();
+    if (inp.consume('f') || inp.consume('deploy')) this.deploy();
 
     for (const k of Object.keys(this.active) as PowerKind[]) if (this.active[k] > 0) this.active[k] -= dt;
     if (this.comboT > 0) {
@@ -772,6 +817,7 @@ export class Game {
     this.updateTrains(dt);
     this.updateOrbitals(dt);
     this.updatePickups(dt);
+    this.updateDeploys(dt);
     this.updateEffects(dt, rawDt);
 
     this.zombies = this.zombies.filter((z) => !z.dead);
@@ -781,14 +827,17 @@ export class Game {
       this.clearT = 1.6;
       this.showBanner('WAVE CLEARED', '', '#5dff7a');
       // Vacuum up any cash left on the floor.
-      for (const pk of this.pickups) if (pk.kind === 'cash') pk.pulled = true;
+      for (const pk of this.pickups) if (pk.kind !== 'health') pk.pulled = true;
     }
     if (this.clearT >= 0 && this.state === 'playing') {
       this.clearT -= rawDt;
       if (this.clearT < 0) {
         if (!this.hitThisWave) this.report.flawlessWaves++;
         this.gainBrains(1 + Math.floor(this.wave / 3));
-        for (const pk of this.pickups) if (pk.kind === 'cash') this.gainCash(pk.value);
+        for (const pk of this.pickups) {
+          if (pk.kind === 'cash') this.gainCash(pk.value);
+          else if (pk.kind === 'crate') this.openCrate(pk);
+        }
         this.pickups = [];
         this.bullets = [];
         this.spits = [];
@@ -860,6 +909,7 @@ export class Game {
       btns.push({ id: 'nade', x: this.w - 132, y: cy + 22, r: 27, label: 'NADE' });
       btns.push({ id: 'swap', x: this.w - 54, y: cy - 74, r: 25, label: 'SWAP' });
       btns.push({ id: 'reload', x: this.w - 124, y: cy - 58, r: 23, label: 'R' });
+      if (this.kit.length) btns.push({ id: 'deploy', x: this.w - 200, y: cy + 34, r: 24, label: DEPLOYS[this.kit[0]].icon });
     }
     if (this.state === 'menu') btns.length = 0;
     inp.buttons = btns;
@@ -946,6 +996,7 @@ export class Game {
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     this.collideWalls(p, PLAYER_R);
+    for (const d of this.deploys) if (d.kind === 'barricade') this.pushOut(p, PLAYER_R, d);
     for (const b of this.barrels) {
       if (b.dead) continue;
       const dx = p.x - b.x;
@@ -1461,9 +1512,19 @@ export class Game {
           this.rings.push({ x: z.x, y: z.y, r: 0, max: 90, life: 0.4, color: 'rgba(200,180,160,' });
         }
       }
+      if (z.attackCd > 0) z.attackCd -= dt;
+      for (const dp of this.deploys) {
+        if (dp.kind === 'mine') continue;
+        const touching = Math.hypot(z.x - dp.x, z.y - dp.y) < z.r + dp.r + 3;
+        if (dp.kind === 'barricade') this.pushOut(z, z.r, dp);
+        if (touching && z.attackCd <= 0 && kind !== 'egg' && kind !== 'bloater') {
+          z.attackCd = 0.8;
+          dp.hp -= isBoss(z) ? z.dmg * 3 : z.dmg;
+          if (Math.random() < 0.5) this.spawnParticle(dp.x, dp.y, rand(-120, 120), rand(-120, 120), 0.4, rand(3, 5), dp.kind === 'barricade' ? '#a8885a' : '#8a9298', 4, false, false);
+        }
+      }
       z.phase += Math.hypot(z.x - ox, z.y - oy) * 0.08;
       if (z.slow > 0) z.slow -= dt;
-      if (z.attackCd > 0) z.attackCd -= dt;
       if (z.bladeCd > 0) z.bladeCd -= dt;
 
       if (d < z.r + PLAYER_R + 3 && z.attackCd <= 0) {
@@ -2117,6 +2178,8 @@ export class Game {
       const kinds: PowerKind[] = boss ? ['rage'] : ['nuke', 'rage', 'freeze', 'ammo', 'cash'];
       this.powers.push({ x: z.x, y: z.y, kind: kinds[Math.floor(Math.random() * kinds.length)], life: 14 });
     }
+    // Loot crates: always from bosses, rarely from elites.
+    if (boss || (z.elite && Math.random() < 0.03)) this.pickups.push({ x: z.x, y: z.y, vx: rand(-60, 60), vy: rand(-60, 60), kind: 'crate', value: boss ? 1 : 0, pulled: false });
     if (this.stats.lifesteal > 0) this.p.hp = Math.min(this.stats.maxHp, this.p.hp + this.stats.lifesteal);
     this.sfx.play('death', boss ? 2 : 1);
     this.addShake(boss ? 1 : big ? 0.3 : 0.06);
@@ -2233,7 +2296,7 @@ export class Game {
       }
       return;
     }
-    this.active[kind] = def.duration;
+    this.active[kind] = def.duration * (1 + this.gear.power);
   }
 
   private updateOrbitals(dt: number) {
@@ -2302,6 +2365,8 @@ export class Game {
         if (pk.kind === 'cash') {
           this.gainCash(pk.value);
           this.sfx.play('coin');
+        } else if (pk.kind === 'crate') {
+          this.openCrate(pk);
         } else {
           this.p.hp = Math.min(this.stats.maxHp, this.p.hp + pk.value);
           this.addText(p.x, p.y - 26, `+${pk.value}`, '#5dff7a', 15);
@@ -2320,6 +2385,173 @@ export class Game {
       }
       return pw.life > 0;
     });
+  }
+
+  private openCrate(pk: Pickup) {
+    const it = rollGear(this.wave, pk.value);
+    const def = gearDef(it.id)!;
+    const scrapped = meta.addGear(it);
+    this.loot.push(it);
+    const color = RARITY_COLOR[it.rarity];
+    this.showShout(`${it.rarity.toUpperCase()} LOOT!`, color);
+    this.toast(scrapped ? `📦 ${def.icon} ${def.name} (stash full: +${scrapped} 🧠)` : `📦 ${def.icon} ${it.rarity} ${def.name}: ${def.desc(gearValue(it))}`);
+    this.addText(pk.x, pk.y - 20, `${def.icon} ${it.rarity.toUpperCase()}`, color, 18);
+    this.addLight(pk.x, pk.y, 220, 0.5, color);
+    this.rings.push({ x: pk.x, y: pk.y, r: 0, max: 90, life: 0.5, color: 'rgba(255,210,63,' });
+    this.sfx.play(it.rarity === 'legendary' || it.rarity === 'epic' ? 'levelup' : 'power');
+  }
+
+  /** Puts down the next deployable from the kit, just in front of you. */
+  private deploy() {
+    const kind = this.kit.shift();
+    if (!kind) return;
+    const p = this.p;
+    const at = (dist: number) => {
+      const o = { x: p.x + Math.cos(p.angle) * dist, y: p.y + Math.sin(p.angle) * dist };
+      this.collideWalls(o, 24);
+      return o;
+    };
+    const base = { hp: 1, maxHp: 1, t: 0, life: Infinity, angle: p.angle };
+    if (kind === 'mine') {
+      // Three mines in a little arc.
+      for (let i = -1; i <= 1; i++) {
+        const a = p.angle + i * 0.6;
+        const o = { x: p.x + Math.cos(a) * 60, y: p.y + Math.sin(a) * 60 };
+        this.collideWalls(o, 12);
+        this.deploys.push({ ...base, kind, ...o, t: 0.8, r: 10 });
+      }
+    } else if (kind === 'turret') this.deploys.push({ ...base, kind, ...at(44), hp: 260, maxHp: 260, life: 60, r: 16 });
+    else if (kind === 'barricade') this.deploys.push({ ...base, kind, ...at(56), hp: 700 + this.wave * 25, maxHp: 700 + this.wave * 25, r: 30 });
+    else this.deploys.push({ ...base, kind, ...at(40), hp: 200, maxHp: 200, life: 40, r: 16 });
+    this.sfx.play('clank');
+    this.addShake(0.1);
+  }
+
+  private pushOut(o: { x: number; y: number }, r: number, d: Deployable) {
+    const dx = o.x - d.x;
+    const dy = o.y - d.y;
+    const dist = Math.hypot(dx, dy) || 0.01;
+    const min = r + d.r;
+    if (dist >= min) return;
+    o.x = d.x + (dx / dist) * min;
+    o.y = d.y + (dy / dist) * min;
+  }
+
+  private updateDeploys(dt: number) {
+    const p = this.p;
+    for (const d of this.deploys) {
+      if (d.life !== Infinity) d.life -= dt;
+      d.t -= dt;
+      if (d.kind === 'turret' && d.t <= 0) {
+        const t = this.nearestZombie(d.x, d.y, 380);
+        if (t) {
+          d.t = 0.16;
+          const want = Math.atan2(t.y - d.y, t.x - d.x);
+          d.angle = want;
+          const a = want + rand(-0.05, 0.05);
+          const mx = d.x + Math.cos(a) * 22;
+          const my = d.y + Math.sin(a) * 22;
+          this.bullets.push({ kind: 'bullet', x: mx, y: my, vx: Math.cos(a) * 1000, vy: Math.sin(a) * 1000, dmg: 15 * this.stats.damage * (1 + 0.05 * this.wave), life: 0.5, max: 0.5, pierce: 0, ricochet: 0, hits: [], color: '#ffe08a', width: 2.5, canExplode: false });
+          this.addLight(mx, my, 90, 0.05, '#ffd080');
+          this.sfx.play('smg', 0.35);
+        }
+      } else if (d.kind === 'mine' && d.t <= 0) {
+        if (this.zombies.some((z) => !z.dead && z.def.kind !== 'egg' && Math.hypot(z.x - d.x, z.y - d.y) < z.r + 18)) {
+          d.hp = 0;
+          this.explode(d.x, d.y, 220 * this.stats.damage * (1 + 0.04 * this.wave), 120, 0);
+        }
+      } else if (d.kind === 'medic') {
+        if (Math.hypot(p.x - d.x, p.y - d.y) < 90 && p.hp < this.stats.maxHp) {
+          p.hp = Math.min(this.stats.maxHp, p.hp + 9 * dt);
+          if (d.t <= 0) {
+            d.t = 0.5;
+            this.addText(p.x + rand(-10, 10), p.y - 24, '+', '#5dff7a', 16);
+          }
+        }
+        if (Math.random() < dt * 2) this.addLight(d.x, d.y, 160, 0.5, '#5dff7a');
+      }
+    }
+    const gone = this.deploys.filter((d) => d.hp <= 0 || d.life <= 0);
+    for (const d of gone) {
+      if (d.kind === 'mine') continue;
+      for (let i = 0; i < 12; i++) this.spawnParticle(d.x, d.y, rand(-200, 200), rand(-200, 200), rand(0.3, 0.7), rand(3, 7), d.kind === 'barricade' ? '#a8885a' : '#6a7078', 4, true, false);
+      if (d.hp <= 0) this.sfx.play('plate');
+    }
+    if (gone.length) this.deploys = this.deploys.filter((d) => !gone.includes(d));
+  }
+
+  private drawDeploys() {
+    const ctx = this.ctx;
+    for (const d of this.deploys) {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      if (d.kind === 'mine') {
+        ctx.fillStyle = '#2a2e26';
+        ctx.beginPath();
+        ctx.arc(0, 0, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#555c4c';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = d.t > 0 ? '#666' : Math.sin(this.clock * 8) > 0 ? '#ff3020' : '#701010';
+        ctx.beginPath();
+        ctx.arc(0, 0, 3, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (d.kind === 'barricade') {
+        // A curved row of sandbags facing where you put it down.
+        ctx.rotate(d.angle);
+        for (let row = 0; row < 2; row++)
+          for (let i = -2; i <= 2; i++) {
+            const a = i * 0.32;
+            const rr = 8 + row * 9;
+            ctx.save();
+            ctx.translate(Math.cos(a) * rr - 6, Math.sin(a) * (rr + 22));
+            ctx.rotate(a);
+            ctx.fillStyle = row ? '#b8975e' : '#9a7c4a';
+            ctx.fillRect(-7, -9, 14, 18);
+            ctx.strokeStyle = '#5e4a2a';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(-7, -9, 14, 18);
+            ctx.restore();
+          }
+      } else if (d.kind === 'turret') {
+        ctx.fillStyle = '#3a4038';
+        ctx.fillRect(-14, -14, 28, 28);
+        ctx.strokeStyle = '#1c201a';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-14, -14, 28, 28);
+        ctx.rotate(d.angle);
+        ctx.fillStyle = '#8a9298';
+        ctx.fillRect(0, -3.5, 24, 7);
+        ctx.fillStyle = '#c9d1d8';
+        ctx.beginPath();
+        ctx.arc(0, 0, 9, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const pulse = 1 + Math.sin(this.clock * 3) * 0.06;
+        ctx.strokeStyle = 'rgba(93,255,122,0.35)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.arc(0, 0, 90 * pulse, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#eee';
+        ctx.fillRect(-13, -11, 26, 22);
+        ctx.fillStyle = '#d0302a';
+        ctx.fillRect(-3.5, -8, 7, 16);
+        ctx.fillRect(-8, -3.5, 16, 7);
+      }
+      ctx.restore();
+      // Health or time left
+      const frac = d.kind === 'mine' ? 1 : d.life !== Infinity ? Math.min(d.hp / d.maxHp, d.life / (d.kind === 'turret' ? 60 : 40)) : d.hp / d.maxHp;
+      if (d.kind !== 'mine' && frac < 0.999) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(d.x - 16, d.y - d.r - 12, 32, 4);
+        ctx.fillStyle = frac > 0.4 ? '#5dff7a' : '#ff5a4a';
+        ctx.fillRect(d.x - 16, d.y - d.r - 12, 32 * frac, 4);
+      }
+    }
   }
 
   private gainCash(v: number) {
@@ -2484,6 +2716,7 @@ export class Game {
     this.drawPuddles();
     this.drawPickups();
     this.drawBarrels();
+    this.drawDeploys();
     for (const z of this.zombies) this.drawZombieShadow(z);
     for (const z of this.zombies) this.drawZombie(z);
     if (this.state !== 'over' && playing) this.drawPlayer();
@@ -3104,6 +3337,22 @@ export class Game {
         ctx.fill();
         ctx.fillStyle = '#fff3b0';
         ctx.fillRect(pk.x - 2, pk.y - 3, 2, 4);
+      } else if (pk.kind === 'crate') {
+        const bob = Math.sin(this.clock * 4) * 2;
+        ctx.fillStyle = 'rgba(255,210,63,0.25)';
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 22 + Math.sin(this.clock * 6) * 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#8a5a20';
+        ctx.fillRect(pk.x - 13, pk.y - 11 + bob, 26, 22);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(pk.x - 13, pk.y - 11 + bob, 26, 22);
+        ctx.beginPath();
+        ctx.moveTo(pk.x - 13, pk.y - 3 + bob);
+        ctx.lineTo(pk.x + 13, pk.y - 3 + bob);
+        ctx.stroke();
+        if (Math.random() < 0.1) this.addLight(pk.x, pk.y, 120, 0.3, '#ffd23f');
       } else {
         ctx.fillStyle = '#eee';
         ctx.fillRect(pk.x - 10, pk.y - 8, 20, 16);
@@ -3615,6 +3864,10 @@ export class Game {
       if (b.id === 'nade') {
         ctx.font = '800 10px system-ui, sans-serif';
         ctx.fillText(String(this.grenadeCount), b.x, b.y + 13);
+      }
+      if (b.id === 'deploy' && this.kit.length > 1) {
+        ctx.font = '800 10px system-ui, sans-serif';
+        ctx.fillText(`x${this.kit.length}`, b.x + b.r * 0.7, b.y - b.r * 0.7);
       }
     }
 

@@ -926,3 +926,26 @@ button.buy:disabled {
 .share video.hidden {
   display: none;
 }
+
+.gear-slots {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.gear-slot {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--edge);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.gear-slot .name {
+  font-weight: 800;
+  font-size: 15px;
+  margin: 2px 0;
+}
+
+.dim {
+  opacity: 0.6;
+}

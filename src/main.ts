@@ -8,6 +8,8 @@ import { WEAPONS } from './data';
 import { challengeCode, challengeLink, makeShareCard, parseChallenge, SaveOutcome, shareCard, shareFile } from './share';
 import { BadgeDef, BADGES } from './achievements';
 import { Clip, ClipRecorder } from './clips';
+import { gearDef, gearValue, RARITIES, RARITY_COLOR, SCRAP_VALUE } from './gear';
+import { CRATE_COST, GEAR_MAX } from './meta';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -136,6 +138,10 @@ const esc = (t: string) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt
 
 function rewardsHtml(r: RunResult, badges: BadgeDef[]) {
   const lines = [`<div class="gain"><span>+${r.xpGained} XP</span><span class="pink">+${r.brainsGained + badges.reduce((a, b) => a + b.reward, 0)} 🧠</span></div>`];
+  for (const it of game.loot) {
+    const g = gearDef(it.id)!;
+    lines.push(`<div class="badge-got" style="color:${RARITY_COLOR[it.rarity]}">📦 Loot: ${g.icon} <b>${it.rarity} ${esc(g.name)}</b></div>`);
+  }
   for (const b of badges) lines.push(`<div class="badge-got">${b.icon} Badge: <b>${esc(b.name)}</b> <span class="pink">+${b.reward} 🧠</span></div>`);
   for (const lv of r.levelsGained) if (!r.rewards.some((x) => x.startsWith(`Level ${lv}:`))) lines.push(`<div class="lvup">LEVEL ${lv}!</div>`);
   for (const t of r.rewards) lines.push(`<div class="lvup">⬆ ${esc(t)}</div>`);
@@ -148,6 +154,7 @@ function rewardsHtml(r: RunResult, badges: BadgeDef[]) {
 // ------------------------------------------------------------------ base screen
 
 let tab = 'armory';
+let gearMsg = '';
 
 function refreshMenu() {
   const d = meta.data;
@@ -240,6 +247,52 @@ function renderBase() {
     const next = LEVEL_REWARDS.find((r) => r.level > d.level);
     p.innerHTML = `New missions every day. Progress counts across all your runs.<br>Level ${d.level}: ${d.xp} / ${xpToNext(d.level)} XP${next ? ` · next unlock at level ${next.level}: <b>${esc(next.text)}</b>` : ''}`;
     body.appendChild(p);
+  } else if (tab === 'gear') {
+    const slots = document.createElement('div');
+    slots.className = 'gear-slots';
+    for (const slot of ['armor', 'trinket'] as const) {
+      const it = d.gear.find((g) => g.uid === d.equipped[slot]);
+      const el = document.createElement('div');
+      el.className = 'gear-slot';
+      el.innerHTML = it
+        ? `<div class="sub">${slot.toUpperCase()}</div><div class="name" style="color:${RARITY_COLOR[it.rarity]}">${gearDef(it.id)!.icon} ${esc(gearDef(it.id)!.name)}</div><div class="sub">${esc(gearDef(it.id)!.desc(gearValue(it)))}</div>`
+        : `<div class="sub">${slot.toUpperCase()}</div><div class="name dim">Empty</div><div class="sub">Kill bosses for loot crates</div>`;
+      slots.appendChild(el);
+    }
+    const crate = document.createElement('div');
+    crate.className = 'gear-slot';
+    crate.innerHTML = `<div class="sub">SUPPLY CRATE</div><div class="name">📦 Random gear</div>`;
+    crate.appendChild(
+      btn('Open', CRATE_COST, () => {
+        const it = meta.buyCrate();
+        if (it) {
+          sfx.play(it.rarity === 'legendary' || it.rarity === 'epic' ? 'levelup' : 'power');
+          gearMsg = `You got: ${gearDef(it.id)!.icon} ${it.rarity} ${gearDef(it.id)!.name}`;
+        }
+      }),
+    );
+    slots.appendChild(crate);
+    body.appendChild(slots);
+    const p = document.createElement('p');
+    p.className = 'tag';
+    p.innerHTML = gearMsg ? `<b class="gold">${esc(gearMsg)}</b>` : `Stash ${d.gear.length}/${GEAR_MAX}. Tap Equip to wear it, Scrap to turn it into brains.`;
+    gearMsg = '';
+    body.appendChild(p);
+    const grid = document.createElement('div');
+    grid.className = 'meta-grid';
+    const sorted = [...d.gear].sort((a, b) => RARITIES.indexOf(b.rarity) - RARITIES.indexOf(a.rarity));
+    for (const it of sorted) {
+      const g = gearDef(it.id)!;
+      const on = d.equipped[g.slot] === it.uid;
+      const card = document.createElement('div');
+      card.className = `meta-card${on ? ' equipped' : ''}`;
+      card.style.borderColor = RARITY_COLOR[it.rarity];
+      card.innerHTML = `<div class="name" style="color:${RARITY_COLOR[it.rarity]}">${g.icon} ${esc(g.name)}</div><div class="sub">${it.rarity} ${g.slot}</div><div class="sub">${esc(g.desc(gearValue(it)))}</div>`;
+      card.appendChild(btn(on ? 'Equipped' : 'Equip', null, () => meta.equipGear(it.uid), on ? 'on' : ''));
+      if (!on) card.appendChild(btn(`Scrap +${SCRAP_VALUE[it.rarity]} 🧠`, null, () => meta.scrapGear(it.uid)));
+      grid.appendChild(card);
+    }
+    body.appendChild(grid);
   } else if (tab === 'badges') {
     const have = new Set(d.badges);
     const p = document.createElement('p');

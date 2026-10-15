@@ -8,6 +8,8 @@ Between runs you keep **brains** 🧠 and XP: unlock and master guns, train perm
 
 Three maps (Parking Lot, Gas Station with exploding fuel pumps, Subway Yard with trains) and four modes: Endless, a Daily Challenge (same map and two mutators for everyone each day), Boss Rush and Hardcore.
 
+Gear and loot: bosses (and rare elites) drop loot crates with an armor piece or trinket in four rarities; equip them on the Gear tab, scrap spares for brains, or buy supply crates. The in-run shop also sells deployables (auto-turret, land mines, sandbag wall, healing station) that you put down with the deploy button or F.
+
 Built for sharing: 28 badges with silly names, multi-kill slow-mo and a boss kill cam, and the game records itself so a boss kill, a massacre or your last stand can be saved as a video clip from the game-over screen. "Challenge a friend" makes a code (or a `#c=` link when hosted) that loads the same map, mode and mutators with your wave as the target.
 
 ## Controls
@@ -36,5 +38,6 @@ Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (
 - `src/meta.ts` – save data, brains, XP and levels, training, gun mastery, daily missions
 - `src/share.ts` – the game-over share card, file saving and challenge codes
 - `src/achievements.ts` – badges
+- `src/gear.ts` – armor and trinket loot with rarities
 - `src/clips.ts` – rolling replay recorder for video clips
 - `src/main.ts` – menus, base screen, perk picker, shop and the frame loop

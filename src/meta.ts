@@ -4,6 +4,10 @@
 import { WEAPONS, ZombieKind } from './data';
 import { MAPS } from './maps';
 import { BADGES, BadgeDef } from './achievements';
+import { emptyBonus, GearBonus, gearDef, GearItem, gearValue, RARITIES, rollGear, SCRAP_VALUE } from './gear';
+
+export const GEAR_MAX = 24;
+export const CRATE_COST = 150;
 
 const SAVE_KEY = 'horde-save';
 const SAVE_VERSION = 1;
@@ -33,6 +37,8 @@ export interface SaveData {
   bests: Record<string, number>; // best wave per mode
   badges: string[];
   records: RunRecord[]; // your top runs, best first
+  gear: GearItem[];
+  equipped: { armor: string; trinket: string }; // gear uids ('' = empty)
 }
 
 export interface RunRecord {
@@ -257,6 +263,8 @@ function fresh(): SaveData {
     bests: {},
     badges: [],
     records: [],
+    gear: [],
+    equipped: { armor: '', trinket: '' },
   };
 }
 
@@ -290,6 +298,17 @@ function sanitize(raw: unknown): SaveData {
       .filter((x) => x && typeof x === 'object')
       .map((x) => ({ wave: num(x.wave, 0), kills: num(x.kills, 0), mode: String(x.mode ?? 'endless'), map: String(x.map ?? 'lot'), day: String(x.day ?? '') }))
       .slice(0, 10);
+  if (Array.isArray(r.gear))
+    d.gear = r.gear
+      .filter((g) => g && typeof g.uid === 'string' && gearDef(g.id) && RARITIES.includes(g.rarity))
+      .map((g) => ({ uid: g.uid, id: g.id, rarity: g.rarity }))
+      .slice(0, GEAR_MAX);
+  if (r.equipped && typeof r.equipped === 'object')
+    for (const slot of ['armor', 'trinket'] as const) {
+      const uid = r.equipped[slot];
+      const it = d.gear.find((g) => g.uid === uid);
+      if (it && gearDef(it.id)!.slot === slot) d.equipped[slot] = uid;
+    }
   return d;
 }
 
@@ -405,6 +424,56 @@ class Meta {
     this.save();
   }
 
+  /** Combined bonus of the equipped armor and trinket. */
+  gearBonus(): GearBonus {
+    const b = emptyBonus();
+    for (const uid of Object.values(this.data.equipped)) {
+      const it = this.data.gear.find((g) => g.uid === uid);
+      if (it) b[gearDef(it.id)!.stat] += gearValue(it);
+    }
+    return b;
+  }
+
+  /** Adds loot to the stash; when it's full the item is scrapped for brains. Returns brains given instead. */
+  addGear(it: GearItem): number {
+    if (this.data.gear.length >= GEAR_MAX) {
+      this.data.brains += SCRAP_VALUE[it.rarity];
+      this.save();
+      return SCRAP_VALUE[it.rarity];
+    }
+    this.data.gear.push(it);
+    const slot = gearDef(it.id)!.slot;
+    if (!this.data.equipped[slot]) this.data.equipped[slot] = it.uid;
+    this.save();
+    return 0;
+  }
+
+  equipGear(uid: string) {
+    const it = this.data.gear.find((g) => g.uid === uid);
+    if (!it) return;
+    const slot = gearDef(it.id)!.slot;
+    this.data.equipped[slot] = this.data.equipped[slot] === uid ? '' : uid;
+    this.save();
+  }
+
+  scrapGear(uid: string) {
+    const i = this.data.gear.findIndex((g) => g.uid === uid);
+    if (i < 0) return;
+    const it = this.data.gear[i];
+    this.data.gear.splice(i, 1);
+    for (const slot of ['armor', 'trinket'] as const) if (this.data.equipped[slot] === uid) this.data.equipped[slot] = '';
+    this.data.brains += SCRAP_VALUE[it.rarity];
+    this.save();
+  }
+
+  /** Buys a supply crate with brains: one random piece of gear. */
+  buyCrate(): GearItem | null {
+    if (this.data.gear.length >= GEAR_MAX || !this.spend(CRATE_COST)) return null;
+    const it = rollGear(Math.min(30, this.data.best), 0.3);
+    this.addGear(it);
+    return it;
+  }
+
   /** Unlocks any badges this run has earned so far; pays their brains right away. */
   unlockBadges(r: RunReport, mode: string, challengeBeaten = false): BadgeDef[] {
     const d = this.data;
@@ -424,7 +493,7 @@ class Meta {
     this.refreshMissions();
     const mdef = MODES.find((m) => m.id === mode) ?? MODES[0];
     const challengeBeaten = !!challenge && r.wave > challenge.wave;
-    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains), levelsGained: [], rewards: [], missionsDone: [], newBest: false, badges: [], challengeBeaten };
+    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains * (1 + this.gearBonus().brains)), levelsGained: [], rewards: [], missionsDone: [], newBest: false, badges: [], challengeBeaten };
     if (challengeBeaten) {
       res.brainsGained += 40;
       res.rewards.push(`Challenge beaten: +40 🧠`);
