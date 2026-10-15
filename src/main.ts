@@ -10,6 +10,7 @@ import { BadgeDef, BADGES } from './achievements';
 import { Clip, ClipRecorder } from './clips';
 import { gearDef, gearValue, RARITIES, RARITY_COLOR, SCRAP_VALUE } from './gear';
 import { CRATE_COST, GEAR_MAX } from './meta';
+import { boardFor, cleanName, leaderboardsOn, postScore, Score, topScores } from './leaderboard';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -130,6 +131,7 @@ function showGameOver(s: RunSummary) {
   }
   showing = null;
   renderClips();
+  renderPostScore(s);
   refreshMenu();
   show('over');
 }
@@ -247,6 +249,8 @@ function renderBase() {
     const next = LEVEL_REWARDS.find((r) => r.level > d.level);
     p.innerHTML = `New missions every day. Progress counts across all your runs.<br>Level ${d.level}: ${d.xp} / ${xpToNext(d.level)} XP${next ? ` · next unlock at level ${next.level}: <b>${esc(next.text)}</b>` : ''}`;
     body.appendChild(p);
+  } else if (tab === 'ranks') {
+    void renderRanks(body);
   } else if (tab === 'gear') {
     const slots = document.createElement('div');
     slots.className = 'gear-slots';
@@ -380,6 +384,70 @@ function saveMessage(r: SaveOutcome, video: boolean) {
   // Some embeds block both the share sheet and downloads, so point at what still works.
   return video ? "This browser didn't save the clip. Try the game in Chrome on your phone." : 'If nothing downloaded, long-press the image to save it, then post it anywhere.';
 }
+
+// ------------------------------------------------------------------ leaderboards
+
+function scoreRows(rows: Score[], me = '') {
+  if (!rows.length) return '<li class="sub">No scores yet. Be the first.</li>';
+  return rows
+    .map((r) => `<li${r.name.toLowerCase() === me.toLowerCase() ? ' class="me"' : ''}><b>${esc(r.name)}</b> <span class="sub">wave ${r.wave} · ${r.kills} kills · ${esc(mapById(r.map).name)}</span></li>`)
+    .join('');
+}
+
+function renderPostScore(s: RunSummary) {
+  const box = $('lb-box');
+  const board = game.challenge ? '' : boardFor(game.mode, today());
+  if (!leaderboardsOn() || !board || s.wave < 1) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  const label = board === 'endless' ? 'the Endless leaderboard' : "today's Daily leaderboard";
+  box.innerHTML = `<div class="lb-row"><input id="lb-name" maxlength="16" placeholder="Your name" autocomplete="off" /><button id="lb-post" class="buy">🏆 Post wave ${s.wave}</button></div><p id="lb-msg" class="tiny"></p><ol id="lb-list" class="records"></ol>`;
+  const nameEl = $<HTMLInputElement>('lb-name');
+  nameEl.value = meta.data.player;
+  $('lb-post').addEventListener('click', async () => {
+    const name = cleanName(nameEl.value);
+    if (!name) {
+      $('lb-msg').textContent = 'Pick a name first.';
+      return;
+    }
+    meta.data.player = name;
+    meta.save();
+    const b = $<HTMLButtonElement>('lb-post');
+    b.disabled = true;
+    $('lb-msg').textContent = 'Posting…';
+    try {
+      await postScore(board, { name, wave: s.wave, kills: s.kills, map: game.map.id });
+      const rows = await topScores(board, 50);
+      const rank = rows.findIndex((r) => r.name.toLowerCase() === name.toLowerCase()) + 1;
+      $('lb-msg').textContent = rank ? `You're #${rank} on ${label}.` : `Posted to ${label}.`;
+      $('lb-list').innerHTML = scoreRows(rows.slice(0, 5), name);
+      box.querySelector('.lb-row')!.classList.add('hidden');
+    } catch {
+      b.disabled = false;
+      $('lb-msg').textContent = "Couldn't reach the leaderboard. Try again in a moment.";
+    }
+  });
+}
+
+async function renderRanks(body: HTMLElement) {
+  const day = today();
+  body.innerHTML = `<div class="ranks"><div><p class="tag"><b>♾️ Endless, all time</b></p><ol id="rk-endless" class="records"><li class="sub">Loading…</li></ol></div><div><p class="tag"><b>📅 Today's Daily</b></p><ol id="rk-daily" class="records"><li class="sub">Loading…</li></ol></div></div>`;
+  for (const [id, board] of [
+    ['rk-endless', 'endless'],
+    ['rk-daily', `daily-${day}`],
+  ]) {
+    try {
+      const rows = await topScores(board, 10);
+      if (tab === 'ranks') $(id).innerHTML = scoreRows(rows, meta.data.player);
+    } catch {
+      if (tab === 'ranks') $(id).innerHTML = '<li class="sub">Couldn\'t reach the leaderboard.</li>';
+    }
+  }
+}
+
+if (!leaderboardsOn()) for (const b of document.querySelectorAll<HTMLElement>('[data-tab="ranks"]')) b.classList.add('hidden');
 
 // ------------------------------------------------------------------ clips on the game-over screen
 

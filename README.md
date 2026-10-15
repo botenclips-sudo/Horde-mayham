@@ -28,6 +28,10 @@ npm run build:single # whole game in one HTML file in dist-single/
 
 Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (set Settings → Pages → Source to "GitHub Actions" once).
 
+## Leaderboards
+
+Endless and Daily Challenge runs can be posted to global leaderboards on Supabase. One-time setup: run `supabase/leaderboard.sql` in the Supabase SQL editor, then put the project's anon (public) key in `KEY` in `src/leaderboard.ts`. Leaderboards stay hidden while the key is empty.
+
 ## Code map
 
 - `src/game.ts` – game state, update loop, rendering and HUD
@@ -39,6 +43,7 @@ Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (
 - `src/share.ts` – the game-over share card, file saving and challenge codes
 - `src/achievements.ts` – badges
 - `src/gear.ts` – armor and trinket loot with rarities
+- `src/leaderboard.ts` – Supabase leaderboards (table and rules in `supabase/leaderboard.sql`)
 - `src/clips.ts` – rolling replay recorder for video clips
 - `src/main.ts` – menus, base screen, perk picker, shop and the frame loop
 

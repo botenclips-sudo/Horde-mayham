@@ -39,6 +39,7 @@ export interface SaveData {
   records: RunRecord[]; // your top runs, best first
   gear: GearItem[];
   equipped: { armor: string; trinket: string }; // gear uids ('' = empty)
+  player: string; // name on the leaderboards
 }
 
 export interface RunRecord {
@@ -265,6 +266,7 @@ function fresh(): SaveData {
     records: [],
     gear: [],
     equipped: { armor: '', trinket: '' },
+    player: '',
   };
 }
 
@@ -298,6 +300,7 @@ function sanitize(raw: unknown): SaveData {
       .filter((x) => x && typeof x === 'object')
       .map((x) => ({ wave: num(x.wave, 0), kills: num(x.kills, 0), mode: String(x.mode ?? 'endless'), map: String(x.map ?? 'lot'), day: String(x.day ?? '') }))
       .slice(0, 10);
+  if (typeof r.player === 'string') d.player = r.player.slice(0, 16);
   if (Array.isArray(r.gear))
     d.gear = r.gear
       .filter((g) => g && typeof g.uid === 'string' && gearDef(g.id) && RARITIES.includes(g.rarity))

@@ -31,7 +31,7 @@
           <button class="base-btn" data-tab="missions">📋 Missions<span id="m-missions" class="dot hidden"></span></button>
           <button class="base-btn" data-tab="gear">🎒 Gear</button>
         </div>
-        <p class="best">Best: <b id="best">wave 0</b> · <button class="link base-btn" data-tab="badges">🏅 Badges</button> · <button id="sound" class="link">🔊 Sound on</button><span id="clips-wrap"> · <button id="clips-toggle" class="link">🎬 Clips on</button></span> · <button class="link base-btn" data-tab="save">💾 Save</button></p>
+        <p class="best">Best: <b id="best">wave 0</b> · <button class="link base-btn" data-tab="badges">🏅 Badges</button> · <span data-tab="ranks"><button class="link base-btn" data-tab="ranks">🏆 Ranks</button> · </span><button id="sound" class="link">🔊 Sound on</button><span id="clips-wrap"> · <button id="clips-toggle" class="link">🎬 Clips on</button></span> · <button class="link base-btn" data-tab="save">💾 Save</button></p>
         <div class="help">
           <p><b>Phone:</b> left thumb moves, right thumb aims and fires. Buttons for dash, grenade, swap, reload and anything you deploy.</p>
           <p><b>PC:</b> WASD move, mouse aim and fire, Space dash, G grenade, F deploy, Q or 1-9 swap, R reload, M mute, P pause.</p>
@@ -62,6 +62,7 @@
             <button data-tab="missions">Missions</button>
             <button data-tab="gear">Gear</button>
             <button data-tab="badges">Badges</button>
+            <button data-tab="ranks">Ranks</button>
             <button data-tab="save">Save</button>
           </div>
           <div class="brains big-brains">🧠 <b id="b-brains">0</b></div>
@@ -104,6 +105,7 @@
           <div>
             <p id="over-stats" class="stats"></p>
             <div id="over-rewards" class="rewards"></div>
+            <div id="lb-box" class="lb-box hidden"></div>
           </div>
           <div class="share">
             <img id="share-img" alt="Your run as a share card" />

@@ -949,3 +949,48 @@ button.buy:disabled {
 .dim {
   opacity: 0.6;
 }
+
+.lb-box {
+  margin-top: 10px;
+}
+
+.lb-row {
+  display: flex;
+  gap: 8px;
+}
+
+.lb-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(0, 0, 0, 0.4);
+  color: inherit;
+  font: 600 14px system-ui, sans-serif;
+}
+
+.lb-row button.buy {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.records li.me b {
+  color: #ffd23f;
+}
+
+.ranks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 560px) {
+  .ranks {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lb-row.hidden {
+  display: none;
+}
