@@ -243,7 +243,8 @@ $('to-base').addEventListener('click', () => {
 $('share').addEventListener('click', async () => {
   if (!shareCanvas || !lastRun) return;
   const r = await shareCard(shareCanvas, lastRun.wave);
-  $('share-msg').textContent = r === 'downloaded' ? 'Saved the image. Post it anywhere!' : r === 'failed' ? 'Sharing is blocked here. Long-press the image to save it.' : '';
+  // Some embeds block both the share sheet and downloads, so always point at the long-press fallback.
+  $('share-msg').textContent = r === 'shared' ? '' : 'If nothing downloaded, long-press the image to save it, then post it anywhere.';
 });
 
 function goFullscreen() {
