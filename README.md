@@ -2,7 +2,9 @@
 
 A top-down zombie horde shooter for the phone browser, inspired by SAS: Zombie Assault 4.
 
-Survive escalating waves, pick a roguelite perk after every wave, spend your cash in the armory, and take down the boss every 10th wave.
+Survive escalating waves, pick a roguelite perk after every wave, spend your cash in the armory, and take down a boss every 10th wave (The Abomination, and Mother Brood on every 20th).
+
+Between runs you keep **brains** 🧠 and XP: unlock and master guns, train permanent stats, level up to unlock perks and a second loadout slot, and clear three daily missions. Progress is saved on the device and can be moved with a save code. Special zombies (shield brutes, leapers, screamers, necromancers) join from wave 5, and elite zombies with auras from wave 15. When you die you get a share card of your run.
 
 ## Controls
 
@@ -26,4 +28,6 @@ Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (
 - `src/data.ts` – weapons, zombie types and perks (tweak balance here)
 - `src/input.ts` – keyboard/mouse and twin touch joysticks
 - `src/audio.ts` – synthesized sound effects
-- `src/main.ts` – menus, perk picker, shop and the frame loop
+- `src/meta.ts` – save data, brains, XP and levels, training, gun mastery, daily missions
+- `src/share.ts` – the game-over share card
+- `src/main.ts` – menus, base screen, perk picker, shop and the frame loop

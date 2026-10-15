@@ -26,7 +26,12 @@ export type SfxKind =
   | 'nuke'
   | 'spit'
   | 'splat'
-  | 'heart';
+  | 'heart'
+  | 'pounce'
+  | 'scream'
+  | 'raise'
+  | 'clank'
+  | 'levelup';
 
 export type MusicMood = 'menu' | 'calm' | 'fight' | 'boss' | 'off';
 
@@ -212,7 +217,7 @@ export class Sfx {
     if (!ctx || !this.sfxBus || this.muted) return;
     // Rate-limit so 40 zombies dying at once doesn't clip.
     const now = ctx.currentTime;
-    const gap = kind === 'hit' ? 0.035 : kind === 'coin' ? 0.04 : kind === 'flamer' ? 0.07 : kind === 'death' ? 0.03 : 0.015;
+    const gap = kind === 'hit' ? 0.035 : kind === 'coin' ? 0.04 : kind === 'flamer' ? 0.07 : kind === 'death' ? 0.03 : kind === 'clank' ? 0.05 : 0.015;
     if (now - (this.last[kind] ?? -1) < gap) return;
     this.last[kind] = now;
     const bus = this.sfxBus;
@@ -314,6 +319,26 @@ export class Sfx {
       case 'boss':
         this.tone(now, 1.4, 60, 36, 0.55, 'sawtooth', bus);
         this.tone(now, 1.4, 63, 38, 0.45, 'sawtooth', bus);
+        break;
+      case 'pounce':
+        this.burst(now, 0.2, 1100, 0.3 * v, 'bandpass', bus);
+        this.tone(now, 0.25, 220, 520, 0.18 * v, 'sawtooth', bus);
+        break;
+      case 'scream':
+        this.tone(now, 0.7, 900, 1400, 0.16, 'sawtooth', bus);
+        this.tone(now, 0.7, 940, 1300, 0.12, 'square', bus);
+        this.burst(now, 0.6, 3000, 0.18, 'bandpass', bus);
+        break;
+      case 'raise':
+        this.tone(now, 0.9, 110, 220, 0.25, 'triangle', bus);
+        this.tone(now + 0.1, 0.8, 165, 330, 0.15, 'sine', bus);
+        break;
+      case 'clank':
+        this.tone(now, 0.08, 2400, 1900, 0.12 * v, 'square', bus);
+        this.burst(now, 0.04, 5000, 0.12 * v, 'highpass', bus);
+        break;
+      case 'levelup':
+        [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(now + i * 0.09, 0.22, f, f, 0.16, 'triangle', bus));
         break;
     }
   }

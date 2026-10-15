@@ -33,7 +33,7 @@ export const WEAPONS: WeaponDef[] = [
   { id: 'minigun', name: 'Minigun', kind: 'bullet', damage: 15, fireRate: 24, mag: 180, reload: 3.2, spread: 0.17, pellets: 1, speed: 1050, life: 0.55, price: 2800, upgradeBase: 700, shake: 0.07, color: '#ffe9a0', length: 38, spinup: 0.7, moveSlow: 0.6 },
 ];
 
-export type ZombieKind = 'walker' | 'runner' | 'tank' | 'bloater' | 'spitter' | 'boss';
+export type ZombieKind = 'walker' | 'runner' | 'tank' | 'bloater' | 'spitter' | 'screamer' | 'shield' | 'leaper' | 'necro' | 'egg' | 'boss' | 'brood';
 
 export interface ZombieDef {
   kind: ZombieKind;
@@ -54,7 +54,25 @@ export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
   tank: { kind: 'tank', hp: 320, speed: 52, damage: 24, radius: 27, cash: 25, body: '#4f6b5e', dark: '#2b3d34', eye: '#ff6a2b', mass: 4 },
   bloater: { kind: 'bloater', hp: 70, speed: 64, damage: 0, radius: 20, cash: 10, body: '#8fb83a', dark: '#4e6b17', eye: '#c8ff3a', mass: 1.6 },
   spitter: { kind: 'spitter', hp: 55, speed: 95, damage: 12, radius: 14, cash: 12, body: '#6a5a8f', dark: '#3a2f55', eye: '#d06bff', mass: 0.9 },
+  screamer: { kind: 'screamer', hp: 60, speed: 92, damage: 8, radius: 14, cash: 14, body: '#b07a8a', dark: '#5e3a46', eye: '#ffffff', mass: 0.9 },
+  shield: { kind: 'shield', hp: 230, speed: 66, damage: 18, radius: 22, cash: 22, body: '#5a6670', dark: '#2e353b', eye: '#ffb02b', mass: 3 },
+  leaper: { kind: 'leaper', hp: 50, speed: 112, damage: 16, radius: 13, cash: 12, body: '#8a6a3a', dark: '#4a3818', eye: '#ffe23a', mass: 0.8 },
+  necro: { kind: 'necro', hp: 95, speed: 70, damage: 10, radius: 16, cash: 24, body: '#3a3a52', dark: '#1c1c2c', eye: '#5dffb0', mass: 1.1 },
+  egg: { kind: 'egg', hp: 70, speed: 0, damage: 0, radius: 14, cash: 3, body: '#d8c89a', dark: '#8a7a4a', eye: '#d8c89a', mass: 50 },
   boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
+  brood: { kind: 'brood', hp: 2400, speed: 50, damage: 34, radius: 54, cash: 450, body: '#8f6a3a', dark: '#4a3218', eye: '#ffef3a', mass: 24 },
+};
+
+export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD' };
+
+export type EliteKind = 'fast' | 'armored' | 'splitting' | 'vampiric' | 'explosive';
+
+export const ELITES: Record<EliteKind, { name: string; color: string }> = {
+  fast: { name: 'FAST', color: '#ffe23a' },
+  armored: { name: 'ARMORED', color: '#b8c4d0' },
+  splitting: { name: 'SPLITTING', color: '#5dff7a' },
+  vampiric: { name: 'VAMPIRIC', color: '#ff2a4a' },
+  explosive: { name: 'EXPLOSIVE', color: '#ff8a2b' },
 };
 
 export type PowerKind = 'nuke' | 'rage' | 'freeze' | 'ammo' | 'cash';

@@ -19,14 +19,38 @@
     <div id="menu" class="overlay title">
       <div class="title-wrap">
         <h1>HORDE<span>MAYHEM</span></h1>
-        <p class="tag">The night is long. The horde is endless.</p>
+        <div class="profile">
+          <div class="lvl">LV <b id="m-level">1</b></div>
+          <div class="xpbar"><div id="m-xp"></div></div>
+          <div class="brains">🧠 <b id="m-brains">0</b></div>
+        </div>
         <button id="play" class="big">PLAY</button>
-        <p class="best">Best: <b id="best">wave 0</b></p>
-        <button id="sound" class="ghost slim">🔊 Sound on</button>
+        <div class="base-row">
+          <button class="base-btn" data-tab="armory">🔫 Armory</button>
+          <button class="base-btn" data-tab="training">💪 Training</button>
+          <button class="base-btn" data-tab="missions">📋 Missions<span id="m-missions" class="dot hidden"></span></button>
+        </div>
+        <p class="best">Best: <b id="best">wave 0</b> · <button id="sound" class="link">🔊 Sound on</button> · <button class="link base-btn" data-tab="save">💾 Save</button></p>
         <div class="help">
           <p><b>Phone:</b> left thumb moves, right thumb aims and fires. Buttons for dash, grenade, swap and reload.</p>
           <p><b>PC:</b> WASD move, mouse aim and fire, Space dash, G grenade, Q or 1-7 swap, R reload, M mute, P pause.</p>
         </div>
+      </div>
+    </div>
+
+    <div id="base" class="overlay hidden">
+      <div class="panel wide base">
+        <div class="base-head">
+          <div class="tabs">
+            <button data-tab="armory">Armory</button>
+            <button data-tab="training">Training</button>
+            <button data-tab="missions">Missions</button>
+            <button data-tab="save">Save</button>
+          </div>
+          <div class="brains big-brains">🧠 <b id="b-brains">0</b></div>
+        </div>
+        <div id="base-body"></div>
+        <button id="base-back" class="big">BACK</button>
       </div>
     </div>
 
@@ -57,10 +81,21 @@
     </div>
 
     <div id="over" class="overlay hidden">
-      <div class="panel">
+      <div class="panel wide over">
         <h2 class="red">You got eaten</h2>
-        <p id="over-stats" class="stats"></p>
+        <div class="over-cols">
+          <div>
+            <p id="over-stats" class="stats"></p>
+            <div id="over-rewards" class="rewards"></div>
+          </div>
+          <div class="share">
+            <img id="share-img" alt="Your run as a share card" />
+            <button id="share" class="share-btn">📤 Share your run</button>
+            <p id="share-msg" class="tiny"></p>
+          </div>
+        </div>
         <button id="again" class="big">PLAY AGAIN</button>
+        <button id="to-base" class="ghost">Upgrades</button>
       </div>
     </div>
 
