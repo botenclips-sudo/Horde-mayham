@@ -3,6 +3,7 @@
 
 import { WEAPONS, ZombieKind } from './data';
 import { MAPS } from './maps';
+import { BADGES, BadgeDef } from './achievements';
 
 const SAVE_KEY = 'horde-save';
 const SAVE_VERSION = 1;
@@ -30,6 +31,16 @@ export interface SaveData {
   mode: string;
   daily: { day: string; best: number; runs: number };
   bests: Record<string, number>; // best wave per mode
+  badges: string[];
+  records: RunRecord[]; // your top runs, best first
+}
+
+export interface RunRecord {
+  wave: number;
+  kills: number;
+  mode: string;
+  map: string;
+  day: string;
 }
 
 // ------------------------------------------------------------------ training
@@ -149,6 +160,13 @@ export interface RunReport {
   bestCombo: number;
   grenadeKills: number;
   brains: number; // collected during the run
+  trainKills: number;
+  barrelKills: number;
+  hitsTaken: number;
+  revives: number;
+  bestBurst: number; // most zombies killed in one burst
+  flawlessWaves: number;
+  time: number;
 }
 
 export interface MissionDef {
@@ -237,6 +255,8 @@ function fresh(): SaveData {
     mode: 'endless',
     daily: { day: '', best: 0, runs: 0 },
     bests: {},
+    badges: [],
+    records: [],
   };
 }
 
@@ -264,6 +284,12 @@ function sanitize(raw: unknown): SaveData {
   if (r.daily && typeof r.daily.day === 'string') d.daily = { day: r.daily.day, best: num(r.daily.best, 0), runs: num(r.daily.runs, 0) };
   if (r.bests && typeof r.bests === 'object') for (const [k, v] of Object.entries(r.bests)) if (MODES.some((m) => m.id === k)) d.bests[k] = num(v, 0);
   d.bests.endless = Math.max(d.bests.endless ?? 0, d.best);
+  if (Array.isArray(r.badges)) d.badges = r.badges.filter((b) => BADGES.some((x) => x.id === b));
+  if (Array.isArray(r.records))
+    d.records = r.records
+      .filter((x) => x && typeof x === 'object')
+      .map((x) => ({ wave: num(x.wave, 0), kills: num(x.kills, 0), mode: String(x.mode ?? 'endless'), map: String(x.map ?? 'lot'), day: String(x.day ?? '') }))
+      .slice(0, 10);
   return d;
 }
 
@@ -274,6 +300,16 @@ export interface RunResult {
   rewards: string[];
   missionsDone: { text: string; reward: number }[];
   newBest: boolean;
+  badges: BadgeDef[]; // unlocked at the end of this run (live unlocks are tracked by the caller)
+  challengeBeaten: boolean;
+}
+
+export interface Challenge {
+  mode: string;
+  map: string;
+  muts: string[];
+  wave: number;
+  kills: number;
 }
 
 class Meta {
@@ -369,11 +405,35 @@ class Meta {
     this.save();
   }
 
-  finishRun(r: RunReport, mode = 'endless'): RunResult {
+  /** Unlocks any badges this run has earned so far; pays their brains right away. */
+  unlockBadges(r: RunReport, mode: string, challengeBeaten = false): BadgeDef[] {
+    const d = this.data;
+    const ctx = { r, mode, totals: d.totals, challengeBeaten };
+    const got = BADGES.filter((b) => !d.badges.includes(b.id) && b.check(ctx));
+    if (!got.length) return got;
+    for (const b of got) {
+      d.badges.push(b.id);
+      d.brains += b.reward;
+    }
+    this.save();
+    return got;
+  }
+
+  finishRun(r: RunReport, mode = 'endless', map = 'lot', challenge: Challenge | null = null): RunResult {
     const d = this.data;
     this.refreshMissions();
     const mdef = MODES.find((m) => m.id === mode) ?? MODES[0];
-    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains), levelsGained: [], rewards: [], missionsDone: [], newBest: false };
+    const challengeBeaten = !!challenge && r.wave > challenge.wave;
+    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains), levelsGained: [], rewards: [], missionsDone: [], newBest: false, badges: [], challengeBeaten };
+    if (challengeBeaten) {
+      res.brainsGained += 40;
+      res.rewards.push(`Challenge beaten: +40 🧠`);
+    }
+    if (r.wave > 0) {
+      d.records.push({ wave: r.wave, kills: r.kills, mode, map, day: today() });
+      d.records.sort((a, b) => b.wave - a.wave || b.kills - a.kills);
+      d.records = d.records.slice(0, 10);
+    }
     d.totals.runs++;
     d.totals.kills += r.kills;
     d.totals.bosses += r.bosses;
@@ -420,6 +480,7 @@ class Meta {
       }
     }
     d.brains += res.brainsGained;
+    res.badges = this.unlockBadges(r, mode, challengeBeaten);
     this.save();
     return res;
   }

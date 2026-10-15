@@ -784,3 +784,145 @@ button.buy:disabled {
     font-size: 26px;
   }
 }
+
+/* ---------------------------------------------------------------- phase 5: badges, clips, challenges */
+
+.green {
+  color: #5dff7a;
+  font-weight: 800;
+}
+.red {
+  color: #ff5a4a;
+  font-weight: 800;
+}
+.gold {
+  color: #ffd23f;
+  font-weight: 800;
+}
+
+.rewards .badge-got {
+  font-size: 13px;
+  margin-top: 4px;
+  color: #ffd23f;
+  animation: pop 0.5s ease-out;
+}
+
+.share video {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  display: block;
+  background: #000;
+  max-height: 46vh;
+  object-fit: contain;
+}
+
+.share .row2 .share-btn {
+  flex: 1;
+}
+
+.share-btn.alt {
+  background: #b8322a;
+  box-shadow: 0 3px 0 #7a1d17;
+}
+
+.clip-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.chip {
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chip.on {
+  border-color: var(--accent);
+  background: rgba(255, 210, 63, 0.15);
+}
+
+#challenge-out input,
+.challenge-row input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(0, 0, 0, 0.4);
+  color: inherit;
+  font: 600 13px system-ui, sans-serif;
+}
+
+#challenge-out {
+  margin-top: 4px;
+}
+
+.challenge-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.challenge-row button.buy {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.badge-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.badge {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--edge);
+  background: rgba(255, 255, 255, 0.03);
+  opacity: 0.55;
+}
+
+.badge.got {
+  opacity: 1;
+  border-color: #ffd23f;
+  background: rgba(255, 210, 63, 0.08);
+}
+
+.badge .bi {
+  font-size: 26px;
+}
+
+.badge .name {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.records {
+  margin: 0;
+  padding-left: 24px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+@media (max-height: 500px) {
+  .challenge-row {
+    margin-top: 6px;
+  }
+  .badge .bi {
+    font-size: 22px;
+  }
+}
+
+.share img.hidden,
+.share video.hidden {
+  display: none;
+}

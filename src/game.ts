@@ -1,6 +1,6 @@
 import { MusicMood, Sfx, SfxKind } from './audio';
 import { baseStats, BOSS_NAMES, COMBO_TIERS, EliteKind, ELITES, PERKS, PerkDef, POWERUPS, PowerKind, RARITY_WEIGHT, Stats, WEAPONS, WeaponDef, ZOMBIES, ZombieDef, ZombieKind } from './data';
-import { dailySetup, meta, RunReport } from './meta';
+import { Challenge, dailySetup, meta, RunReport } from './meta';
 import { BORDER, mapById, MapDef, WORLD_H, WORLD_W } from './maps';
 
 export { WORLD_H, WORLD_W };
@@ -223,6 +223,8 @@ export interface Hooks {
   onWaveCleared: (wave: number) => void;
   onGameOver: (s: RunSummary) => void;
   onPause: () => void;
+  /** A moment worth clipping just happened (boss kill, massacre, big combo). */
+  onHighlight?: (label: string) => void;
 }
 
 export type State = 'menu' | 'playing' | 'between' | 'paused' | 'over';
@@ -391,6 +393,14 @@ export class Game {
   private reviveLeft = 0;
   private corpses: { x: number; y: number }[] = [];
   private nadeBlast = false;
+  private cause: '' | 'train' | 'barrel' = '';
+  private burst = 0;
+  private burstT = 0;
+  private hitThisWave = false;
+  private buzzT = 0;
+  private toasts: { text: string; t: number }[] = [];
+  private killCam = { x: 0, y: 0, t: 0 };
+  challenge: Challenge | null = null;
   private bolts: Bolt[] = [];
   private trains: Train[] = [];
   mode = 'endless';
@@ -451,9 +461,13 @@ export class Game {
   }
 
   /** Picks the mode (and with it the map and mutators) for the next run. */
-  configure(mode: string) {
+  configure(mode: string, challenge: Challenge | null = null) {
     this.mode = mode;
-    if (mode === 'daily') {
+    this.challenge = challenge;
+    if (challenge) {
+      this.mutators = new Set(challenge.muts);
+      this.setMap(challenge.map);
+    } else if (mode === 'daily') {
       const d = dailySetup();
       this.mutators = new Set(d.mutators);
       this.setMap(d.map);
@@ -476,7 +490,7 @@ export class Game {
   }
 
   static emptyReport(): RunReport {
-    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0 };
+    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, barrelKills: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0 };
   }
 
   newRun() {
@@ -535,6 +549,10 @@ export class Game {
     this.combo = 0;
     this.comboT = 0;
     this.bestCombo = 0;
+    this.burst = 0;
+    this.burstT = 0;
+    this.toasts = [];
+    this.killCam.t = 0;
     this.spin = 0;
     this.resetBarrels();
     this.dctx.clearRect(0, 0, this.decals.width, this.decals.height);
@@ -558,6 +576,7 @@ export class Game {
     if (this.has('horde')) this.toSpawn = Math.round(this.toSpawn * 1.5);
     this.spawnT = 1.2;
     this.clearT = -1;
+    this.hitThisWave = false;
     this.state = 'playing';
     this.grenadeCount = this.grenadesMax;
     this.input.reset();
@@ -579,6 +598,30 @@ export class Game {
       const sub = this.wave === 1 ? 'SURVIVE THE NIGHT' : this.wave === 15 ? 'ELITE ZOMBIES INCOMING' : (NEW_KIND_WAVES[this.wave] ?? '');
       this.showBanner(`WAVE ${this.wave}`, sub, '#ffffff');
       this.sfx.play('wave');
+    }
+    const ch = this.challenge;
+    if (ch && this.wave > ch.wave && this.wave - (this.mode === 'bossrush' ? 10 : 1) <= ch.wave) {
+      this.showShout('CHALLENGE BEATEN!', '#ffd23f');
+      this.flash = { t: 0.4, color: '#ffd23f', max: 0.35 };
+      this.sfx.play('levelup');
+      this.buzz([40, 60, 40]);
+    }
+  }
+
+  /** A short line at the top of the screen (badges, clips). */
+  toast(text: string) {
+    this.toasts.push({ text, t: 2.6 });
+    if (this.toasts.length > 3) this.toasts.shift();
+  }
+
+  /** Haptic buzz on phones, throttled so explosions don't drone. */
+  private buzz(pattern: number | number[]) {
+    if (this.buzzT > 0) return;
+    this.buzzT = 0.12;
+    try {
+      navigator.vibrate?.(pattern);
+    } catch {
+      /* not supported */
     }
   }
 
@@ -743,6 +786,7 @@ export class Game {
     if (this.clearT >= 0 && this.state === 'playing') {
       this.clearT -= rawDt;
       if (this.clearT < 0) {
+        if (!this.hitThisWave) this.report.flawlessWaves++;
         this.gainBrains(1 + Math.floor(this.wave / 3));
         for (const pk of this.pickups) if (pk.kind === 'cash') this.gainCash(pk.value);
         this.pickups = [];
@@ -1595,16 +1639,14 @@ export class Game {
     if (this.dashT > 0 || this.state !== 'playing' || amount <= 0) return;
     const dmg = amount * (1 - this.armor);
     this.p.hp -= dmg;
+    this.report.hitsTaken++;
+    this.hitThisWave = true;
     this.hurtFlash = 0.25;
     this.addShake(0.45);
     this.sfx.play('hurt');
     this.addText(this.p.x, this.p.y - 24, `-${Math.round(dmg)}`, '#ff5a4e', 16);
     for (let i = 0; i < 6; i++) this.spawnBlood(this.p.x, this.p.y, rand(0, Math.PI * 2), '#b0201a');
-    try {
-      navigator.vibrate?.(35);
-    } catch {
-      /* not supported */
-    }
+    this.buzz(35);
     if (from) {
       const a = Math.atan2(this.p.y - from.y, this.p.x - from.x);
       this.p.vx += Math.cos(a) * 160;
@@ -1630,6 +1672,7 @@ export class Game {
     if (this.reviveLeft > 0) {
       // Second Wind: get back up and blast everything nearby away.
       this.reviveLeft--;
+      this.report.revives++;
       this.p.hp = this.stats.maxHp * 0.5;
       this.slowT = 1.2;
       this.flash = { t: 0.6, color: '#ffffff', max: 0.6 };
@@ -1652,6 +1695,7 @@ export class Game {
     this.report.wave = this.wave;
     this.report.kills = this.kills;
     this.report.bestCombo = this.bestCombo;
+    this.report.time = this.runTime;
     const perks: string[] = [];
     for (const perk of PERKS) for (let i = 0; i < (this.perkCounts.get(perk.id) ?? 0); i++) perks.push(perk.icon);
     return { wave: this.wave, kills: this.kills, cash: Math.round(this.earned), time: this.runTime, bestCombo: this.bestCombo, report: { ...this.report }, perks, weapons: this.weapons.map((w) => w.def.name) };
@@ -1885,7 +1929,11 @@ export class Game {
             if (tr.hitBoss.includes(z.id)) continue;
             tr.hitBoss.push(z.id);
             this.damageZombie(z, z.maxHp * 0.12, tr.dir > 0 ? 0 : Math.PI, false, 0);
-          } else this.killZombie(z, tr.dir > 0 ? rand(-0.5, 0.5) : Math.PI + rand(-0.5, 0.5));
+          } else {
+            this.cause = 'train';
+            this.killZombie(z, tr.dir > 0 ? rand(-0.5, 0.5) : Math.PI + rand(-0.5, 0.5));
+            this.cause = '';
+          }
         }
         const p = this.p;
         if (!tr.hitPlayer && Math.abs(p.y - tr.y) < 48 + PLAYER_R && p.x > x0 && p.x < x1 && this.dashT <= 0) {
@@ -1983,7 +2031,7 @@ export class Game {
     if (this.stats.frost > 0 && z.def.kind !== 'electric') z.slow = 1.5;
     if (!quiet) {
       for (let i = 0; i < (crit ? 5 : 2); i++) this.spawnBlood(z.x, z.y, angle + rand(-0.6, 0.6), z.def.kind === 'bloater' ? '#6a8f10' : '#7a1010');
-      if (crit || dmg >= 20) this.addText(z.x + rand(-8, 8), z.y - z.r - 4, String(Math.round(dmg)), crit ? '#ffd23f' : '#ffffff', crit ? 18 : 12);
+      if (crit || dmg >= 20) this.addText(z.x + rand(-8, 8), z.y - z.r - 4, String(Math.round(dmg)), crit ? '#ffd23f' : dmg >= 150 ? '#ffb347' : '#ffffff', clamp(11 + Math.sqrt(dmg) * (crit ? 1.2 : 0.7), 12, crit ? 30 : 22));
       this.sfx.play('hit');
     }
     if (z.hp <= 0) this.killZombie(z, angle);
@@ -2000,6 +2048,9 @@ export class Game {
     const wid = this.weapons[this.wi].def.id;
     rep.killsByWeapon[wid] = (rep.killsByWeapon[wid] ?? 0) + 1;
     if (this.nadeBlast) rep.grenadeKills++;
+    if (this.cause === 'train') rep.trainKills++;
+    else if (this.cause === 'barrel') rep.barrelKills++;
+    this.countBurst(z);
     if (boss) {
       rep.bosses++;
       this.gainBrains(25 + this.wave, z.x, z.y - z.r - 20);
@@ -2048,6 +2099,7 @@ export class Game {
       if (this.combo === at) {
         this.showShout(text, at >= 100 ? '#ff3bd0' : at >= 50 ? '#ff5a4a' : '#ffd23f');
         this.sfx.play('combo');
+        if (at === 100) this.hooks.onHighlight?.('x100 combo');
       }
     }
 
@@ -2071,12 +2123,43 @@ export class Game {
     if (big) this.hitstop = boss ? 0.12 : 0.05;
     if (kind === 'bloater') this.explode(z.x, z.y, 60 * this.stats.damage, 95, 18, false, 'toxic');
     if (boss) {
-      this.slowT = 1.4;
+      this.slowT = 1.8;
+      this.zoomKick = Math.max(this.zoomKick, 0.25);
+      this.killCam = { x: z.x, y: z.y, t: 1.6 };
+      this.buzzT = 0;
+      this.buzz([80, 50, 160]);
+      this.hooks.onHighlight?.(`${BOSS_NAMES[kind]} kill`);
       this.explode(z.x, z.y, 0, 160, 0);
       this.showBanner('BOSS DOWN', `${BOSS_NAMES[kind]} SLAIN`, BOSS_COLORS[kind] ?? '#c065ff');
       this.flash = { t: 0.4, color: '#ffffff', max: 0.4 };
       // Her unhatched eggs die with her.
       if (kind === 'brood') for (const e of this.zombies) if (e.def.kind === 'egg') this.killZombie(e, rand(0, Math.PI * 2));
+    }
+  }
+
+  /** Kills landing within a blink of each other count as one burst: big ones get slow-mo and a shout. */
+  private countBurst(z: Zombie) {
+    if (this.burstT <= 0) this.burst = 0;
+    this.burst++;
+    this.burstT = 0.3;
+    if (this.burst > this.report.bestBurst) this.report.bestBurst = this.burst;
+    const tiers: [number, string, string, number][] = [
+      [8, 'MULTI KILL!', '#ffd23f', 0.35],
+      [15, 'MEGA KILL!', '#ff8a3a', 0.6],
+      [25, 'MASSACRE!!', '#ff3b3b', 0.9],
+      [40, 'GENOCIDE!!!', '#ff3bd0', 1.2],
+    ];
+    for (const [n, text, color, slow] of tiers) {
+      if (this.burst !== n) continue;
+      this.showShout(text, color);
+      this.slowT = Math.max(this.slowT, slow);
+      this.zoomKick = Math.max(this.zoomKick, 0.04 + slow * 0.08);
+      this.buzzT = 0;
+      this.buzz(Math.round(40 + slow * 60));
+      this.sfx.play('combo');
+      // Extra gore for the camera.
+      for (let i = 0; i < 10; i++) this.spawnBlood(z.x, z.y, rand(0, Math.PI * 2), '#9a1010', 2.2);
+      if (n >= 15) this.hooks.onHighlight?.(n >= 25 ? 'Massacre' : 'Mega kill');
     }
   }
 
@@ -2118,7 +2201,10 @@ export class Game {
       if (b.dead || b.fuse > 0) continue;
       if (Math.hypot(b.x - x, b.y - y) < radius + 10) b.fuse = rand(0.08, 0.2);
     }
+    if (radius >= 110) this.buzz(barrel ? 60 : 25);
     if (dmg <= 0) return;
+    const prev = this.cause;
+    if (barrel) this.cause = 'barrel';
     for (const z of this.zombies) {
       if (z.dead) continue;
       const d = Math.hypot(z.x - x, z.y - y);
@@ -2127,6 +2213,7 @@ export class Game {
         this.damageZombie(z, dmg * (1 - (d / (radius + z.r)) * 0.4), Math.atan2(z.y - y, z.x - x), false, 420);
       }
     }
+    this.cause = prev;
   }
 
   private activatePower(kind: PowerKind) {
@@ -2285,6 +2372,10 @@ export class Game {
     if (this.cashPulse > 0) this.cashPulse -= rawDt;
     if (this.brainsPulse > 0) this.brainsPulse -= rawDt;
     if (this.comboPop > 0) this.comboPop -= rawDt;
+    if (this.burstT > 0) this.burstT -= rawDt;
+    if (this.buzzT > 0) this.buzzT -= rawDt;
+    for (const t of this.toasts) t.t -= rawDt;
+    this.toasts = this.toasts.filter((t) => t.t > 0);
     if (this.flash.t > 0) this.flash.t -= rawDt;
   }
 
@@ -2359,8 +2450,14 @@ export class Game {
     if (playing) {
       // Camera leads a little toward where you aim.
       const lead = this.state === 'playing' ? 60 : 0;
-      const tx = p.x + Math.cos(p.angle) * lead;
-      const ty = p.y + Math.sin(p.angle) * lead;
+      let tx = p.x + Math.cos(p.angle) * lead;
+      let ty = p.y + Math.sin(p.angle) * lead;
+      // Kill cam: drift toward a dying boss while time is slowed.
+      if (this.killCam.t > 0) {
+        this.killCam.t -= dt;
+        tx = (p.x + this.killCam.x * 2) / 3;
+        ty = (p.y + this.killCam.y * 2) / 3;
+      }
       const k = 1 - Math.exp(-dt * 6);
       this.cam.x += (tx - this.cam.x) * k;
       this.cam.y += (ty - this.cam.y) * k;
@@ -3416,6 +3513,13 @@ export class Game {
     ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left${this.modeLabel ? `  ·  ${this.modeLabel}` : ''}`, this.w / 2, pad + 31);
 
     let rowY = pad + 50;
+    if (this.challenge) {
+      const beat = this.wave > this.challenge.wave;
+      ctx.font = `13px ${FONT}`;
+      ctx.fillStyle = beat ? '#5dff7a' : '#ffd23f';
+      ctx.fillText(beat ? `⚔ CHALLENGE BEATEN (WAVE ${this.challenge.wave})` : `⚔ BEAT WAVE ${this.challenge.wave}`, this.w / 2, rowY - 2);
+      rowY += 16;
+    }
     const boss = this.zombies.find(isBoss);
     if (boss) {
       const bw = Math.min(360, this.w * 0.5);
@@ -3555,6 +3659,24 @@ export class Game {
       ctx.stroke();
     }
 
+    // Toasts (badges, clips)
+    if (this.state === 'playing' || this.state === 'between') {
+      ctx.textAlign = 'center';
+      ctx.font = '700 14px system-ui, sans-serif';
+      this.toasts.forEach((t, i) => {
+        const y = this.h - 120 - i * 34;
+        const tw = ctx.measureText(t.text).width + 28;
+        ctx.globalAlpha = Math.min(1, t.t * 2, (2.6 - t.t) * 6);
+        ctx.fillStyle = 'rgba(10,12,8,0.82)';
+        ctx.fillRect(this.w / 2 - tw / 2, y - 13, tw, 26);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(this.w / 2 - tw / 2, y - 13, tw, 26);
+        ctx.fillStyle = '#ffd23f';
+        ctx.fillText(t.text, this.w / 2, y + 1);
+      });
+      ctx.globalAlpha = 1;
+    }
     // Banner
     if (this.banner.t > 0 && this.state === 'playing') {
       const age = 2.4 - this.banner.t;

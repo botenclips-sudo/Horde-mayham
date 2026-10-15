@@ -57,6 +57,8 @@ export class Sfx {
   private sfxBus: GainNode | null = null;
   private musicBus: GainNode | null = null;
   private noise: AudioBuffer | null = null;
+  private comp: DynamicsCompressorNode | null = null;
+  private tap: MediaStreamAudioDestinationNode | null = null;
   private last: Partial<Record<SfxKind, number>> = {};
   private mood: MusicMood = 'menu';
   private intensity = 0;
@@ -85,6 +87,7 @@ export class Sfx {
       comp.threshold.value = -14;
       comp.ratio.value = 6;
       comp.connect(this.ctx.destination);
+      this.comp = comp;
       this.master = this.ctx.createGain();
       this.master.gain.value = this.muted ? 0 : 0.8;
       this.master.connect(comp);
@@ -103,6 +106,20 @@ export class Sfx {
       window.setInterval(() => this.schedule(), 25);
     } catch {
       this.ctx = null;
+    }
+  }
+
+  /** The game's mixed audio as a stream, for recording clips (null before the first tap). */
+  recordStream(): MediaStream | null {
+    if (!this.ctx || !this.comp) return null;
+    try {
+      if (!this.tap) {
+        this.tap = this.ctx.createMediaStreamDestination();
+        this.comp.connect(this.tap);
+      }
+      return this.tap.stream;
+    } catch {
+      return null;
     }
   }
 
