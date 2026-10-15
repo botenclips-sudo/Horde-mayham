@@ -26,7 +26,22 @@ export type SfxKind =
   | 'nuke'
   | 'spit'
   | 'splat'
-  | 'heart';
+  | 'heart'
+  | 'pounce'
+  | 'scream'
+  | 'raise'
+  | 'clank'
+  | 'levelup'
+  | 'launcher'
+  | 'sniper'
+  | 'freeze'
+  | 'tesla'
+  | 'zap'
+  | 'slam'
+  | 'shatter'
+  | 'plate'
+  | 'horn'
+  | 'train';
 
 export type MusicMood = 'menu' | 'calm' | 'fight' | 'boss' | 'off';
 
@@ -42,6 +57,8 @@ export class Sfx {
   private sfxBus: GainNode | null = null;
   private musicBus: GainNode | null = null;
   private noise: AudioBuffer | null = null;
+  private comp: DynamicsCompressorNode | null = null;
+  private tap: MediaStreamAudioDestinationNode | null = null;
   private last: Partial<Record<SfxKind, number>> = {};
   private mood: MusicMood = 'menu';
   private intensity = 0;
@@ -70,6 +87,7 @@ export class Sfx {
       comp.threshold.value = -14;
       comp.ratio.value = 6;
       comp.connect(this.ctx.destination);
+      this.comp = comp;
       this.master = this.ctx.createGain();
       this.master.gain.value = this.muted ? 0 : 0.8;
       this.master.connect(comp);
@@ -88,6 +106,20 @@ export class Sfx {
       window.setInterval(() => this.schedule(), 25);
     } catch {
       this.ctx = null;
+    }
+  }
+
+  /** The game's mixed audio as a stream, for recording clips (null before the first tap). */
+  recordStream(): MediaStream | null {
+    if (!this.ctx || !this.comp) return null;
+    try {
+      if (!this.tap) {
+        this.tap = this.ctx.createMediaStreamDestination();
+        this.comp.connect(this.tap);
+      }
+      return this.tap.stream;
+    } catch {
+      return null;
     }
   }
 
@@ -212,7 +244,7 @@ export class Sfx {
     if (!ctx || !this.sfxBus || this.muted) return;
     // Rate-limit so 40 zombies dying at once doesn't clip.
     const now = ctx.currentTime;
-    const gap = kind === 'hit' ? 0.035 : kind === 'coin' ? 0.04 : kind === 'flamer' ? 0.07 : kind === 'death' ? 0.03 : 0.015;
+    const gap = kind === 'hit' ? 0.035 : kind === 'coin' ? 0.04 : kind === 'flamer' ? 0.07 : kind === 'death' ? 0.03 : kind === 'clank' ? 0.05 : kind === 'freeze' ? 0.08 : kind === 'shatter' ? 0.04 : 0.015;
     if (now - (this.last[kind] ?? -1) < gap) return;
     this.last[kind] = now;
     const bus = this.sfxBus;
@@ -314,6 +346,62 @@ export class Sfx {
       case 'boss':
         this.tone(now, 1.4, 60, 36, 0.55, 'sawtooth', bus);
         this.tone(now, 1.4, 63, 38, 0.45, 'sawtooth', bus);
+        break;
+      case 'pounce':
+        this.burst(now, 0.2, 1100, 0.3 * v, 'bandpass', bus);
+        this.tone(now, 0.25, 220, 520, 0.18 * v, 'sawtooth', bus);
+        break;
+      case 'scream':
+        this.tone(now, 0.7, 900, 1400, 0.16, 'sawtooth', bus);
+        this.tone(now, 0.7, 940, 1300, 0.12, 'square', bus);
+        this.burst(now, 0.6, 3000, 0.18, 'bandpass', bus);
+        break;
+      case 'raise':
+        this.tone(now, 0.9, 110, 220, 0.25, 'triangle', bus);
+        this.tone(now + 0.1, 0.8, 165, 330, 0.15, 'sine', bus);
+        break;
+      case 'clank':
+        this.tone(now, 0.08, 2400, 1900, 0.12 * v, 'square', bus);
+        this.burst(now, 0.04, 5000, 0.12 * v, 'highpass', bus);
+        break;
+      case 'launcher':
+        this.burst(now, 0.15, 600, 0.45 * v, 'lowpass', bus);
+        this.tone(now, 0.12, 160, 70, 0.3 * v, 'sine', bus);
+        break;
+      case 'sniper':
+        this.burst(now, 0.35, 3200, 0.8 * v, 'lowpass', bus);
+        this.tone(now, 0.25, 300, 45, 0.45 * v, 'sawtooth', bus);
+        break;
+      case 'freeze':
+        this.burst(now, 0.1, 5000, 0.12 * v, 'highpass', bus);
+        break;
+      case 'tesla':
+      case 'zap':
+        this.tone(now, 0.12, 1800, 300, 0.12 * v, 'sawtooth', bus);
+        this.burst(now, 0.1, 4000, 0.18 * v, 'bandpass', bus);
+        break;
+      case 'slam':
+        this.burst(now, 0.6, 250, 1.0, 'lowpass', bus);
+        this.tone(now, 0.5, 70, 25, 0.7, 'sine', bus);
+        break;
+      case 'shatter':
+        this.burst(now, 0.2, 6000, 0.25 * v, 'highpass', bus);
+        this.tone(now, 0.1, 2600, 1800, 0.06 * v, 'triangle', bus);
+        break;
+      case 'plate':
+        this.tone(now, 0.15, 900, 500, 0.2, 'square', bus);
+        this.burst(now, 0.1, 3000, 0.25, 'bandpass', bus);
+        break;
+      case 'horn':
+        this.tone(now, 1.1, 220, 215, 0.3, 'sawtooth', bus);
+        this.tone(now, 1.1, 277, 272, 0.25, 'sawtooth', bus);
+        break;
+      case 'train':
+        this.burst(now, 1.6, 300, 0.9, 'lowpass', bus);
+        this.tone(now, 1.4, 60, 45, 0.5, 'sawtooth', bus);
+        break;
+      case 'levelup':
+        [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(now + i * 0.09, 0.22, f, f, 0.16, 'triangle', bus));
         break;
     }
   }

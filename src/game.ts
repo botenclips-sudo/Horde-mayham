@@ -1,30 +1,24 @@
 import { MusicMood, Sfx, SfxKind } from './audio';
-import { baseStats, COMBO_TIERS, PERKS, PerkDef, POWERUPS, PowerKind, RARITY_WEIGHT, Stats, WEAPONS, WeaponDef, ZOMBIES, ZombieDef, ZombieKind } from './data';
+import { baseStats, BOSS_NAMES, COMBO_TIERS, EliteKind, ELITES, PERKS, PerkDef, POWERUPS, PowerKind, RARITY_WEIGHT, Stats, WEAPONS, WeaponDef, ZOMBIES, ZombieDef, ZombieKind } from './data';
+import { Challenge, dailySetup, meta, RunReport } from './meta';
+import { BORDER, mapById, MapDef, WORLD_H, WORLD_W } from './maps';
+import { emptyBonus, GearBonus, gearDef, GearItem, gearValue, RARITY_COLOR, rollGear } from './gear';
+
+export { WORLD_H, WORLD_W };
+
+const groundCache = new Map<string, HTMLCanvasElement>();
+const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 
-export const WORLD_W = 2200;
-export const WORLD_H = 1600;
 const PLAYER_R = 16;
-const BORDER = 40;
 const DASH_TIME = 0.18;
 const DASH_COOLDOWN = 2.2;
 const COMBO_TIME = 2.5;
 const FLASHLIGHT = 560;
 const DARKNESS = 0.86;
 
-type WallKind = 'border' | 'concrete' | 'car' | 'crate';
-
-interface Wall {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  kind: WallKind;
-  color?: string;
-}
-
 interface Bullet {
-  kind: 'bullet' | 'flame' | 'rocket';
+  kind: 'bullet' | 'flame' | 'rocket' | 'frost';
   x: number;
   y: number;
   vx: number;
@@ -64,7 +58,43 @@ interface Zombie {
   tx?: number;
   ty?: number;
   boss?: { state: 'walk' | 'windup' | 'charge'; t: number; dx: number; dy: number; summon: number };
+  brood?: { lay: number; spit: number };
+  leap?: { state: 'walk' | 'crouch' | 'leap'; t: number; dx: number; dy: number };
+  elite?: EliteKind;
+  mini?: boolean;
+  buff: number; // seconds of screamer rage left
+  abilityCd: number; // screamer scream / necromancer raise / egg hatch / electric zap timer
+  chill: number; // freeze-ray hits soaked up; enough of them freeze the zombie solid
+  frozenT: number;
+  plates: number; // armored soldier plates left
+  plateHp: number;
+  zapT: number; // electric zombie charging a zap
+  jug?: { slam: number; windup: number };
 }
+
+interface Train {
+  y: number; // track center
+  dir: 1 | -1;
+  phase: 'idle' | 'warn' | 'go';
+  t: number;
+  x: number; // left edge
+  hitPlayer: boolean;
+  hitBoss: number[];
+}
+
+const TRAIN_LEN = 1100;
+const TRAIN_SPEED = 1600;
+
+interface Bolt {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  life: number;
+  color: string;
+}
+
+const isBoss = (z: Zombie) => z.def.kind === 'boss' || z.def.kind === 'brood' || z.def.kind === 'juggernaut';
 
 interface Particle {
   x: number;
@@ -95,10 +125,31 @@ interface Pickup {
   y: number;
   vx: number;
   vy: number;
-  kind: 'cash' | 'health';
-  value: number;
+  kind: 'cash' | 'health' | 'crate';
+  value: number; // for crates: loot luck
   pulled: boolean;
 }
+
+export type DeployKind = 'turret' | 'mine' | 'barricade' | 'medic';
+
+interface Deployable {
+  kind: DeployKind;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  t: number; // fire cooldown / mine arming / heal pulse
+  life: number; // seconds left (Infinity for barricades and mines)
+  angle: number;
+  r: number;
+}
+
+export const DEPLOYS: Record<DeployKind, { icon: string; name: string; desc: string; price: (wave: number) => number }> = {
+  turret: { icon: '🔫', name: 'Auto-turret', desc: 'Shoots the nearest zombie for 60s', price: (w) => 200 + w * 8 },
+  mine: { icon: '💥', name: 'Land mines (x3)', desc: 'Blow up whatever steps on them', price: (w) => 90 + w * 3 },
+  barricade: { icon: '🧱', name: 'Sandbag wall', desc: 'Blocks zombies until they chew through', price: (w) => 110 + w * 4 },
+  medic: { icon: '⛑️', name: 'Healing station', desc: 'Heals you while you stand near it, 40s', price: (w) => 160 + w * 5 },
+};
 
 interface PowerDrop {
   x: number;
@@ -133,6 +184,9 @@ interface Grenade {
   z: number;
   vz: number;
   fuse: number;
+  dmg?: number; // launcher shells carry their own damage and go off on contact
+  radius?: number;
+  impact?: boolean;
 }
 
 interface Spit {
@@ -158,6 +212,7 @@ interface Barrel {
   hp: number;
   fuse: number;
   dead: boolean;
+  big: boolean; // gas pump: bigger and a much bigger blast
 }
 
 interface OwnedWeapon {
@@ -180,92 +235,47 @@ export interface RunSummary {
   kills: number;
   cash: number;
   time: number;
-  best: number;
-  newBest: boolean;
   bestCombo: number;
+  report: RunReport;
+  perks: string[];
+  weapons: string[];
 }
 
 export interface Hooks {
   onWaveCleared: (wave: number) => void;
   onGameOver: (s: RunSummary) => void;
   onPause: () => void;
+  /** A moment worth clipping just happened (boss kill, massacre, big combo). */
+  onHighlight?: (label: string) => void;
 }
 
 export type State = 'menu' | 'playing' | 'between' | 'paused' | 'over';
-
-const WALLS: Wall[] = [
-  // Arena border
-  { x: 0, y: 0, w: WORLD_W, h: BORDER, kind: 'border' },
-  { x: 0, y: WORLD_H - BORDER, w: WORLD_W, h: BORDER, kind: 'border' },
-  { x: 0, y: 0, w: BORDER, h: WORLD_H, kind: 'border' },
-  { x: WORLD_W - BORDER, y: 0, w: BORDER, h: WORLD_H, kind: 'border' },
-  // Cover
-  { x: 480, y: 330, w: 130, h: 60, kind: 'car', color: '#8a2c2c' },
-  { x: 630, y: 334, w: 52, h: 52, kind: 'crate' },
-  { x: 1480, y: 340, w: 240, h: 40, kind: 'concrete' },
-  { x: 480, y: 1220, w: 240, h: 40, kind: 'concrete' },
-  { x: 1560, y: 1200, w: 130, h: 60, kind: 'car', color: '#2c4f8a' },
-  { x: 1496, y: 1206, w: 48, h: 48, kind: 'crate' },
-  { x: 300, y: 680, w: 40, h: 240, kind: 'concrete' },
-  { x: 1844, y: 690, w: 60, h: 130, kind: 'car', color: '#c9a227' },
-  { x: 1040, y: 520, w: 56, h: 56, kind: 'crate' },
-  { x: 1102, y: 532, w: 44, h: 44, kind: 'crate' },
-  { x: 1036, y: 1010, w: 130, h: 60, kind: 'car', color: '#3f6b3a' },
-];
-
-const GATES = [
-  { x: WORLD_W / 2, y: BORDER + 10 },
-  { x: WORLD_W / 2, y: WORLD_H - BORDER - 10 },
-  { x: BORDER + 10, y: WORLD_H / 2 },
-  { x: WORLD_W - BORDER - 10, y: WORLD_H / 2 },
-  { x: 200, y: BORDER + 10 },
-  { x: WORLD_W - 200, y: BORDER + 10 },
-  { x: 200, y: WORLD_H - BORDER - 10 },
-  { x: WORLD_W - 200, y: WORLD_H - BORDER - 10 },
-];
-
-const LAMPS = [
-  { x: 260, y: 240, flicker: false },
-  { x: 1940, y: 240, flicker: true },
-  { x: 260, y: 1360, flicker: true },
-  { x: 1940, y: 1360, flicker: false },
-  { x: 1100, y: 250, flicker: false },
-  { x: 1100, y: 1350, flicker: true },
-];
-
-const BARREL_SPOTS = [
-  { x: 760, y: 430 },
-  { x: 1420, y: 430 },
-  { x: 770, y: 1170 },
-  { x: 1430, y: 1150 },
-  { x: 600, y: 800 },
-  { x: 1620, y: 790 },
-  { x: 1180, y: 470 },
-  { x: 980, y: 1120 },
-  { x: 420, y: 470 },
-  { x: 1800, y: 1120 },
-];
 
 // Flow field for zombie pathing: a BFS distance map from the player over a coarse grid.
 const CELL = 40;
 const FLOW_W = Math.ceil(WORLD_W / CELL);
 const FLOW_H = Math.ceil(WORLD_H / CELL);
-const BLOCKED = (() => {
-  const b = new Uint8Array(FLOW_W * FLOW_H);
+/** Which flow-field cells are inside (or hugging) a wall, per map. */
+function blockedFor(map: MapDef): Uint8Array {
+  let b = blockedCache.get(map.id);
+  if (b) return b;
+  b = new Uint8Array(FLOW_W * FLOW_H);
   const pad = 14;
   for (let cy = 0; cy < FLOW_H; cy++)
     for (let cx = 0; cx < FLOW_W; cx++) {
       const x0 = cx * CELL;
       const y0 = cy * CELL;
-      for (const w of WALLS) {
+      for (const w of map.walls) {
         if (x0 + CELL > w.x - pad && x0 < w.x + w.w + pad && y0 + CELL > w.y - pad && y0 < w.y + w.h + pad) {
           b[cy * FLOW_W + cx] = 1;
           break;
         }
       }
     }
+  blockedCache.set(map.id, b);
   return b;
-})();
+}
+
 const FLOW_QUEUE = new Int32Array(FLOW_W * FLOW_H);
 const NEIGHBORS = [
   [1, 0],
@@ -277,6 +287,32 @@ const NEIGHBORS = [
   [-1, 1],
   [-1, -1],
 ];
+
+// Which wave each new zombie type starts showing up, announced on the wave banner.
+const WEAPON_BLURB: Record<string, string> = {
+  flamer: 'Sets the horde on fire',
+  rocket: 'Huge explosions',
+  minigun: 'Spins up, shreds everything',
+  launcher: 'Explodes on contact',
+  sniper: 'Punches through 6 zombies',
+  freeze: 'Freezes zombies solid',
+  tesla: 'Lightning chains between zombies',
+};
+
+const BOSS_COLORS: Partial<Record<ZombieKind, string>> = { boss: '#c065ff', brood: '#ffcf5a', juggernaut: '#ff6a3a' };
+
+const ELITE_KINDS = Object.keys(ELITES) as EliteKind[];
+
+const NEW_KIND_WAVES: Record<number, string> = {
+  5: 'SHIELD BRUTES SPOTTED',
+  6: 'WATCH FOR LEAPERS',
+  8: 'SCREAMERS ARE HERE',
+  9: 'CRAWLERS IN THE DARK',
+  11: 'DOG PACKS INCOMING',
+  12: 'NECROMANCERS RAISE THE DEAD',
+  13: 'ARMORED SOLDIERS: BREAK THEIR PLATES',
+  14: 'ELECTRIC ZOMBIES',
+};
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
@@ -300,22 +336,6 @@ function glowSprite(color: string): HTMLCanvasElement {
   return c;
 }
 
-function loadBest(): number {
-  try {
-    return Number(localStorage.getItem('horde-best') ?? 0) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-function saveBest(v: number) {
-  try {
-    localStorage.setItem('horde-best', String(v));
-  } catch {
-    /* storage unavailable */
-  }
-}
-
 export class Game {
   state: State = 'menu';
   private ctx: CanvasRenderingContext2D;
@@ -325,7 +345,9 @@ export class Game {
   private zoom = 1;
   private zoomKick = 0;
   private cam = { x: WORLD_W / 2, y: WORLD_H / 2 };
-  private ground: HTMLCanvasElement;
+  private ground!: HTMLCanvasElement;
+  map: MapDef = mapById('lot');
+  private blocked: Uint8Array = new Uint8Array(0);
   private decals: HTMLCanvasElement;
   private dctx: CanvasRenderingContext2D;
   private light: HTMLCanvasElement;
@@ -341,7 +363,6 @@ export class Game {
   armor = 0;
   wave = 0;
   grenadesMax = 2;
-  best = loadBest();
   private grenadeCount = 2;
   private p = { x: 0, y: 0, hp: 100, angle: 0, vx: 0, vy: 0 };
   private fireCd = 0;
@@ -390,6 +411,31 @@ export class Game {
   private flow = new Int32Array(FLOW_W * FLOW_H);
   private flowT = 0;
   private mood: MusicMood | '' = '';
+  private report: RunReport = Game.emptyReport();
+  private reviveLeft = 0;
+  private corpses: { x: number; y: number }[] = [];
+  private nadeBlast = false;
+  private cause: '' | 'train' | 'barrel' = '';
+  private burst = 0;
+  private burstT = 0;
+  private hitThisWave = false;
+  private buzzT = 0;
+  private toasts: { text: string; t: number }[] = [];
+  private killCam = { x: 0, y: 0, t: 0 };
+  challenge: Challenge | null = null;
+  private gear: GearBonus = emptyBonus();
+  /** Gear found this run (already added to the stash). */
+  loot: GearItem[] = [];
+  kit: DeployKind[] = [];
+  private deploys: Deployable[] = [];
+  private bolts: Bolt[] = [];
+  private trains: Train[] = [];
+  mode = 'endless';
+  mutators = new Set<string>();
+  private trainWarned = false;
+  modeLabel = '';
+  brainsPulse = 0;
+  private clean = false;
   private moodLevel = -1;
 
   constructor(
@@ -405,7 +451,7 @@ export class Game {
     this.dctx = this.decals.getContext('2d')!;
     this.light = document.createElement('canvas');
     this.lctx = this.light.getContext('2d')!;
-    this.ground = this.buildGround();
+    this.setMap(meta.data.map);
     this.resize();
     window.addEventListener('resize', () => this.resize());
     this.newRun();
@@ -427,110 +473,94 @@ export class Game {
     this.zoom = clamp(Math.min(this.w, this.h) / 460, 0.7, 1.8);
   }
 
-  /** Bakes the asphalt lot (lines, cracks, stains) into one big canvas. */
-  private buildGround(): HTMLCanvasElement {
-    const g = document.createElement('canvas');
+  /** Bakes the map's ground into one big canvas (once per map). */
+  private buildGround(map: MapDef): HTMLCanvasElement {
+    let g = groundCache.get(map.id);
+    if (g) return g;
+    g = document.createElement('canvas');
     g.width = WORLD_W / 2;
     g.height = WORLD_H / 2;
     const c = g.getContext('2d')!;
     c.scale(0.5, 0.5);
-    c.fillStyle = '#2b2e33';
-    c.fillRect(0, 0, WORLD_W, WORLD_H);
-    for (let i = 0; i < 9000; i++) {
-      c.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.035)' : 'rgba(0,0,0,0.09)';
-      const s = rand(2, 7);
-      c.fillRect(rand(0, WORLD_W), rand(0, WORLD_H), s, s);
-    }
-    // Big asphalt patches
-    for (let i = 0; i < 26; i++) {
-      c.fillStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.025)';
-      c.beginPath();
-      c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(80, 260), rand(60, 200), rand(0, 3), 0, Math.PI * 2);
-      c.fill();
-    }
-    // Parking bays
-    c.strokeStyle = 'rgba(230,230,210,0.22)';
-    c.lineWidth = 6;
-    for (let x = 160; x < WORLD_W - 120; x += 110) {
-      for (const y0 of [60, WORLD_H - 230]) {
-        if (Math.abs(x - WORLD_W / 2) < 120) continue;
-        c.beginPath();
-        c.moveTo(x, y0);
-        c.lineTo(x, y0 + 170);
-        c.stroke();
-      }
-    }
-    // Center road with dashed yellow line
-    c.fillStyle = 'rgba(0,0,0,0.18)';
-    c.fillRect(BORDER, WORLD_H / 2 - 150, WORLD_W - BORDER * 2, 300);
-    c.strokeStyle = 'rgba(232,197,71,0.45)';
-    c.lineWidth = 8;
-    c.setLineDash([60, 50]);
-    c.beginPath();
-    c.moveTo(BORDER, WORLD_H / 2);
-    c.lineTo(WORLD_W - BORDER, WORLD_H / 2);
-    c.stroke();
-    c.setLineDash([]);
-    c.strokeStyle = 'rgba(230,230,210,0.25)';
-    c.lineWidth = 5;
-    for (const y of [WORLD_H / 2 - 150, WORLD_H / 2 + 150]) {
-      c.beginPath();
-      c.moveTo(BORDER, y);
-      c.lineTo(WORLD_W - BORDER, y);
-      c.stroke();
-    }
-    // Cracks
-    c.strokeStyle = 'rgba(0,0,0,0.5)';
-    c.lineWidth = 2;
-    for (let i = 0; i < 60; i++) {
-      let x = rand(0, WORLD_W);
-      let y = rand(0, WORLD_H);
-      c.beginPath();
-      c.moveTo(x, y);
-      for (let k = 0; k < 6; k++) {
-        x += rand(-40, 40);
-        y += rand(-40, 40);
-        c.lineTo(x, y);
-      }
-      c.stroke();
-    }
-    // Oil stains and a couple of manholes
-    for (let i = 0; i < 30; i++) {
-      c.fillStyle = 'rgba(10,10,14,0.35)';
-      c.beginPath();
-      c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(15, 45), rand(10, 30), rand(0, 3), 0, Math.PI * 2);
-      c.fill();
-    }
-    for (const [mx, my] of [
-      [700, 640],
-      [1500, 960],
-    ]) {
-      c.fillStyle = '#1d1f22';
-      c.beginPath();
-      c.arc(mx, my, 28, 0, Math.PI * 2);
-      c.fill();
-      c.strokeStyle = '#3a3d42';
-      c.lineWidth = 3;
-      for (let r = 8; r < 28; r += 7) {
-        c.beginPath();
-        c.arc(mx, my, r, 0, Math.PI * 2);
-        c.stroke();
-      }
-    }
+    map.ground(c);
+    groundCache.set(map.id, g);
     return g;
   }
 
+  /** Picks the mode (and with it the map and mutators) for the next run. */
+  configure(mode: string, challenge: Challenge | null = null) {
+    this.mode = mode;
+    this.challenge = challenge;
+    if (challenge) {
+      this.mutators = new Set(challenge.muts);
+      this.setMap(challenge.map);
+    } else if (mode === 'daily') {
+      const d = dailySetup();
+      this.mutators = new Set(d.mutators);
+      this.setMap(d.map);
+    } else {
+      this.mutators = new Set();
+      this.setMap(meta.data.map);
+    }
+  }
+
+  has(m: string) {
+    return this.mutators.has(m);
+  }
+
+  /** Switches the arena; takes effect for the next run and the title screen. */
+  setMap(id: string) {
+    this.map = mapById(id);
+    this.blocked = blockedFor(this.map);
+    this.ground = this.buildGround(this.map);
+    this.resetBarrels();
+  }
+
+  static emptyReport(): RunReport {
+    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, barrelKills: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0 };
+  }
+
   newRun() {
+    // Permanent training from the base screen.
+    const t = (id: string) => meta.train(id);
     this.stats = baseStats();
+    this.stats.maxHp += 10 * t('hp');
+    this.stats.damage += 0.05 * t('dmg');
+    this.stats.speed += 0.03 * t('speed');
+    this.stats.crit += 0.02 * t('crit');
+    this.stats.cash += 0.08 * t('greed');
     this.perkCounts.clear();
-    this.weapons = [this.makeWeapon(WEAPONS[0])];
+    // Equipped gear from the base screen.
+    const g = (this.gear = meta.gearBonus());
+    this.stats.maxHp += g.hp;
+    this.stats.damage += g.dmg;
+    this.stats.speed += g.speed;
+    this.stats.crit += g.crit;
+    this.stats.cash += g.cash;
+    this.loot = [];
+    this.kit = [];
+    this.deploys = [];
+    const loadout = meta.data.loadout.slice(0, meta.slots());
+    this.weapons = loadout.map((id) => this.makeWeapon(WEAPONS.find((w) => w.id === id) ?? WEAPONS[0]));
+    for (const w of this.weapons) w.ammo = this.weaponMag(w);
     this.wi = 0;
-    this.cash = 0;
-    this.armor = 0;
+    this.cash = 75 * t('cash');
+    this.armor = 0.03 * t('armor') + g.dr;
     this.wave = 0;
-    this.grenadesMax = 2;
-    this.grenadeCount = 2;
-    this.p = { x: WORLD_W / 2, y: WORLD_H / 2, hp: 100, angle: -Math.PI / 2, vx: 0, vy: 0 };
+    this.grenadesMax = 2 + t('nades') + g.nades;
+    this.grenadeCount = this.grenadesMax;
+    this.reviveLeft = this.mode === 'hardcore' ? 0 : t('revive');
+    if (this.has('glass')) {
+      this.stats.damage *= 2;
+      this.stats.maxHp = Math.round(this.stats.maxHp * 0.5);
+    }
+    if (this.has('rich')) this.stats.cash *= 2;
+    this.trains = (this.map.tracks ?? []).map((y, i) => ({ y, dir: i % 2 ? -1 : 1, phase: 'idle', t: rand(9, 14) + i * 5, x: 0, hitPlayer: false, hitBoss: [] }));
+    this.trainWarned = false;
+    this.report = Game.emptyReport();
+    this.corpses = [];
+    this.bolts = [];
+    this.p = { x: WORLD_W / 2, y: WORLD_H / 2, hp: this.stats.maxHp, angle: -Math.PI / 2, vx: 0, vy: 0 };
     this.cam = { x: this.p.x, y: this.p.y };
     this.zombies = [];
     this.bullets = [];
@@ -556,13 +586,17 @@ export class Game {
     this.combo = 0;
     this.comboT = 0;
     this.bestCombo = 0;
+    this.burst = 0;
+    this.burstT = 0;
+    this.toasts = [];
+    this.killCam.t = 0;
     this.spin = 0;
     this.resetBarrels();
     this.dctx.clearRect(0, 0, this.decals.width, this.decals.height);
   }
 
   private resetBarrels() {
-    this.barrels = BARREL_SPOTS.map((b) => ({ x: b.x, y: b.y, hp: 30, fuse: 0, dead: false }));
+    this.barrels = this.map.barrels.map((b) => ({ x: b.x, y: b.y, hp: b.big ? 60 : 30, fuse: 0, dead: false, big: !!b.big }));
   }
 
   private makeWeapon(def: WeaponDef): OwnedWeapon {
@@ -571,11 +605,15 @@ export class Game {
 
   startWave() {
     this.wave++;
+    // Boss Rush jumps straight from boss wave to boss wave.
+    if (this.mode === 'bossrush') this.wave = Math.ceil(this.wave / 10) * 10;
     const boss = this.wave % 10 === 0;
     this.toSpawn = 10 + this.wave * 5;
-    if (boss) this.toSpawn = Math.round(this.toSpawn * 0.5);
+    if (boss) this.toSpawn = Math.round(this.toSpawn * (this.mode === 'bossrush' ? 0.3 : 0.5));
+    if (this.has('horde')) this.toSpawn = Math.round(this.toSpawn * 1.5);
     this.spawnT = 1.2;
     this.clearT = -1;
+    this.hitThisWave = false;
     this.state = 'playing';
     this.grenadeCount = this.grenadesMax;
     this.input.reset();
@@ -588,13 +626,39 @@ export class Game {
     this.resetBarrels();
     if (boss) {
       const g = this.farthestGate();
-      this.spawnZombie('boss', g.x, g.y + (g.y < WORLD_H / 2 ? 40 : -40));
-      this.showBanner(`WAVE ${this.wave}`, 'THE ABOMINATION IS COMING', '#c065ff');
+      const kind: ZombieKind = this.wave % 30 === 0 ? 'juggernaut' : this.wave % 20 === 0 ? 'brood' : 'boss';
+      this.spawnZombie(kind, g.x, g.y + (g.y < WORLD_H / 2 ? 60 : -60));
+      this.showBanner(`WAVE ${this.wave}`, `${BOSS_NAMES[kind]} IS COMING`, BOSS_COLORS[kind]!);
       this.sfx.play('boss');
       this.addShake(0.6);
     } else {
-      this.showBanner(`WAVE ${this.wave}`, this.wave === 1 ? 'SURVIVE THE NIGHT' : '', '#ffffff');
+      const sub = this.wave === 1 ? 'SURVIVE THE NIGHT' : this.wave === 15 ? 'ELITE ZOMBIES INCOMING' : (NEW_KIND_WAVES[this.wave] ?? '');
+      this.showBanner(`WAVE ${this.wave}`, sub, '#ffffff');
       this.sfx.play('wave');
+    }
+    const ch = this.challenge;
+    if (ch && this.wave > ch.wave && this.wave - (this.mode === 'bossrush' ? 10 : 1) <= ch.wave) {
+      this.showShout('CHALLENGE BEATEN!', '#ffd23f');
+      this.flash = { t: 0.4, color: '#ffd23f', max: 0.35 };
+      this.sfx.play('levelup');
+      this.buzz([40, 60, 40]);
+    }
+  }
+
+  /** A short line at the top of the screen (badges, clips). */
+  toast(text: string) {
+    this.toasts.push({ text, t: 2.6 });
+    if (this.toasts.length > 3) this.toasts.shift();
+  }
+
+  /** Haptic buzz on phones, throttled so explosions don't drone. */
+  private buzz(pattern: number | number[]) {
+    if (this.buzzT > 0) return;
+    this.buzzT = 0.12;
+    try {
+      navigator.vibrate?.(pattern);
+    } catch {
+      /* not supported */
     }
   }
 
@@ -609,17 +673,17 @@ export class Game {
   // ---------------------------------------------------------------- perks & shop
 
   weaponDamage(w: OwnedWeapon) {
-    return w.def.damage * (1 + 0.25 * (w.level - 1)) * this.stats.damage * (this.active.rage > 0 ? 2 : 1);
+    return w.def.damage * (1 + 0.25 * (w.level - 1)) * (1 + 0.06 * meta.mastery(w.def.id)) * this.stats.damage * (this.active.rage > 0 ? 2 : 1);
   }
   private weaponRate(w: OwnedWeapon) {
     return w.def.fireRate * (1 + 0.08 * (w.level - 1)) * this.stats.fireRate * (this.active.rage > 0 ? 1.5 : 1);
   }
   private weaponMag(w: OwnedWeapon) {
-    return Math.max(1, Math.round(w.def.mag * this.stats.mag));
+    return Math.max(1, Math.round(w.def.mag * (1 + 0.04 * meta.mastery(w.def.id)) * this.stats.mag));
   }
 
   rollPerks(n = 3): PerkDef[] {
-    const pool = PERKS.filter((p) => (this.perkCounts.get(p.id) ?? 0) < p.max);
+    const pool = PERKS.filter((p) => (this.perkCounts.get(p.id) ?? 0) < p.max && meta.perkUnlocked(p.id));
     const out: PerkDef[] = [];
     while (out.length < n && pool.length) {
       const total = pool.reduce((s, p) => s + RARITY_WEIGHT[p.rarity], 0);
@@ -647,21 +711,27 @@ export class Game {
     const items: ShopItem[] = [];
     const heal = 30 + this.wave * 6;
     const missing = this.stats.maxHp - this.p.hp;
-    items.push({ id: 'heal', label: '🩹 Medkit', sub: `Heal to full (${Math.ceil(this.p.hp)}/${this.stats.maxHp})`, price: heal, enabled: missing > 0.5 && this.cash >= heal });
-    const armorLvl = Math.round(this.armor / 0.08);
+    if (this.mode !== 'hardcore') items.push({ id: 'heal', label: '🩹 Medkit', sub: `Heal to full (${Math.ceil(this.p.hp)}/${this.stats.maxHp})`, price: heal, enabled: missing > 0.5 && this.cash >= heal });
+    const armorLvl = Math.round((this.armor - 0.03 * meta.train('armor') - this.gear.dr) / 0.08);
     if (armorLvl < 5) {
       const price = 150 * (armorLvl + 1);
       items.push({ id: 'armor', label: '🛡️ Armor plate', sub: `Take ${Math.round((this.armor + 0.08) * 100)}% less damage`, price, enabled: this.cash >= price });
     }
-    if (this.grenadesMax < 6) {
-      const price = 120 * (this.grenadesMax - 1);
+    if (this.grenadesMax < 6 + meta.train('nades') + this.gear.nades) {
+      const price = 120 * (this.grenadesMax - 1 - meta.train('nades') - this.gear.nades);
       items.push({ id: 'nade', label: '💣 Grenade belt', sub: `Carry ${this.grenadesMax + 1} grenades per wave`, price, enabled: this.cash >= price });
     }
+    if (this.kit.length < 4)
+      for (const [k, d] of Object.entries(DEPLOYS) as [DeployKind, (typeof DEPLOYS)[DeployKind]][]) {
+        const price = d.price(this.wave);
+        const have = this.kit.filter((x) => x === k).length;
+        items.push({ id: `kit:${k}`, label: `${d.icon} ${d.name}`, sub: `${d.desc}${have ? ` · ${have} in kit` : ''}`, price, enabled: this.cash >= price });
+      }
     for (const def of WEAPONS) {
       const owned = this.weapons.find((w) => w.def.id === def.id);
       if (!owned) {
         const sub =
-          def.kind === 'flame' ? 'Sets the horde on fire' : def.kind === 'rocket' ? `${def.damage} dmg explosions` : def.spinup ? 'Spins up, shreds everything' : `${def.pellets > 1 ? `${def.pellets}x` : ''}${def.damage} dmg, ${def.fireRate}/s`;
+          WEAPON_BLURB[def.id] ?? `${def.pellets > 1 ? `${def.pellets}x` : ''}${def.damage} dmg, ${def.fireRate}/s`;
         items.push({ id: `buy:${def.id}`, label: `🔫 ${def.name}`, sub, price: def.price, enabled: this.cash >= def.price });
       } else if (owned.level < 10) {
         const price = Math.round(def.upgradeBase * Math.pow(1.55, owned.level - 1));
@@ -678,6 +748,7 @@ export class Game {
     if (id === 'heal') this.p.hp = this.stats.maxHp;
     else if (id === 'armor') this.armor = Math.round((this.armor + 0.08) * 100) / 100;
     else if (id === 'nade') this.grenadesMax++;
+    else if (id.startsWith('kit:')) this.kit.push(id.slice(4) as DeployKind);
     else if (id.startsWith('buy:')) {
       const def = WEAPONS.find((w) => w.id === id.slice(4))!;
       const w = this.makeWeapon(def);
@@ -729,6 +800,7 @@ export class Game {
     for (let i = 0; i < 9; i++) if (inp.consume(String(i + 1)) && this.weapons[i]) this.setWeapon(i);
     if (inp.consume('r') || inp.consume('reload')) this.startReload();
     if (inp.consume('g') || inp.consume('e') || inp.consume('nade')) this.throwGrenade();
+    if (inp.consume('f') || inp.consume('deploy')) this.deploy();
 
     for (const k of Object.keys(this.active) as PowerKind[]) if (this.active[k] > 0) this.active[k] -= dt;
     if (this.comboT > 0) {
@@ -742,8 +814,10 @@ export class Game {
     this.updateBullets(dt);
     this.updateGrenades(dt);
     this.updateHazards(dt);
+    this.updateTrains(dt);
     this.updateOrbitals(dt);
     this.updatePickups(dt);
+    this.updateDeploys(dt);
     this.updateEffects(dt, rawDt);
 
     this.zombies = this.zombies.filter((z) => !z.dead);
@@ -753,12 +827,17 @@ export class Game {
       this.clearT = 1.6;
       this.showBanner('WAVE CLEARED', '', '#5dff7a');
       // Vacuum up any cash left on the floor.
-      for (const pk of this.pickups) if (pk.kind === 'cash') pk.pulled = true;
+      for (const pk of this.pickups) if (pk.kind !== 'health') pk.pulled = true;
     }
     if (this.clearT >= 0 && this.state === 'playing') {
       this.clearT -= rawDt;
       if (this.clearT < 0) {
-        for (const pk of this.pickups) if (pk.kind === 'cash') this.gainCash(pk.value);
+        if (!this.hitThisWave) this.report.flawlessWaves++;
+        this.gainBrains(1 + Math.floor(this.wave / 3));
+        for (const pk of this.pickups) {
+          if (pk.kind === 'cash') this.gainCash(pk.value);
+          else if (pk.kind === 'crate') this.openCrate(pk);
+        }
         this.pickups = [];
         this.bullets = [];
         this.spits = [];
@@ -777,7 +856,7 @@ export class Game {
     let mood: MusicMood = 'menu';
     let level = 0;
     if (this.state === 'playing') {
-      if (this.zombies.some((z) => z.boss)) mood = 'boss';
+      if (this.zombies.some(isBoss)) mood = 'boss';
       else {
         mood = 'fight';
         level = Math.min(2, Math.floor(this.zombies.length / 15));
@@ -793,7 +872,7 @@ export class Game {
   /** Title screen: zombies shamble around the dark lot under a sweeping searchlight. */
   private updateAttract(dt: number) {
     if (this.zombies.length < 26) {
-      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter'];
+      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter', 'shield', 'leaper', 'screamer', 'necro', 'dog', 'soldier', 'electric'];
       const z = this.spawnZombie(kinds[Math.floor(Math.random() * kinds.length)], rand(150, WORLD_W - 150), rand(150, WORLD_H - 150));
       z.tx = rand(150, WORLD_W - 150);
       z.ty = rand(150, WORLD_H - 150);
@@ -830,6 +909,7 @@ export class Game {
       btns.push({ id: 'nade', x: this.w - 132, y: cy + 22, r: 27, label: 'NADE' });
       btns.push({ id: 'swap', x: this.w - 54, y: cy - 74, r: 25, label: 'SWAP' });
       btns.push({ id: 'reload', x: this.w - 124, y: cy - 58, r: 23, label: 'R' });
+      if (this.kit.length) btns.push({ id: 'deploy', x: this.w - 200, y: cy + 34, r: 24, label: DEPLOYS[this.kit[0]].icon });
     }
     if (this.state === 'menu') btns.length = 0;
     inp.buttons = btns;
@@ -916,14 +996,16 @@ export class Game {
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     this.collideWalls(p, PLAYER_R);
+    for (const d of this.deploys) if (d.kind === 'barricade') this.pushOut(p, PLAYER_R, d);
     for (const b of this.barrels) {
       if (b.dead) continue;
       const dx = p.x - b.x;
       const dy = p.y - b.y;
       const d = Math.hypot(dx, dy);
-      if (d < PLAYER_R + 14 && d > 0) {
-        p.x = b.x + (dx / d) * (PLAYER_R + 14);
-        p.y = b.y + (dy / d) * (PLAYER_R + 14);
+      const br = PLAYER_R + (b.big ? 20 : 14);
+      if (d < br && d > 0) {
+        p.x = b.x + (dx / d) * br;
+        p.y = b.y + (dy / d) * br;
       }
     }
 
@@ -956,10 +1038,28 @@ export class Game {
     if (this.active.ammo <= 0) w.ammo--;
     const dmg = this.weaponDamage(w);
     const kind = w.def.kind;
-    const n = kind === 'bullet' ? w.def.pellets + this.stats.extraShots : 1 + (kind === 'rocket' ? Math.floor(this.stats.extraShots / 2) : 0);
+    const n = kind === 'bullet' ? w.def.pellets + this.stats.extraShots : 1 + (kind === 'rocket' || kind === 'grenade' || kind === 'tesla' ? Math.floor(this.stats.extraShots / 2) : 0);
     const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
     const my = p.y + Math.sin(p.angle) * (w.def.length + 4);
     const rage = this.active.rage > 0;
+    if (kind === 'tesla') {
+      for (let i = 0; i < n; i++) this.teslaArc(mx, my, p.angle + (i - (n - 1) / 2) * 0.35, dmg);
+      this.addLight(mx, my, 200, 0.08, '#8ad8ff');
+      this.sfx.play('tesla');
+      if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
+      return;
+    }
+    if (kind === 'grenade') {
+      for (let i = 0; i < n; i++) {
+        const a = p.angle + rand(-w.def.spread / 2, w.def.spread / 2) + (i - (n - 1) / 2) * 0.15;
+        this.grenades.push({ x: mx, y: my, vx: Math.cos(a) * w.def.speed, vy: Math.sin(a) * w.def.speed, z: 8, vz: 160, fuse: w.def.life, dmg, radius: 110, impact: true });
+      }
+      this.addLight(mx, my, 160, 0.07, '#b0ff7a');
+      this.addShake(w.def.shake * 0.5);
+      this.sfx.play('launcher');
+      if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
+      return;
+    }
     for (let i = 0; i < n; i++) {
       let a = p.angle + rand(-w.def.spread / 2, w.def.spread / 2);
       if (w.def.pellets === 1 && n > 1) a += (i - (n - 1) / 2) * 0.1;
@@ -968,22 +1068,22 @@ export class Game {
         kind,
         x: mx,
         y: my,
-        vx: Math.cos(a) * sp + (kind === 'flame' ? p.vx * 0.5 : 0),
-        vy: Math.sin(a) * sp + (kind === 'flame' ? p.vy * 0.5 : 0),
+        vx: Math.cos(a) * sp + (kind === 'flame' || kind === 'frost' ? p.vx * 0.5 : 0),
+        vy: Math.sin(a) * sp + (kind === 'flame' || kind === 'frost' ? p.vy * 0.5 : 0),
         dmg,
-        life: w.def.life * (kind === 'flame' ? rand(0.8, 1.1) : 1),
+        life: w.def.life * (kind === 'flame' || kind === 'frost' ? rand(0.8, 1.1) : 1),
         max: w.def.life,
-        pierce: kind === 'flame' ? 99 : kind === 'rocket' ? 0 : this.stats.pierce,
+        pierce: kind === 'flame' || kind === 'frost' ? 99 : kind === 'rocket' ? 0 : this.stats.pierce + (w.def.pierce ?? 0),
         ricochet: kind === 'bullet' ? this.stats.ricochet : 0,
         hits: [],
         color: rage ? '#ff5a4a' : w.def.color,
-        width: w.def.id === 'shotgun' ? 2.5 : w.def.id === 'minigun' ? 2.5 : 3,
+        width: w.def.id === 'shotgun' ? 2.5 : w.def.id === 'minigun' ? 2.5 : w.def.id === 'sniper' ? 4 : 3,
         canExplode: kind === 'bullet',
       });
     }
-    if (kind === 'flame') {
-      if (Math.random() < 0.4) this.addLight(mx, my, 150, 0.12, '#ff7a20');
-      this.sfx.play('flamer');
+    if (kind === 'flame' || kind === 'frost') {
+      if (Math.random() < 0.4) this.addLight(mx, my, 150, 0.12, kind === 'flame' ? '#ff7a20' : '#7fd8ff');
+      this.sfx.play(kind === 'flame' ? 'flamer' : 'freeze');
       return;
     }
     // Muzzle flash, light, smoke and a shell casing.
@@ -1006,9 +1106,9 @@ export class Game {
   }
 
   private farthestGate() {
-    let best = GATES[0];
+    let best = this.map.gates[0];
     let bd = -1;
-    for (const g of GATES) {
+    for (const g of this.map.gates) {
       const d = Math.hypot(g.x - this.p.x, g.y - this.p.y);
       if (d > bd) {
         bd = d;
@@ -1021,19 +1121,29 @@ export class Game {
   private updateSpawning(dt: number) {
     if (this.toSpawn <= 0) return;
     this.spawnT -= dt;
-    const cap = Math.min(30 + this.wave * 4, 100);
+    const cap = Math.min(30 + this.wave * 4, 100) + (this.has('horde') ? 30 : 0);
     if (this.spawnT > 0 || this.zombies.length >= cap) return;
     this.spawnT = Math.max(0.22, 0.85 - this.wave * 0.05);
-    const far = GATES.filter((g) => Math.hypot(g.x - this.p.x, g.y - this.p.y) > 520);
+    const far = this.map.gates.filter((g) => Math.hypot(g.x - this.p.x, g.y - this.p.y) > 520);
     const gate = far.length ? far[Math.floor(Math.random() * far.length)] : this.farthestGate();
     const group = Math.min(this.toSpawn, 1 + Math.floor(Math.random() * (2 + this.wave / 3)));
     const w = this.wave;
     const chances: [ZombieKind, number][] = [
-      ['tank', w >= 4 ? Math.min(0.12, 0.04 + (w - 4) * 0.012) : 0],
-      ['bloater', w >= 3 ? Math.min(0.12, 0.05 + (w - 3) * 0.01) : 0],
-      ['spitter', w >= 6 ? Math.min(0.12, 0.05 + (w - 6) * 0.01) : 0],
-      ['runner', w >= 2 ? Math.min(0.4, 0.12 + (w - 2) * 0.04) : 0],
+      ['tank', w >= 4 ? Math.min(0.1, 0.04 + (w - 4) * 0.012) : 0],
+      ['bloater', w >= 3 ? Math.min(0.1, 0.05 + (w - 3) * 0.01) : 0],
+      ['spitter', w >= 6 ? Math.min(0.09, 0.05 + (w - 6) * 0.01) : 0],
+      ['shield', w >= 5 ? Math.min(0.07, 0.035 + (w - 5) * 0.006) : 0],
+      ['leaper', w >= 6 ? Math.min(0.09, 0.05 + (w - 6) * 0.008) : 0],
+      ['screamer', w >= 8 && this.countKind('screamer') < 3 ? Math.min(0.05, 0.03 + (w - 8) * 0.004) : 0],
+      ['necro', w >= 12 && this.countKind('necro') < 2 ? Math.min(0.035, 0.02 + (w - 12) * 0.003) : 0],
+      ['crawler', w >= 9 ? Math.min(0.08, 0.045 + (w - 9) * 0.004) : 0],
+      ['dog', w >= 11 ? Math.min(0.045, 0.025 + (w - 11) * 0.003) : 0],
+      ['soldier', w >= 13 ? Math.min(0.06, 0.035 + (w - 13) * 0.004) : 0],
+      ['electric', w >= 14 && this.countKind('electric') < 3 ? Math.min(0.05, 0.03 + (w - 14) * 0.003) : 0],
+      ['runner', w >= 2 ? Math.min(0.36, 0.12 + (w - 2) * 0.04) : 0],
     ];
+    let eliteChance = w >= 15 ? Math.min(0.15, 0.04 + (w - 15) * 0.006) : 0;
+    if (this.has('elites')) eliteChance = Math.max(eliteChance, 0.12);
     for (let i = 0; i < group; i++) {
       let roll = Math.random();
       let kind: ZombieKind = 'walker';
@@ -1046,29 +1156,42 @@ export class Game {
       }
       const inward = { x: WORLD_W / 2 - gate.x, y: WORLD_H / 2 - gate.y };
       const d = Math.hypot(inward.x, inward.y);
-      this.spawnZombie(kind, gate.x + (inward.x / d) * 30 + rand(-40, 40), gate.y + (inward.y / d) * 30 + rand(-40, 40));
-      this.toSpawn--;
+      const elite = Math.random() < eliteChance ? ELITE_KINDS[Math.floor(Math.random() * ELITE_KINDS.length)] : undefined;
+      // Dogs always arrive as a pack.
+      const pack = kind === 'dog' ? 4 + Math.floor(Math.random() * 3) : 1;
+      for (let k = 0; k < pack; k++) this.spawnZombie(kind, gate.x + (inward.x / d) * 30 + rand(-50, 50), gate.y + (inward.y / d) * 30 + rand(-50, 50), { elite: k === 0 ? elite : undefined });
+      this.toSpawn = Math.max(0, this.toSpawn - pack);
     }
   }
 
-  private spawnZombie(kind: ZombieKind, x: number, y: number): Zombie {
+  private countKind(kind: ZombieKind) {
+    let n = 0;
+    for (const z of this.zombies) if (z.def.kind === kind && !z.dead) n++;
+    return n;
+  }
+
+  private spawnZombie(kind: ZombieKind, x: number, y: number, opts: { elite?: EliteKind; mini?: boolean } = {}): Zombie {
     const def = ZOMBIES[kind];
     const wv = Math.max(1, this.wave);
     const hpScale = 1 + 0.16 * (wv - 1) + 0.006 * (wv - 1) ** 2;
     const spScale = Math.min(1.35, 1 + 0.02 * (wv - 1));
-    const hp = def.hp * hpScale * (kind === 'boss' ? 1 + wv / 20 : 1);
+    const { elite, mini } = opts;
+    let hp = def.hp * hpScale * (kind === 'boss' || kind === 'brood' ? 1 + wv / 20 : 1);
+    if (elite) hp *= elite === 'armored' ? 3 : 1.6;
+    if (mini) hp *= 0.4;
+    const r = def.radius * (elite ? 1.15 : 1) * (mini ? 0.72 : 1);
     const z: Zombie = {
       id: this.nextId++,
       def,
-      x: clamp(x, BORDER + def.radius, WORLD_W - BORDER - def.radius),
-      y: clamp(y, BORDER + def.radius, WORLD_H - BORDER - def.radius),
+      x: clamp(x, BORDER + r, WORLD_W - BORDER - r),
+      y: clamp(y, BORDER + r, WORLD_H - BORDER - r),
       kx: 0,
       ky: 0,
       hp,
       maxHp: hp,
-      speed: def.speed * spScale * rand(0.9, 1.1),
-      dmg: def.damage * (1 + 0.05 * (wv - 1)),
-      r: def.radius,
+      speed: def.speed * spScale * rand(0.9, 1.1) * (elite === 'fast' ? 1.55 : 1) * (mini ? 1.15 : 1) * (this.has('fast') ? 1.25 : 1),
+      dmg: def.damage * (1 + 0.05 * (wv - 1)) * (elite ? 1.25 : 1),
+      r,
       flash: 0,
       slow: 0,
       burn: 0,
@@ -1078,8 +1201,24 @@ export class Game {
       face: 0,
       dead: false,
       spitCd: rand(1, 2.5),
+      buff: 0,
+      abilityCd: kind === 'egg' ? 3.6 : rand(2, 4),
+      chill: 0,
+      frozenT: 0,
+      plates: kind === 'soldier' ? 3 : 0,
+      plateHp: hp * 0.25,
+      zapT: 0,
+      elite,
+      mini,
     };
     if (kind === 'boss') z.boss = { state: 'walk', t: 3, dx: 0, dy: 0, summon: 6 };
+    if (kind === 'brood') z.brood = { lay: 4, spit: 2.5 };
+    if (kind === 'juggernaut') {
+      z.boss = { state: 'walk', t: 4, dx: 0, dy: 0, summon: 0 };
+      z.jug = { slam: 3, windup: 0 };
+    }
+    if (kind === 'leaper') z.leap = { state: 'walk', t: rand(1, 2), dx: 0, dy: 0 };
+    if (kind === 'shield') z.face = Math.atan2(this.p.y - z.y, this.p.x - z.x);
     this.zombies.push(z);
     return z;
   }
@@ -1103,7 +1242,7 @@ export class Game {
         const ny = cy + NEIGHBORS[k][1];
         if (nx < 0 || ny < 0 || nx >= FLOW_W || ny >= FLOW_H) continue;
         const j = ny * FLOW_W + nx;
-        if (f[j] >= 0 || BLOCKED[j]) continue;
+        if (f[j] >= 0 || this.blocked[j]) continue;
         f[j] = f[i] + 1;
         queue[tail++] = j;
       }
@@ -1162,6 +1301,11 @@ export class Game {
         }
       }
       if (frozen) continue;
+      if (z.frozenT > 0) {
+        z.frozenT -= dt;
+        continue;
+      }
+      if (z.chill > 0) z.chill = Math.max(0, z.chill - dt * 3);
       const dx = p.x - z.x;
       const dy = p.y - z.y;
       const d = Math.hypot(dx, dy) || 1;
@@ -1189,15 +1333,134 @@ export class Game {
         }
       }
 
+      const kind = z.def.kind;
+      if (z.buff > 0) {
+        z.buff -= dt;
+        vx *= 1.45;
+        vy *= 1.45;
+      }
+      if (z.elite === 'vampiric' && z.hp < z.maxHp) z.hp = Math.min(z.maxHp, z.hp + z.maxHp * 0.03 * dt);
+
+      if (kind === 'egg') {
+        vx = vy = 0;
+        z.abilityCd -= dt;
+        if (z.abilityCd <= 0) {
+          this.hatchEgg(z);
+          continue;
+        }
+      }
+
+      if (kind === 'screamer' || kind === 'necro') {
+        // Hang back behind the horde.
+        z.abilityCd -= dt;
+        const near = kind === 'necro' ? 300 : 250;
+        if (d < near + 100) {
+          const back = d < near ? -0.55 : 0;
+          vx = (dx / d) * sp * back;
+          vy = (dy / d) * sp * back;
+        }
+        if (z.abilityCd <= 0 && d < 650) {
+          if (kind === 'screamer') this.scream(z);
+          else this.raiseDead(z);
+        }
+      }
+
+      if (z.leap) {
+        const L = z.leap;
+        L.t -= dt;
+        if (L.state === 'walk' && L.t <= 0) {
+          if (d < 330 && d > 70) {
+            L.state = 'crouch';
+            L.t = 0.55;
+          } else L.t = 0.25;
+        }
+        if (L.state === 'crouch') {
+          vx = vy = 0;
+          // Locks its aim just before it jumps, so a late sidestep dodges it.
+          if (L.t > 0.18) {
+            L.dx = dx / d;
+            L.dy = dy / d;
+          }
+          if (L.t <= 0) {
+            L.state = 'leap';
+            L.t = 0.42;
+            this.sfx.play('pounce');
+          }
+        } else if (L.state === 'leap') {
+          vx = L.dx * 720;
+          vy = L.dy * 720;
+          if (Math.random() < 0.6) this.spawnParticle(z.x, z.y, rand(-30, 30), rand(-30, 30), 0.3, 6, 'rgba(140,110,60,0.3)', 3, false, false, 10);
+          if (L.t <= 0) {
+            L.state = 'walk';
+            L.t = rand(1.8, 2.8);
+          }
+        }
+      }
+
+      if (kind === 'electric') {
+        z.abilityCd -= dt;
+        if (z.zapT > 0) {
+          // Charging: stands still and crackles, then zaps.
+          vx *= 0.2;
+          vy *= 0.2;
+          z.zapT -= dt;
+          if (Math.random() < 0.5) this.spawnParticle(z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), 0, 0, 0.12, 3, '#a0f0ff', 1, false, true);
+          if (z.zapT <= 0) this.zap(z, d);
+        } else if (z.abilityCd <= 0 && d < 250) {
+          z.zapT = 0.6;
+          z.abilityCd = rand(2.6, 3.4);
+        }
+      }
+
+      if (z.jug) {
+        const J = z.jug;
+        J.slam -= dt;
+        if (J.windup > 0) {
+          vx = vy = 0;
+          J.windup -= dt;
+          if (J.windup <= 0) this.groundSlam(z);
+        } else if (J.slam <= 0 && d < 280 && z.boss?.state === 'walk') {
+          J.windup = 0.9;
+          J.slam = rand(4.5, 6.5);
+        }
+      }
+
+      if (z.brood) {
+        const B = z.brood;
+        B.lay -= dt;
+        B.spit -= dt;
+        if (B.lay <= 0) {
+          B.lay = 8;
+          const n = 3 + Math.floor(this.wave / 20);
+          for (let i = 0; i < n; i++) {
+            const a = z.face + Math.PI + rand(-1.4, 1.4);
+            this.spawnZombie('egg', z.x + Math.cos(a) * (z.r + 30), z.y + Math.sin(a) * (z.r + 30));
+          }
+          this.showShout('SHOOT THE EGGS!', '#ffcf5a');
+          this.sfx.play('splat');
+          this.rings.push({ x: z.x, y: z.y, r: 0, max: 120, life: 0.45, color: 'rgba(255,220,120,' });
+        }
+        if (B.spit <= 0 && d < 560) {
+          B.spit = rand(2.2, 3);
+          const base = Math.atan2(dy, dx);
+          for (let i = -2; i <= 2; i++) {
+            const a = base + i * 0.22;
+            this.spits.push({ x: z.x + Math.cos(a) * z.r, y: z.y + Math.sin(a) * z.r, vx: Math.cos(a) * 320, vy: Math.sin(a) * 320, life: 1.5 });
+          }
+          this.sfx.play('spit');
+        }
+      }
+
       if (z.boss) {
         const b = z.boss;
         b.t -= dt;
         b.summon -= dt;
-        if (b.summon <= 0) {
+        if (kind === 'boss' && b.summon <= 0) {
           b.summon = 7;
           for (let i = 0; i < 3 + Math.floor(this.wave / 10); i++) this.spawnZombie(Math.random() < 0.3 ? 'bloater' : 'runner', z.x + rand(-60, 60), z.y + rand(-60, 60));
           this.rings.push({ x: z.x, y: z.y, r: 0, max: 130, life: 0.5, color: 'rgba(190,90,255,' });
         }
+        if (z.jug && z.jug.windup > 0) b.t = Math.max(b.t, 0.5);
         if (b.state === 'walk' && b.t <= 0) {
           b.state = 'windup';
           b.t = 0.8;
@@ -1221,7 +1484,15 @@ export class Game {
         }
       }
 
-      z.face = Math.atan2(z.boss?.state === 'charge' ? z.boss.dy : dy, z.boss?.state === 'charge' ? z.boss.dx : dx);
+      let face = Math.atan2(z.boss?.state === 'charge' ? z.boss.dy : dy, z.boss?.state === 'charge' ? z.boss.dx : dx);
+      if (z.leap && z.leap.state !== 'walk') face = Math.atan2(z.leap.dy, z.leap.dx);
+      if (kind === 'shield') {
+        // Brutes turn slowly behind their shield, so you can flank them.
+        let da = face - z.face;
+        while (da > Math.PI) da -= Math.PI * 2;
+        while (da < -Math.PI) da += Math.PI * 2;
+        z.face += clamp(da, -1.25 * dt, 1.25 * dt);
+      } else z.face = face;
       z.kx *= Math.exp(-dt * 9);
       z.ky *= Math.exp(-dt * 9);
       const ox = z.x;
@@ -1229,6 +1500,10 @@ export class Game {
       z.x += (vx + z.kx) * dt;
       z.y += (vy + z.ky) * dt;
       if (this.collideWalls(z, z.r)) {
+        if (z.leap?.state === 'leap') {
+          z.leap.state = 'walk';
+          z.leap.t = rand(1.8, 2.8);
+        }
         if (z.boss && z.boss.state === 'charge') {
           z.boss.state = 'walk';
           z.boss.t = rand(3, 4.5);
@@ -1237,9 +1512,19 @@ export class Game {
           this.rings.push({ x: z.x, y: z.y, r: 0, max: 90, life: 0.4, color: 'rgba(200,180,160,' });
         }
       }
+      if (z.attackCd > 0) z.attackCd -= dt;
+      for (const dp of this.deploys) {
+        if (dp.kind === 'mine') continue;
+        const touching = Math.hypot(z.x - dp.x, z.y - dp.y) < z.r + dp.r + 3;
+        if (dp.kind === 'barricade') this.pushOut(z, z.r, dp);
+        if (touching && z.attackCd <= 0 && kind !== 'egg' && kind !== 'bloater') {
+          z.attackCd = 0.8;
+          dp.hp -= isBoss(z) ? z.dmg * 3 : z.dmg;
+          if (Math.random() < 0.5) this.spawnParticle(dp.x, dp.y, rand(-120, 120), rand(-120, 120), 0.4, rand(3, 5), dp.kind === 'barricade' ? '#a8885a' : '#8a9298', 4, false, false);
+        }
+      }
       z.phase += Math.hypot(z.x - ox, z.y - oy) * 0.08;
       if (z.slow > 0) z.slow -= dt;
-      if (z.attackCd > 0) z.attackCd -= dt;
       if (z.bladeCd > 0) z.bladeCd -= dt;
 
       if (d < z.r + PLAYER_R + 3 && z.attackCd <= 0) {
@@ -1247,8 +1532,17 @@ export class Game {
           this.killZombie(z, z.face);
           continue;
         }
+        if (kind === 'egg') continue;
         z.attackCd = 0.8;
         this.hurtPlayer(z.dmg, z);
+        if (z.elite === 'vampiric') {
+          z.hp = Math.min(z.maxHp, z.hp + z.maxHp * 0.25);
+          this.addText(z.x, z.y - z.r - 8, 'DRAIN', '#ff2a4a', 12);
+        }
+        if (z.leap?.state === 'leap') {
+          z.leap.state = 'walk';
+          z.leap.t = rand(1.8, 2.8);
+        }
       }
     }
 
@@ -1277,20 +1571,143 @@ export class Game {
     }
   }
 
+  private hatchEgg(z: Zombie) {
+    z.dead = true;
+    const n = this.wave >= 40 ? 3 : 2;
+    for (let i = 0; i < n; i++) this.spawnZombie(Math.random() < 0.5 ? 'leaper' : 'runner', z.x + rand(-20, 20), z.y + rand(-20, 20));
+    for (let i = 0; i < 14; i++) this.spawnBlood(z.x, z.y, rand(0, Math.PI * 2), i % 2 ? '#d8c89a' : '#8a7a4a');
+    this.sfx.play('splat');
+  }
+
+  /** Electric zombie: lightning to the player if still in range, arcing on to nearby zombies and speeding them up. */
+  private zap(z: Zombie, d: number) {
+    this.sfx.play('zap');
+    this.addLight(z.x, z.y, 200, 0.2, '#a0f0ff');
+    if (d < 300) {
+      this.bolts.push({ x1: z.x, y1: z.y, x2: this.p.x, y2: this.p.y, life: 0.18, color: '#a0f0ff' });
+      this.hurtPlayer(12 * (1 + 0.04 * this.wave), z);
+    }
+    let n = 0;
+    for (const o of this.zombies) {
+      if (n >= 3 || o === z || o.dead || isBoss(o) || o.def.kind === 'egg') continue;
+      if (Math.hypot(o.x - z.x, o.y - z.y) > 220) continue;
+      this.bolts.push({ x1: z.x, y1: z.y, x2: o.x, y2: o.y, life: 0.18, color: '#a0f0ff' });
+      o.buff = Math.max(o.buff, 3);
+      n++;
+    }
+  }
+
+  /** Juggernaut: a shockwave around it after a telegraphed wind-up. */
+  private groundSlam(z: Zombie) {
+    const R = 240;
+    this.rings.push({ x: z.x, y: z.y, r: 20, max: R, life: 0.5, color: 'rgba(255,140,80,' });
+    this.rings.push({ x: z.x, y: z.y, r: 10, max: R * 0.7, life: 0.4, color: 'rgba(255,220,180,' });
+    for (let i = 0; i < 30; i++) {
+      const a = rand(0, Math.PI * 2);
+      this.spawnParticle(z.x + Math.cos(a) * z.r, z.y + Math.sin(a) * z.r, Math.cos(a) * rand(200, 500), Math.sin(a) * rand(200, 500), rand(0.4, 0.8), rand(6, 12), 'rgba(120,100,90,0.45)', 3, false, false, 16);
+    }
+    this.addShake(0.8);
+    this.zoomKick = Math.max(this.zoomKick, 0.06);
+    this.sfx.play('slam');
+    const d = Math.hypot(this.p.x - z.x, this.p.y - z.y);
+    if (d < R) this.hurtPlayer(38 * (1 + 0.03 * this.wave), z);
+  }
+
+  /** Tesla gun: an arc to the nearest zombie in front, chaining onward. */
+  private teslaArc(x: number, y: number, angle: number, dmg: number) {
+    let best: Zombie | null = null;
+    let bd = 360;
+    for (const z of this.zombies) {
+      if (z.dead) continue;
+      const d = Math.hypot(z.x - x, z.y - y);
+      if (d > bd) continue;
+      let da = Math.atan2(z.y - y, z.x - x) - angle;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      if (Math.abs(da) > 0.55) continue;
+      bd = d;
+      best = z;
+    }
+    if (!best) {
+      this.bolts.push({ x1: x, y1: y, x2: x + Math.cos(angle) * 130, y2: y + Math.sin(angle) * 130, life: 0.08, color: '#8ad8ff' });
+      return;
+    }
+    const hit: number[] = [];
+    let from = { x, y };
+    let cur: Zombie | null = best;
+    const jumps = 4 + this.stats.ricochet * 2;
+    for (let i = 0; cur && i <= jumps; i++) {
+      this.bolts.push({ x1: from.x, y1: from.y, x2: cur.x, y2: cur.y, life: 0.1, color: i ? '#b8ecff' : '#ffffff' });
+      hit.push(cur.id);
+      const crit = Math.random() < this.stats.crit;
+      from = { x: cur.x, y: cur.y };
+      this.damageZombie(cur, dmg * Math.pow(0.85, i) * (crit ? 2.5 : 1), Math.atan2(cur.y - y, cur.x - x), crit, 60);
+      cur = this.nearestZombie(from.x, from.y, 170, hit);
+    }
+  }
+
+  private chill(z: Zombie) {
+    if (z.def.kind === 'electric' || z.frozenT > 0) return;
+    if (isBoss(z)) {
+      // Bosses only get slowed, never frozen solid.
+      z.slow = Math.max(z.slow, 0.5);
+      return;
+    }
+    z.slow = Math.max(z.slow, 1.5);
+    z.chill += 1;
+    if (z.chill >= 10) {
+      z.chill = 0;
+      z.frozenT = 1.8;
+      for (let i = 0; i < 6; i++) this.spawnParticle(z.x, z.y, rand(-80, 80), rand(-80, 80), 0.3, 3, '#dff6ff', 5, false, true);
+    }
+  }
+
+  /** Screamer: buffs every zombie around it. */
+  private scream(z: Zombie) {
+    z.abilityCd = rand(4.5, 6);
+    const R = 300;
+    this.rings.push({ x: z.x, y: z.y, r: 10, max: R, life: 0.6, color: 'rgba(255,90,120,' });
+    this.rings.push({ x: z.x, y: z.y, r: 10, max: R * 0.6, life: 0.45, color: 'rgba(255,200,210,' });
+    this.addLight(z.x, z.y, 220, 0.4, '#ff5a78');
+    for (const o of this.zombies) {
+      if (o === z || o.dead || isBoss(o) || o.def.kind === 'egg') continue;
+      if (Math.hypot(o.x - z.x, o.y - z.y) < R) o.buff = 5;
+    }
+    this.sfx.play('scream');
+    this.addShake(0.15);
+  }
+
+  /** Necromancer: stands up the most recent corpses near it, or digs fresh ones out of the ground. */
+  private raiseDead(z: Zombie) {
+    z.abilityCd = rand(5, 6.5);
+    const near = this.corpses.filter((c) => Math.hypot(c.x - z.x, c.y - z.y) < 420).slice(-4);
+    const spots = near.length ? near : [0, 1].map(() => ({ x: z.x + rand(-90, 90), y: z.y + rand(-90, 90) }));
+    this.corpses = this.corpses.filter((c) => !near.includes(c));
+    for (const c of spots) {
+      if (this.pointInWall(c.x, c.y)) continue;
+      const r = this.spawnZombie('walker', c.x, c.y);
+      r.flash = 0.3;
+      for (let i = 0; i < 8; i++) this.spawnParticle(c.x, c.y, rand(-40, 40), rand(-120, -30), rand(0.4, 0.7), rand(3, 6), '#5dffb0', 2, false, true);
+      // A beam from the necromancer to each raised corpse.
+      for (let t = 0.1; t < 1; t += 0.12) this.spawnParticle(z.x + (c.x - z.x) * t, z.y + (c.y - z.y) * t, 0, 0, 0.35, 4, '#5dffb0', 1, false, true);
+    }
+    this.rings.push({ x: z.x, y: z.y, r: 0, max: 90, life: 0.45, color: 'rgba(93,255,176,' });
+    this.addLight(z.x, z.y, 200, 0.4, '#5dffb0');
+    this.sfx.play('raise');
+  }
+
   private hurtPlayer(amount: number, from: { x: number; y: number } | null) {
     if (this.dashT > 0 || this.state !== 'playing' || amount <= 0) return;
     const dmg = amount * (1 - this.armor);
     this.p.hp -= dmg;
+    this.report.hitsTaken++;
+    this.hitThisWave = true;
     this.hurtFlash = 0.25;
     this.addShake(0.45);
     this.sfx.play('hurt');
     this.addText(this.p.x, this.p.y - 24, `-${Math.round(dmg)}`, '#ff5a4e', 16);
     for (let i = 0; i < 6; i++) this.spawnBlood(this.p.x, this.p.y, rand(0, Math.PI * 2), '#b0201a');
-    try {
-      navigator.vibrate?.(35);
-    } catch {
-      /* not supported */
-    }
+    this.buzz(35);
     if (from) {
       const a = Math.atan2(this.p.y - from.y, this.p.x - from.x);
       this.p.vx += Math.cos(a) * 160;
@@ -1313,24 +1730,48 @@ export class Game {
   }
 
   private gameOver() {
+    if (this.reviveLeft > 0) {
+      // Second Wind: get back up and blast everything nearby away.
+      this.reviveLeft--;
+      this.report.revives++;
+      this.p.hp = this.stats.maxHp * 0.5;
+      this.slowT = 1.2;
+      this.flash = { t: 0.6, color: '#ffffff', max: 0.6 };
+      this.showBanner('SECOND WIND', 'GET BACK UP', '#5dff7a');
+      this.explode(this.p.x, this.p.y, 300 * this.stats.damage, 280, 0);
+      this.sfx.play('power');
+      return;
+    }
     this.p.hp = 0;
     this.state = 'over';
     this.addShake(1);
     this.flash = { t: 0.5, color: '#a00000', max: 0.5 };
     for (let i = 0; i < 40; i++) this.spawnBlood(this.p.x, this.p.y, rand(0, Math.PI * 2), '#a0201a', 1.5);
-    const newBest = this.wave > this.best;
-    if (newBest) {
-      this.best = this.wave;
-      saveBest(this.wave);
-    }
     this.input.reset();
-    this.hooks.onGameOver({ wave: this.wave, kills: this.kills, cash: Math.round(this.earned), time: this.runTime, best: this.best, newBest, bestCombo: this.bestCombo });
+    this.hooks.onGameOver(this.summary());
+  }
+
+  /** Snapshot of the run so far, for the game-over screen, missions and the share card. */
+  summary(): RunSummary {
+    this.report.wave = this.wave;
+    this.report.kills = this.kills;
+    this.report.bestCombo = this.bestCombo;
+    this.report.time = this.runTime;
+    const perks: string[] = [];
+    for (const perk of PERKS) for (let i = 0; i < (this.perkCounts.get(perk.id) ?? 0); i++) perks.push(perk.icon);
+    return { wave: this.wave, kills: this.kills, cash: Math.round(this.earned), time: this.runTime, bestCombo: this.bestCombo, report: { ...this.report }, perks, weapons: this.weapons.map((w) => w.def.name) };
+  }
+
+  private gainBrains(n: number, x?: number, y?: number) {
+    this.report.brains += n;
+    this.brainsPulse = 0.25;
+    if (x !== undefined && y !== undefined) this.addText(x, y, `+${n} 🧠`, '#ff8ad8', 15);
   }
 
   private updateBullets(dt: number) {
     const out: Bullet[] = [];
     for (const b of this.bullets) {
-      if (b.kind === 'flame') {
+      if (b.kind === 'flame' || b.kind === 'frost') {
         const k = Math.exp(-dt * 2.5);
         b.vx *= k;
         b.vy *= k;
@@ -1355,13 +1796,13 @@ export class Game {
       let alive = true;
       for (const br of this.barrels) {
         if (br.dead || br.fuse > 0) continue;
-        if (Math.hypot(br.x - b.x, br.y - b.y) < 16) {
+        if (Math.hypot(br.x - b.x, br.y - b.y) < (br.big ? 22 : 16)) {
           if (b.kind === 'rocket') {
             this.explode(b.x, b.y, b.dmg, 115, 0);
             alive = false;
             break;
           }
-          br.hp -= b.kind === 'flame' ? 3 : b.dmg;
+          br.hp -= b.kind === 'flame' ? 3 : b.kind === 'frost' ? 0 : b.dmg;
           this.spawnParticle(b.x, b.y, rand(-80, 80), rand(-80, 80), 0.15, 2, '#ffd27a', 6, false, true);
           if (br.hp <= 0) br.fuse = 0.05;
           if (b.kind === 'bullet') {
@@ -1375,7 +1816,7 @@ export class Game {
         if (z.dead || b.hits.includes(z.id)) continue;
         const dx = z.x - b.x;
         const dy = z.y - b.y;
-        const rr = z.r + (b.kind === 'flame' ? 10 : 4);
+        const rr = z.r + (b.kind === 'flame' || b.kind === 'frost' ? 10 : 4);
         if (dx * dx + dy * dy > rr * rr) continue;
         if (b.kind === 'rocket') {
           this.explode(b.x, b.y, b.dmg, 115, 0);
@@ -1383,9 +1824,24 @@ export class Game {
           break;
         }
         b.hits.push(z.id);
+        if (z.def.kind === 'shield' && b.kind === 'bullet' && Math.cos(Math.atan2(b.vy, b.vx) - z.face) < -0.35) {
+          // Bullet hit the riot shield: sparks, a clank, and it stops dead.
+          for (let i = 0; i < 4; i++) this.spawnParticle(b.x, b.y, rand(-160, 160), rand(-160, 160), 0.15, 2.5, '#fff2b0', 6, false, true);
+          z.kx -= Math.cos(z.face) * 10;
+          z.ky -= Math.sin(z.face) * 10;
+          this.sfx.play('clank');
+          if (Math.random() < 0.08) this.addText(z.x, z.y - z.r - 6, 'BLOCKED', '#c9d1d8', 11);
+          alive = false;
+          break;
+        }
         let dmg = b.dmg;
         const crit = b.kind === 'bullet' && Math.random() < this.stats.crit;
         if (crit) dmg *= 2.5;
+        if (b.kind === 'frost') {
+          this.chill(z);
+          this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 10, true);
+          continue;
+        }
         if (b.kind === 'flame') {
           z.burn = 2.5;
           this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 20, true);
@@ -1429,14 +1885,19 @@ export class Game {
       const oy = g.y;
       g.x += g.vx * dt;
       g.y += g.vy * dt;
+      let boom = g.fuse <= 0;
       if (this.pointInWall(g.x, g.y)) {
         g.x = ox;
         g.y = oy;
         g.vx *= -0.5;
         g.vy *= -0.5;
+        if (g.impact) boom = true;
       }
-      if (g.fuse <= 0) {
-        this.explode(g.x, g.y, 170 * this.stats.damage, 135, 18);
+      if (g.impact && !boom) for (const z of this.zombies) if (!z.dead && Math.hypot(z.x - g.x, z.y - g.y) < z.r + 6) boom = true;
+      if (boom) {
+        this.nadeBlast = true;
+        this.explode(g.x, g.y, g.dmg ?? 170 * this.stats.damage, g.radius ?? 135, g.impact ? 8 : 18);
+        this.nadeBlast = false;
         continue;
       }
       keep.push(g);
@@ -1484,8 +1945,104 @@ export class Game {
       b.fuse -= dt;
       if (b.fuse <= 0) {
         b.dead = true;
-        this.explode(b.x, b.y, 240 * this.stats.damage, 150, 30, true);
+        if (b.big) {
+          // Fuel pump: a fireball that clears the whole forecourt.
+          this.explode(b.x, b.y, 450 * this.stats.damage, 230, 40, true);
+          this.flash = { t: 0.3, color: '#ffb050', max: 0.3 };
+          this.slowT = Math.max(this.slowT, 0.4);
+        } else this.explode(b.x, b.y, 240 * this.stats.damage, 150, 30, true);
       }
+    }
+  }
+
+  private updateTrains(dt: number) {
+    for (const tr of this.trains) {
+      tr.t -= dt;
+      if (tr.phase === 'idle' && tr.t <= 0) {
+        tr.phase = 'warn';
+        tr.t = 2.2;
+        this.sfx.play('horn');
+        if (!this.trainWarned) {
+          this.trainWarned = true;
+          this.showShout('TRAIN INCOMING!', '#ff5a4a');
+        }
+      } else if (tr.phase === 'warn' && tr.t <= 0) {
+        tr.phase = 'go';
+        tr.x = tr.dir > 0 ? -TRAIN_LEN - 100 : WORLD_W + 100;
+        tr.hitPlayer = false;
+        tr.hitBoss = [];
+        this.sfx.play('train');
+        this.addShake(0.3);
+      } else if (tr.phase === 'go') {
+        tr.x += tr.dir * TRAIN_SPEED * dt;
+        if ((tr.dir > 0 && tr.x > WORLD_W + 100) || (tr.dir < 0 && tr.x + TRAIN_LEN < -100)) {
+          tr.phase = 'idle';
+          tr.t = rand(11, 17);
+          continue;
+        }
+        const x0 = tr.x;
+        const x1 = tr.x + TRAIN_LEN;
+        const front = tr.dir > 0 ? x1 : x0;
+        this.addLight(front, tr.y, 260, 0.06, '#fff2c0');
+        for (const z of this.zombies) {
+          if (z.dead || Math.abs(z.y - tr.y) > 48 + z.r || z.x < x0 || z.x > x1) continue;
+          if (isBoss(z)) {
+            if (tr.hitBoss.includes(z.id)) continue;
+            tr.hitBoss.push(z.id);
+            this.damageZombie(z, z.maxHp * 0.12, tr.dir > 0 ? 0 : Math.PI, false, 0);
+          } else {
+            this.cause = 'train';
+            this.killZombie(z, tr.dir > 0 ? rand(-0.5, 0.5) : Math.PI + rand(-0.5, 0.5));
+            this.cause = '';
+          }
+        }
+        const p = this.p;
+        if (!tr.hitPlayer && Math.abs(p.y - tr.y) < 48 + PLAYER_R && p.x > x0 && p.x < x1 && this.dashT <= 0) {
+          tr.hitPlayer = true;
+          this.hurtPlayer(55, null);
+          p.vy += (p.y < tr.y ? -1 : 1) * 900;
+          p.vx += tr.dir * 500;
+        }
+      }
+    }
+  }
+
+  private drawTrains() {
+    const ctx = this.ctx;
+    for (const tr of this.trains) {
+      if (tr.phase === 'warn') {
+        const on = Math.floor(this.clock * 6) % 2 === 0;
+        ctx.fillStyle = `rgba(255,40,40,${on ? 0.18 : 0.08})`;
+        ctx.fillRect(BORDER, tr.y - 50, WORLD_W - BORDER * 2, 100);
+        for (const x of [BORDER + 20, WORLD_W - BORDER - 20]) {
+          ctx.fillStyle = on ? '#ff3030' : '#501010';
+          ctx.beginPath();
+          ctx.arc(x, tr.y - 60, 9, 0, Math.PI * 2);
+          ctx.fill();
+          if (on) this.addLight(x, tr.y - 60, 140, 0.05, '#ff3030');
+        }
+      }
+      if (tr.phase !== 'go') continue;
+      const cars = 4;
+      const carLen = TRAIN_LEN / cars;
+      for (let i = 0; i < cars; i++) {
+        const x = tr.x + i * carLen;
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        ctx.fillRect(x + 6, tr.y - 40, carLen - 8, 92);
+        ctx.fillStyle = '#b8bec6';
+        ctx.fillRect(x, tr.y - 46, carLen - 10, 92);
+        ctx.fillStyle = '#2a5ab8';
+        ctx.fillRect(x, tr.y - 6, carLen - 10, 12);
+        ctx.fillStyle = '#1b2633';
+        for (let wx = x + 18; wx < x + carLen - 40; wx += 44) {
+          ctx.fillRect(wx, tr.y - 36, 26, 18);
+          ctx.fillRect(wx, tr.y + 18, 26, 18);
+        }
+      }
+      const front = tr.dir > 0 ? tr.x + TRAIN_LEN - 10 : tr.x;
+      ctx.fillStyle = '#fff6c0';
+      ctx.fillRect(front - (tr.dir > 0 ? 6 : 0), tr.y - 36, 6, 14);
+      ctx.fillRect(front - (tr.dir > 0 ? 6 : 0), tr.y + 22, 6, 14);
     }
   }
 
@@ -1505,15 +2062,37 @@ export class Game {
 
   private damageZombie(z: Zombie, dmg: number, angle: number, crit: boolean, knock: number, quiet = false) {
     if (z.dead) return;
+    // Mother Brood is shielded by her eggs.
+    if (z.def.kind === 'brood' && this.countKind('egg') > 0) dmg *= 0.25;
+    if (z.def.kind === 'juggernaut') {
+      // Armored front, glowing weak spot on the back.
+      const c = Math.cos(angle - z.face);
+      if (c < -0.3) dmg *= 0.2;
+      else if (c > 0.5) {
+        dmg *= 1.6;
+        if (!quiet && Math.random() < 0.15) this.addText(z.x, z.y - z.r - 10, 'WEAK SPOT!', '#ffd23f', 14);
+      }
+    }
+    if (z.plates > 0) {
+      z.plateHp -= dmg;
+      dmg *= 0.3;
+      if (z.plateHp <= 0) {
+        z.plates--;
+        z.plateHp = z.maxHp * 0.25;
+        for (let i = 0; i < 6; i++) this.spawnParticle(z.x, z.y, rand(-220, 220), rand(-220, 220), rand(0.4, 0.7), rand(4, 7), '#8a9298', 4, true, false);
+        this.sfx.play('plate');
+        if (z.plates === 0) this.addText(z.x, z.y - z.r - 8, 'ARMOR BROKEN', '#c9d1d8', 12);
+      }
+    }
     z.hp -= dmg;
     z.flash = 0.07;
     const k = knock / z.def.mass;
     z.kx += Math.cos(angle) * k;
     z.ky += Math.sin(angle) * k;
-    if (this.stats.frost > 0) z.slow = 1.5;
+    if (this.stats.frost > 0 && z.def.kind !== 'electric') z.slow = 1.5;
     if (!quiet) {
       for (let i = 0; i < (crit ? 5 : 2); i++) this.spawnBlood(z.x, z.y, angle + rand(-0.6, 0.6), z.def.kind === 'bloater' ? '#6a8f10' : '#7a1010');
-      if (crit || dmg >= 20) this.addText(z.x + rand(-8, 8), z.y - z.r - 4, String(Math.round(dmg)), crit ? '#ffd23f' : '#ffffff', crit ? 18 : 12);
+      if (crit || dmg >= 20) this.addText(z.x + rand(-8, 8), z.y - z.r - 4, String(Math.round(dmg)), crit ? '#ffd23f' : dmg >= 150 ? '#ffb347' : '#ffffff', clamp(11 + Math.sqrt(dmg) * (crit ? 1.2 : 0.7), 12, crit ? 30 : 22));
       this.sfx.play('hit');
     }
     if (z.hp <= 0) this.killZombie(z, angle);
@@ -1524,8 +2103,38 @@ export class Game {
     z.dead = true;
     this.kills++;
     const kind = z.def.kind;
-    const boss = kind === 'boss';
-    const big = boss || kind === 'tank';
+    const boss = isBoss(z);
+    const rep = this.report;
+    rep.killsByKind[kind] = (rep.killsByKind[kind] ?? 0) + 1;
+    const wid = this.weapons[this.wi].def.id;
+    rep.killsByWeapon[wid] = (rep.killsByWeapon[wid] ?? 0) + 1;
+    if (this.nadeBlast) rep.grenadeKills++;
+    if (this.cause === 'train') rep.trainKills++;
+    else if (this.cause === 'barrel') rep.barrelKills++;
+    this.countBurst(z);
+    if (boss) {
+      rep.bosses++;
+      this.gainBrains(25 + this.wave, z.x, z.y - z.r - 20);
+    } else if (z.elite) {
+      rep.elites++;
+      this.gainBrains(3, z.x, z.y - z.r - 10);
+    } else if (this.kills % 10 === 0) this.gainBrains(1);
+    if (!boss && kind !== 'egg' && !z.mini) {
+      this.corpses.push({ x: z.x, y: z.y });
+      if (this.corpses.length > 40) this.corpses.shift();
+    }
+    if (z.elite === 'splitting' && kind !== 'egg')
+      for (let i = 0; i < 2; i++) this.spawnZombie(kind, z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), { mini: true }).flash = 0.2;
+    if (z.frozenT > 0) {
+      for (let i = 0; i < 14; i++) {
+        const a = rand(0, Math.PI * 2);
+        this.spawnParticle(z.x, z.y, Math.cos(a) * rand(100, 320), Math.sin(a) * rand(100, 320), rand(0.3, 0.6), rand(3, 7), i % 2 ? '#dff6ff' : '#7fd8ff', 4, false, true);
+      }
+      this.sfx.play('shatter');
+    }
+    if (this.has('boom') && !boss && kind !== 'egg' && z.elite !== 'explosive') this.explode(z.x, z.y, 45 * this.stats.damage, 80, 10);
+    if (z.elite === 'explosive') this.explode(z.x, z.y, 70 * this.stats.damage, 110, 22);
+    const big = boss || kind === 'tank' || kind === 'shield';
     const n = boss ? 60 : big ? 22 : 12;
     for (let i = 0; i < n; i++) this.spawnBlood(z.x, z.y, angle + rand(-1.2, 1.2), i % 3 ? '#8a1414' : z.def.dark, rand(1, boss ? 3 : 1.8));
     // Gibs
@@ -1551,33 +2160,69 @@ export class Game {
       if (this.combo === at) {
         this.showShout(text, at >= 100 ? '#ff3bd0' : at >= 50 ? '#ff5a4a' : '#ffd23f');
         this.sfx.play('combo');
+        if (at === 100) this.hooks.onHighlight?.('x100 combo');
       }
     }
 
     const mult = (1 + Math.min(this.combo, 100) * 0.01) * (this.active.cash > 0 ? 2 : 1);
     const value = z.def.cash * this.stats.cash * (1 + 0.06 * (this.wave - 1)) * mult;
-    const coins = boss ? 20 : kind === 'tank' ? 4 : 1;
+    const coins = boss ? 20 : kind === 'tank' || kind === 'shield' || z.elite ? 4 : 1;
     for (let i = 0; i < coins; i++) {
       const a = rand(0, Math.PI * 2);
       const s = coins > 1 ? rand(60, 220) : rand(20, 60);
       this.pickups.push({ x: z.x, y: z.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, kind: 'cash', value: value / coins, pulled: false });
     }
-    const healthChance = boss ? 1 : kind === 'tank' ? 0.25 : 0.025;
+    const healthChance = this.mode === 'hardcore' ? 0 : boss ? 1 : kind === 'tank' || kind === 'shield' ? 0.25 : z.elite ? 0.3 : 0.025;
     if (Math.random() < healthChance) this.pickups.push({ x: z.x, y: z.y, vx: rand(-40, 40), vy: rand(-40, 40), kind: 'health', value: 25, pulled: false });
     if (this.state === 'playing' && (boss || (Math.random() < 0.022 && this.powers.length < 2))) {
       const kinds: PowerKind[] = boss ? ['rage'] : ['nuke', 'rage', 'freeze', 'ammo', 'cash'];
       this.powers.push({ x: z.x, y: z.y, kind: kinds[Math.floor(Math.random() * kinds.length)], life: 14 });
     }
+    // Loot crates: always from bosses, rarely from elites.
+    if (boss || (z.elite && Math.random() < 0.03)) this.pickups.push({ x: z.x, y: z.y, vx: rand(-60, 60), vy: rand(-60, 60), kind: 'crate', value: boss ? 1 : 0, pulled: false });
     if (this.stats.lifesteal > 0) this.p.hp = Math.min(this.stats.maxHp, this.p.hp + this.stats.lifesteal);
     this.sfx.play('death', boss ? 2 : 1);
     this.addShake(boss ? 1 : big ? 0.3 : 0.06);
     if (big) this.hitstop = boss ? 0.12 : 0.05;
     if (kind === 'bloater') this.explode(z.x, z.y, 60 * this.stats.damage, 95, 18, false, 'toxic');
     if (boss) {
-      this.slowT = 1.4;
+      this.slowT = 1.8;
+      this.zoomKick = Math.max(this.zoomKick, 0.25);
+      this.killCam = { x: z.x, y: z.y, t: 1.6 };
+      this.buzzT = 0;
+      this.buzz([80, 50, 160]);
+      this.hooks.onHighlight?.(`${BOSS_NAMES[kind]} kill`);
       this.explode(z.x, z.y, 0, 160, 0);
-      this.showBanner('BOSS DOWN', 'ABOMINATION SLAIN', '#c065ff');
+      this.showBanner('BOSS DOWN', `${BOSS_NAMES[kind]} SLAIN`, BOSS_COLORS[kind] ?? '#c065ff');
       this.flash = { t: 0.4, color: '#ffffff', max: 0.4 };
+      // Her unhatched eggs die with her.
+      if (kind === 'brood') for (const e of this.zombies) if (e.def.kind === 'egg') this.killZombie(e, rand(0, Math.PI * 2));
+    }
+  }
+
+  /** Kills landing within a blink of each other count as one burst: big ones get slow-mo and a shout. */
+  private countBurst(z: Zombie) {
+    if (this.burstT <= 0) this.burst = 0;
+    this.burst++;
+    this.burstT = 0.3;
+    if (this.burst > this.report.bestBurst) this.report.bestBurst = this.burst;
+    const tiers: [number, string, string, number][] = [
+      [8, 'MULTI KILL!', '#ffd23f', 0.35],
+      [15, 'MEGA KILL!', '#ff8a3a', 0.6],
+      [25, 'MASSACRE!!', '#ff3b3b', 0.9],
+      [40, 'GENOCIDE!!!', '#ff3bd0', 1.2],
+    ];
+    for (const [n, text, color, slow] of tiers) {
+      if (this.burst !== n) continue;
+      this.showShout(text, color);
+      this.slowT = Math.max(this.slowT, slow);
+      this.zoomKick = Math.max(this.zoomKick, 0.04 + slow * 0.08);
+      this.buzzT = 0;
+      this.buzz(Math.round(40 + slow * 60));
+      this.sfx.play('combo');
+      // Extra gore for the camera.
+      for (let i = 0; i < 10; i++) this.spawnBlood(z.x, z.y, rand(0, Math.PI * 2), '#9a1010', 2.2);
+      if (n >= 15) this.hooks.onHighlight?.(n >= 25 ? 'Massacre' : 'Mega kill');
     }
   }
 
@@ -1619,7 +2264,10 @@ export class Game {
       if (b.dead || b.fuse > 0) continue;
       if (Math.hypot(b.x - x, b.y - y) < radius + 10) b.fuse = rand(0.08, 0.2);
     }
+    if (radius >= 110) this.buzz(barrel ? 60 : 25);
     if (dmg <= 0) return;
+    const prev = this.cause;
+    if (barrel) this.cause = 'barrel';
     for (const z of this.zombies) {
       if (z.dead) continue;
       const d = Math.hypot(z.x - x, z.y - y);
@@ -1628,6 +2276,7 @@ export class Game {
         this.damageZombie(z, dmg * (1 - (d / (radius + z.r)) * 0.4), Math.atan2(z.y - y, z.x - x), false, 420);
       }
     }
+    this.cause = prev;
   }
 
   private activatePower(kind: PowerKind) {
@@ -1642,12 +2291,12 @@ export class Game {
       this.zoomKick = 0.1;
       for (const z of this.zombies) {
         if (z.dead) continue;
-        if (z.boss) this.damageZombie(z, z.maxHp * 0.2, 0, false, 0);
+        if (isBoss(z)) this.damageZombie(z, z.maxHp * 0.2, 0, false, 0);
         else this.killZombie(z, Math.atan2(z.y - this.p.y, z.x - this.p.x));
       }
       return;
     }
-    this.active[kind] = def.duration;
+    this.active[kind] = def.duration * (1 + this.gear.power);
   }
 
   private updateOrbitals(dt: number) {
@@ -1716,6 +2365,8 @@ export class Game {
         if (pk.kind === 'cash') {
           this.gainCash(pk.value);
           this.sfx.play('coin');
+        } else if (pk.kind === 'crate') {
+          this.openCrate(pk);
         } else {
           this.p.hp = Math.min(this.stats.maxHp, this.p.hp + pk.value);
           this.addText(p.x, p.y - 26, `+${pk.value}`, '#5dff7a', 15);
@@ -1734,6 +2385,173 @@ export class Game {
       }
       return pw.life > 0;
     });
+  }
+
+  private openCrate(pk: Pickup) {
+    const it = rollGear(this.wave, pk.value);
+    const def = gearDef(it.id)!;
+    const scrapped = meta.addGear(it);
+    this.loot.push(it);
+    const color = RARITY_COLOR[it.rarity];
+    this.showShout(`${it.rarity.toUpperCase()} LOOT!`, color);
+    this.toast(scrapped ? `📦 ${def.icon} ${def.name} (stash full: +${scrapped} 🧠)` : `📦 ${def.icon} ${it.rarity} ${def.name}: ${def.desc(gearValue(it))}`);
+    this.addText(pk.x, pk.y - 20, `${def.icon} ${it.rarity.toUpperCase()}`, color, 18);
+    this.addLight(pk.x, pk.y, 220, 0.5, color);
+    this.rings.push({ x: pk.x, y: pk.y, r: 0, max: 90, life: 0.5, color: 'rgba(255,210,63,' });
+    this.sfx.play(it.rarity === 'legendary' || it.rarity === 'epic' ? 'levelup' : 'power');
+  }
+
+  /** Puts down the next deployable from the kit, just in front of you. */
+  private deploy() {
+    const kind = this.kit.shift();
+    if (!kind) return;
+    const p = this.p;
+    const at = (dist: number) => {
+      const o = { x: p.x + Math.cos(p.angle) * dist, y: p.y + Math.sin(p.angle) * dist };
+      this.collideWalls(o, 24);
+      return o;
+    };
+    const base = { hp: 1, maxHp: 1, t: 0, life: Infinity, angle: p.angle };
+    if (kind === 'mine') {
+      // Three mines in a little arc.
+      for (let i = -1; i <= 1; i++) {
+        const a = p.angle + i * 0.6;
+        const o = { x: p.x + Math.cos(a) * 60, y: p.y + Math.sin(a) * 60 };
+        this.collideWalls(o, 12);
+        this.deploys.push({ ...base, kind, ...o, t: 0.8, r: 10 });
+      }
+    } else if (kind === 'turret') this.deploys.push({ ...base, kind, ...at(44), hp: 260, maxHp: 260, life: 60, r: 16 });
+    else if (kind === 'barricade') this.deploys.push({ ...base, kind, ...at(56), hp: 700 + this.wave * 25, maxHp: 700 + this.wave * 25, r: 30 });
+    else this.deploys.push({ ...base, kind, ...at(40), hp: 200, maxHp: 200, life: 40, r: 16 });
+    this.sfx.play('clank');
+    this.addShake(0.1);
+  }
+
+  private pushOut(o: { x: number; y: number }, r: number, d: Deployable) {
+    const dx = o.x - d.x;
+    const dy = o.y - d.y;
+    const dist = Math.hypot(dx, dy) || 0.01;
+    const min = r + d.r;
+    if (dist >= min) return;
+    o.x = d.x + (dx / dist) * min;
+    o.y = d.y + (dy / dist) * min;
+  }
+
+  private updateDeploys(dt: number) {
+    const p = this.p;
+    for (const d of this.deploys) {
+      if (d.life !== Infinity) d.life -= dt;
+      d.t -= dt;
+      if (d.kind === 'turret' && d.t <= 0) {
+        const t = this.nearestZombie(d.x, d.y, 380);
+        if (t) {
+          d.t = 0.16;
+          const want = Math.atan2(t.y - d.y, t.x - d.x);
+          d.angle = want;
+          const a = want + rand(-0.05, 0.05);
+          const mx = d.x + Math.cos(a) * 22;
+          const my = d.y + Math.sin(a) * 22;
+          this.bullets.push({ kind: 'bullet', x: mx, y: my, vx: Math.cos(a) * 1000, vy: Math.sin(a) * 1000, dmg: 15 * this.stats.damage * (1 + 0.05 * this.wave), life: 0.5, max: 0.5, pierce: 0, ricochet: 0, hits: [], color: '#ffe08a', width: 2.5, canExplode: false });
+          this.addLight(mx, my, 90, 0.05, '#ffd080');
+          this.sfx.play('smg', 0.35);
+        }
+      } else if (d.kind === 'mine' && d.t <= 0) {
+        if (this.zombies.some((z) => !z.dead && z.def.kind !== 'egg' && Math.hypot(z.x - d.x, z.y - d.y) < z.r + 18)) {
+          d.hp = 0;
+          this.explode(d.x, d.y, 220 * this.stats.damage * (1 + 0.04 * this.wave), 120, 0);
+        }
+      } else if (d.kind === 'medic') {
+        if (Math.hypot(p.x - d.x, p.y - d.y) < 90 && p.hp < this.stats.maxHp) {
+          p.hp = Math.min(this.stats.maxHp, p.hp + 9 * dt);
+          if (d.t <= 0) {
+            d.t = 0.5;
+            this.addText(p.x + rand(-10, 10), p.y - 24, '+', '#5dff7a', 16);
+          }
+        }
+        if (Math.random() < dt * 2) this.addLight(d.x, d.y, 160, 0.5, '#5dff7a');
+      }
+    }
+    const gone = this.deploys.filter((d) => d.hp <= 0 || d.life <= 0);
+    for (const d of gone) {
+      if (d.kind === 'mine') continue;
+      for (let i = 0; i < 12; i++) this.spawnParticle(d.x, d.y, rand(-200, 200), rand(-200, 200), rand(0.3, 0.7), rand(3, 7), d.kind === 'barricade' ? '#a8885a' : '#6a7078', 4, true, false);
+      if (d.hp <= 0) this.sfx.play('plate');
+    }
+    if (gone.length) this.deploys = this.deploys.filter((d) => !gone.includes(d));
+  }
+
+  private drawDeploys() {
+    const ctx = this.ctx;
+    for (const d of this.deploys) {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      if (d.kind === 'mine') {
+        ctx.fillStyle = '#2a2e26';
+        ctx.beginPath();
+        ctx.arc(0, 0, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#555c4c';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = d.t > 0 ? '#666' : Math.sin(this.clock * 8) > 0 ? '#ff3020' : '#701010';
+        ctx.beginPath();
+        ctx.arc(0, 0, 3, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (d.kind === 'barricade') {
+        // A curved row of sandbags facing where you put it down.
+        ctx.rotate(d.angle);
+        for (let row = 0; row < 2; row++)
+          for (let i = -2; i <= 2; i++) {
+            const a = i * 0.32;
+            const rr = 8 + row * 9;
+            ctx.save();
+            ctx.translate(Math.cos(a) * rr - 6, Math.sin(a) * (rr + 22));
+            ctx.rotate(a);
+            ctx.fillStyle = row ? '#b8975e' : '#9a7c4a';
+            ctx.fillRect(-7, -9, 14, 18);
+            ctx.strokeStyle = '#5e4a2a';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(-7, -9, 14, 18);
+            ctx.restore();
+          }
+      } else if (d.kind === 'turret') {
+        ctx.fillStyle = '#3a4038';
+        ctx.fillRect(-14, -14, 28, 28);
+        ctx.strokeStyle = '#1c201a';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-14, -14, 28, 28);
+        ctx.rotate(d.angle);
+        ctx.fillStyle = '#8a9298';
+        ctx.fillRect(0, -3.5, 24, 7);
+        ctx.fillStyle = '#c9d1d8';
+        ctx.beginPath();
+        ctx.arc(0, 0, 9, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const pulse = 1 + Math.sin(this.clock * 3) * 0.06;
+        ctx.strokeStyle = 'rgba(93,255,122,0.35)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.arc(0, 0, 90 * pulse, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#eee';
+        ctx.fillRect(-13, -11, 26, 22);
+        ctx.fillStyle = '#d0302a';
+        ctx.fillRect(-3.5, -8, 7, 16);
+        ctx.fillRect(-8, -3.5, 16, 7);
+      }
+      ctx.restore();
+      // Health or time left
+      const frac = d.kind === 'mine' ? 1 : d.life !== Infinity ? Math.min(d.hp / d.maxHp, d.life / (d.kind === 'turret' ? 60 : 40)) : d.hp / d.maxHp;
+      if (d.kind !== 'mine' && frac < 0.999) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(d.x - 16, d.y - d.r - 12, 32, 4);
+        ctx.fillStyle = frac > 0.4 ? '#5dff7a' : '#ff5a4a';
+        ctx.fillRect(d.x - 16, d.y - d.r - 12, 32 * frac, 4);
+      }
+    }
   }
 
   private gainCash(v: number) {
@@ -1778,12 +2596,18 @@ export class Game {
     });
     this.lights = this.lights.filter((l) => (l.life -= dt) > 0);
     this.ghosts = this.ghosts.filter((g) => (g.life -= dt) > 0);
+    this.bolts = this.bolts.filter((b) => (b.life -= dt) > 0);
     this.trauma = Math.max(0, this.trauma - rawDt * 1.8);
     this.zoomKick = Math.max(0, this.zoomKick - rawDt * 0.4);
     if (this.banner.t > 0) this.banner.t -= rawDt;
     if (this.shout.t > 0) this.shout.t -= rawDt;
     if (this.cashPulse > 0) this.cashPulse -= rawDt;
+    if (this.brainsPulse > 0) this.brainsPulse -= rawDt;
     if (this.comboPop > 0) this.comboPop -= rawDt;
+    if (this.burstT > 0) this.burstT -= rawDt;
+    if (this.buzzT > 0) this.buzzT -= rawDt;
+    for (const t of this.toasts) t.t -= rawDt;
+    this.toasts = this.toasts.filter((t) => t.t > 0);
     if (this.flash.t > 0) this.flash.t -= rawDt;
   }
 
@@ -1812,7 +2636,7 @@ export class Game {
 
   private collideWalls(o: { x: number; y: number }, r: number): boolean {
     let hit = false;
-    for (const w of WALLS) {
+    for (const w of this.map.walls) {
       const cx = clamp(o.x, w.x, w.x + w.w);
       const cy = clamp(o.y, w.y, w.y + w.h);
       const dx = o.x - cx;
@@ -1841,7 +2665,7 @@ export class Game {
   }
 
   private pointInWall(x: number, y: number) {
-    for (const w of WALLS) if (x > w.x && x < w.x + w.w && y > w.y && y < w.y + w.h) return true;
+    for (const w of this.map.walls) if (x > w.x && x < w.x + w.w && y > w.y && y < w.y + w.h) return true;
     return false;
   }
 
@@ -1858,8 +2682,14 @@ export class Game {
     if (playing) {
       // Camera leads a little toward where you aim.
       const lead = this.state === 'playing' ? 60 : 0;
-      const tx = p.x + Math.cos(p.angle) * lead;
-      const ty = p.y + Math.sin(p.angle) * lead;
+      let tx = p.x + Math.cos(p.angle) * lead;
+      let ty = p.y + Math.sin(p.angle) * lead;
+      // Kill cam: drift toward a dying boss while time is slowed.
+      if (this.killCam.t > 0) {
+        this.killCam.t -= dt;
+        tx = (p.x + this.killCam.x * 2) / 3;
+        ty = (p.y + this.killCam.y * 2) / 3;
+      }
       const k = 1 - Math.exp(-dt * 6);
       this.cam.x += (tx - this.cam.x) * k;
       this.cam.y += (ty - this.cam.y) * k;
@@ -1886,9 +2716,11 @@ export class Game {
     this.drawPuddles();
     this.drawPickups();
     this.drawBarrels();
+    this.drawDeploys();
     for (const z of this.zombies) this.drawZombieShadow(z);
     for (const z of this.zombies) this.drawZombie(z);
     if (this.state !== 'over' && playing) this.drawPlayer();
+    this.drawTrains();
     this.drawGrenades();
     for (const q of this.particles) {
       if (q.glow) continue;
@@ -1925,8 +2757,21 @@ export class Game {
 
     // 4. Screen-space overlays and HUD
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    if (this.clean) return;
     this.drawScreenFx();
     if (playing) this.drawHud();
+  }
+
+  /** The current scene without HUD or screen flashes, for the share card. */
+  snapshot(): HTMLCanvasElement {
+    this.clean = true;
+    this.render(0);
+    this.clean = false;
+    const c = document.createElement('canvas');
+    c.width = this.canvas.width;
+    c.height = this.canvas.height;
+    c.getContext('2d')!.drawImage(this.canvas, 0, 0);
+    return c;
   }
 
   private drawDarkness(world: (c: CanvasRenderingContext2D, s: number) => void, zoom: number) {
@@ -1945,7 +2790,7 @@ export class Game {
       l.drawImage(glowSprite('#000000'), x - r, y - r, r * 2, r * 2);
       l.globalAlpha = 1;
     };
-    for (const lamp of LAMPS) {
+    for (const lamp of this.map.lamps) {
       let a = 0.9;
       if (lamp.flicker) {
         const f = Math.sin(this.clock * 23 + lamp.x) + Math.sin(this.clock * 7.3 + lamp.y);
@@ -1974,8 +2819,9 @@ export class Game {
       cone(WORLD_W / 2, WORLD_H / 2, sa + Math.PI, 900, 0.3, 0.95);
     } else if (this.state !== 'over') {
       hole(p.x, p.y, 150, 0.85);
-      cone(p.x, p.y, p.angle, FLASHLIGHT * 1.1, 0.75, 0.4);
-      cone(p.x, p.y, p.angle, FLASHLIGHT, 0.42, 0.95);
+      const fl = FLASHLIGHT * (this.has('dark') ? 0.55 : 1);
+      cone(p.x, p.y, p.angle, fl * 1.1, 0.75, 0.4);
+      cone(p.x, p.y, p.angle, fl, 0.42, 0.95);
     }
     void zoom;
   }
@@ -1988,7 +2834,7 @@ export class Game {
     };
     // Colored light tints
     for (const lt of this.lights) glowDot(lt.x, lt.y, lt.r * 0.7, lt.color, 0.35 * (lt.life / lt.max));
-    for (const lamp of LAMPS) glowDot(lamp.x, lamp.y, 120, '#ffcf7a', 0.12);
+    for (const lamp of this.map.lamps) glowDot(lamp.x, lamp.y, 120, '#ffcf7a', 0.12);
     ctx.globalAlpha = 1;
 
     // Zombie eyes glow in the dark
@@ -2000,6 +2846,7 @@ export class Game {
       const ey = z.y + s * r * 0.6;
       const ox = -s * r * 0.25;
       const oy = c * r * 0.25;
+      if (this.crawlerAlpha(z) < 0.6) continue;
       ctx.fillStyle = this.active.freeze > 0 ? '#9fe8ff' : z.def.eye;
       const es = Math.max(2, r * 0.13);
       ctx.fillRect(ex + ox - es / 2, ey + oy - es / 2, es, es);
@@ -2007,16 +2854,24 @@ export class Game {
       glowDot(ex, ey, r * 0.9, z.def.eye, 0.25);
       if (z.def.kind === 'bloater') glowDot(z.x, z.y, r * 1.8, '#9aff3a', 0.18 + 0.08 * Math.sin(this.clock * 6 + z.id));
       if (z.burn > 0) glowDot(z.x, z.y, r * 2, '#ff6a1f', 0.35);
+      if (z.elite) glowDot(z.x, z.y, r * 2.2, ELITES[z.elite].color, 0.22);
+      if (z.buff > 0) glowDot(z.x, z.y, r * 1.8, '#ff3050', 0.3 + 0.1 * Math.sin(this.clock * 14 + z.id));
+      if (z.def.kind === 'necro') glowDot(z.x, z.y, r * 2.4, '#5dffb0', 0.2);
+      if (z.def.kind === 'electric') glowDot(z.x, z.y, r * (z.zapT > 0 ? 3.2 : 2), '#8ad8ff', z.zapT > 0 ? 0.5 : 0.22);
+      if (z.def.kind === 'juggernaut') glowDot(z.x - Math.cos(z.face) * r * 0.62, z.y - Math.sin(z.face) * r * 0.62, r * 0.9, '#ffa040', 0.5);
+      if (z.frozenT > 0) glowDot(z.x, z.y, r * 2, '#9fe8ff', 0.25);
+      if (z.def.kind === 'brood' && this.countKind('egg') > 0) glowDot(z.x, z.y, r * 1.9, '#ffcf5a', 0.2 + 0.08 * Math.sin(this.clock * 5));
     }
     ctx.globalAlpha = 1;
 
     // Bullets, flames, rockets
     ctx.lineCap = 'round';
     for (const b of this.bullets) {
-      if (b.kind === 'flame') {
+      if (b.kind === 'flame' || b.kind === 'frost') {
         const t = 1 - b.life / b.max;
         const r = 6 + t * 22;
-        glowDot(b.x, b.y, r, t < 0.3 ? '#ffe08a' : t < 0.65 ? '#ff8a2b' : '#c0301a', 0.55 * (1 - t * 0.6));
+        if (b.kind === 'flame') glowDot(b.x, b.y, r, t < 0.3 ? '#ffe08a' : t < 0.65 ? '#ff8a2b' : '#c0301a', 0.55 * (1 - t * 0.6));
+        else glowDot(b.x, b.y, r, t < 0.4 ? '#ffffff' : '#7fd8ff', 0.5 * (1 - t * 0.6));
         continue;
       }
       if (b.kind === 'rocket') {
@@ -2041,6 +2896,34 @@ export class Game {
       ctx.globalAlpha = 0.25;
       ctx.lineWidth = b.width * 3.5;
       ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Lightning: a fresh jagged path every frame so it flickers.
+    for (const bo of this.bolts) {
+      const dx = bo.x2 - bo.x1;
+      const dy = bo.y2 - bo.y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const segs = Math.max(3, Math.round(len / 22));
+      ctx.beginPath();
+      ctx.moveTo(bo.x1, bo.y1);
+      for (let i = 1; i < segs; i++) {
+        const t = i / segs;
+        const off = rand(-14, 14);
+        ctx.lineTo(bo.x1 + dx * t + nx * off, bo.y1 + dy * t + ny * off);
+      }
+      ctx.lineTo(bo.x2, bo.y2);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = bo.color;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.globalAlpha = 0.3;
+      ctx.lineWidth = 9;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      glowDot(bo.x2, bo.y2, 26, bo.color, 0.6);
     }
     ctx.globalAlpha = 1;
 
@@ -2106,7 +2989,7 @@ export class Game {
     // Laser sight
     if (this.state === 'playing') {
       const w = this.weapons[this.wi];
-      if (w.def.kind !== 'flame') {
+      if (w.def.kind !== 'flame' && w.def.kind !== 'frost') {
         const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
         const my = p.y + Math.sin(p.angle) * (w.def.length + 4);
         const g = ctx.createLinearGradient(mx, my, mx + Math.cos(p.angle) * 260, my + Math.sin(p.angle) * 260);
@@ -2134,13 +3017,32 @@ export class Game {
       ctx.lineTo(z.x + Math.cos(a) * 430, z.y + Math.sin(a) * 430);
       ctx.stroke();
     }
+    for (const z of this.zombies) {
+      if (z.leap?.state !== 'crouch') continue;
+      ctx.strokeStyle = `rgba(255,220,60,${0.25 + 0.25 * Math.sin(this.clock * 30)})`;
+      ctx.lineWidth = z.r * 1.4;
+      ctx.beginPath();
+      ctx.moveTo(z.x, z.y);
+      ctx.lineTo(z.x + z.leap.dx * 300, z.y + z.leap.dy * 300);
+      ctx.stroke();
+    }
+    for (const z of this.zombies) {
+      if (!z.jug || z.jug.windup <= 0) continue;
+      ctx.strokeStyle = `rgba(255,120,60,${0.35 + 0.3 * Math.sin(this.clock * 30)})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, 240 * (1 - z.jug.windup / 0.9 * 0.3), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,90,40,0.08)';
+      ctx.fill();
+    }
     // Grenade danger circles
     for (const g of this.grenades) {
       if (g.fuse > 0.5) continue;
       ctx.strokeStyle = `rgba(255,80,40,${0.5 * (1 - g.fuse * 2)})`;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(g.x, g.y, 135, 0, Math.PI * 2);
+      ctx.arc(g.x, g.y, g.radius ?? 135, 0, Math.PI * 2);
       ctx.stroke();
     }
   }
@@ -2189,7 +3091,7 @@ export class Game {
 
   private drawGates() {
     const ctx = this.ctx;
-    for (const g of GATES) {
+    for (const g of this.map.gates) {
       const horiz = g.y < BORDER * 2 || g.y > WORLD_H - BORDER * 2;
       ctx.fillStyle = '#120d0b';
       if (horiz) ctx.fillRect(g.x - 50, g.y - 22, 100, 24);
@@ -2218,7 +3120,7 @@ export class Game {
 
   private drawWalls() {
     const ctx = this.ctx;
-    for (const w of WALLS) {
+    for (const w of this.map.walls) {
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fillRect(w.x + 7, w.y + 9, w.w, w.h);
       if (w.kind === 'border') {
@@ -2267,6 +3169,27 @@ export class Game {
           }
         }
         ctx.restore();
+      } else if (w.kind === 'brick') {
+        ctx.fillStyle = '#6a3a2a';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+        ctx.lineWidth = 2;
+        const horiz = w.w > w.h;
+        const len = horiz ? w.w : w.h;
+        const thick = horiz ? w.h : w.w;
+        for (let i = 0; i < len; i += 24)
+          for (let r = 0; r < thick; r += 10) {
+            const off = (r / 10) % 2 ? 12 : 0;
+            if (horiz) ctx.strokeRect(w.x + i + off, w.y + r, 24, 10);
+            else ctx.strokeRect(w.x + r, w.y + i + off, 10, 24);
+          }
+      } else if (w.kind === 'pillar') {
+        ctx.fillStyle = '#6a6a66';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.fillStyle = '#85857f';
+        ctx.fillRect(w.x + 5, w.y + 5, w.w - 10, w.h - 10);
+        ctx.fillStyle = '#e8c547';
+        ctx.fillRect(w.x, w.y + w.h - 8, w.w, 4);
       } else if (w.kind === 'crate') {
         ctx.fillStyle = '#6b4a2a';
         ctx.fillRect(w.x, w.y, w.w, w.h);
@@ -2312,7 +3235,7 @@ export class Game {
       }
     }
     // Re-open the gate holes on top of the border walls.
-    for (const g of GATES) {
+    for (const g of this.map.gates) {
       const horiz = g.y < BORDER * 2 || g.y > WORLD_H - BORDER * 2;
       ctx.fillStyle = '#0d0907';
       if (horiz) ctx.fillRect(g.x - 50, g.y < WORLD_H / 2 ? 0 : WORLD_H - BORDER, 100, BORDER);
@@ -2325,7 +3248,7 @@ export class Game {
 
   private drawLampPosts() {
     const ctx = this.ctx;
-    for (const l of LAMPS) {
+    for (const l of this.map.lamps) {
       ctx.fillStyle = 'rgba(0,0,0,0.4)';
       ctx.beginPath();
       ctx.arc(l.x + 4, l.y + 6, 11, 0, Math.PI * 2);
@@ -2350,6 +3273,21 @@ export class Game {
       ctx.arc(b.x + 3, b.y + 5, 15, 0, Math.PI * 2);
       ctx.fill();
       const hot = b.fuse > 0 && Math.floor(this.clock * 30) % 2 === 0;
+      if (b.big) {
+        // Fuel pump
+        ctx.fillStyle = hot ? '#ffffff' : '#d8d8d0';
+        ctx.fillRect(b.x - 16, b.y - 20, 32, 40);
+        ctx.fillStyle = '#c0201a';
+        ctx.fillRect(b.x - 16, b.y - 20, 32, 10);
+        ctx.fillStyle = '#1b2633';
+        ctx.fillRect(b.x - 10, b.y - 5, 20, 10);
+        ctx.fillStyle = '#e8c547';
+        ctx.font = `900 9px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('FUEL', b.x, b.y + 13);
+        continue;
+      }
       ctx.fillStyle = hot ? '#ffffff' : '#b52a1f';
       ctx.beginPath();
       ctx.arc(b.x, b.y, 14, 0, Math.PI * 2);
@@ -2399,6 +3337,22 @@ export class Game {
         ctx.fill();
         ctx.fillStyle = '#fff3b0';
         ctx.fillRect(pk.x - 2, pk.y - 3, 2, 4);
+      } else if (pk.kind === 'crate') {
+        const bob = Math.sin(this.clock * 4) * 2;
+        ctx.fillStyle = 'rgba(255,210,63,0.25)';
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 22 + Math.sin(this.clock * 6) * 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#8a5a20';
+        ctx.fillRect(pk.x - 13, pk.y - 11 + bob, 26, 22);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(pk.x - 13, pk.y - 11 + bob, 26, 22);
+        ctx.beginPath();
+        ctx.moveTo(pk.x - 13, pk.y - 3 + bob);
+        ctx.lineTo(pk.x + 13, pk.y - 3 + bob);
+        ctx.stroke();
+        if (Math.random() < 0.1) this.addLight(pk.x, pk.y, 120, 0.3, '#ffd23f');
       } else {
         ctx.fillStyle = '#eee';
         ctx.fillRect(pk.x - 10, pk.y - 8, 20, 16);
@@ -2409,8 +3363,15 @@ export class Game {
     }
   }
 
+  /** Crawlers hide in the dark until they're close. */
+  private crawlerAlpha(z: Zombie) {
+    if (z.def.kind !== 'crawler' || this.state === 'menu') return 1;
+    return clamp((260 - Math.hypot(z.x - this.p.x, z.y - this.p.y)) / 120, 0.1, 1);
+  }
+
   private drawZombieShadow(z: Zombie) {
     const ctx = this.ctx;
+    if (this.crawlerAlpha(z) < 1) return;
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();
     ctx.ellipse(z.x + 3, z.y + 5, z.r * 1.05, z.r * 0.9, 0, 0, Math.PI * 2);
@@ -2420,26 +3381,52 @@ export class Game {
   private drawZombie(z: Zombie) {
     const ctx = this.ctx;
     const r = z.r;
+    if (z.def.kind === 'egg') {
+      this.drawEgg(z);
+      return;
+    }
     ctx.save();
     ctx.translate(z.x, z.y);
     ctx.rotate(z.face);
     const hit = z.flash > 0;
     const frozen = this.active.freeze > 0;
-    const windup = z.boss?.state === 'windup';
-    const body = hit ? '#ffffff' : windup ? (Math.floor(this.clock * 20) % 2 ? '#ff4040' : z.def.body) : frozen || z.slow > 0 ? '#8fc4d9' : z.burn > 0 ? '#5a3a20' : z.def.body;
-    const dark = hit ? '#ffffff' : frozen ? '#4f7f99' : z.def.dark;
+    const windup = z.boss?.state === 'windup' || z.leap?.state === 'crouch' || (z.jug?.windup ?? 0) > 0 || z.zapT > 0;
+    ctx.globalAlpha = this.crawlerAlpha(z);
+    const icy = frozen || z.frozenT > 0;
+    const body = hit ? '#ffffff' : windup ? (Math.floor(this.clock * 20) % 2 ? (z.zapT > 0 ? '#c8f8ff' : '#ff4040') : z.def.body) : icy || z.slow > 0 ? '#8fc4d9' : z.burn > 0 ? '#5a3a20' : z.def.body;
+    const dark = hit ? '#ffffff' : icy ? '#4f7f99' : z.def.dark;
     const kind = z.def.kind;
     // Arms reaching forward, swinging as they walk.
     const swing = Math.sin(z.phase) * r * 0.25;
-    if (kind !== 'bloater') {
+    if (kind === 'shield') {
+      // Riot shield held out front.
+      ctx.fillStyle = hit ? '#fff' : '#9aa8b4';
+      ctx.beginPath();
+      ctx.arc(r * 0.35, 0, r * 1.25, -1.05, 1.05);
+      ctx.arc(r * 0.35, 0, r * 0.95, 1.05, -1.05, true);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(30,40,50,0.6)';
+      ctx.fillRect(r * 1.2, -r * 0.35, r * 0.18, r * 0.7);
+    } else if (kind === 'dog') {
+      // Four legs and a long body instead of reaching arms.
+      ctx.fillStyle = dark;
+      const step = Math.sin(z.phase * 1.6) * r * 0.35;
+      ctx.fillRect(r * 0.3 + step, -r * 0.85, r * 0.25, r * 0.4);
+      ctx.fillRect(r * 0.3 - step, r * 0.45, r * 0.25, r * 0.4);
+      ctx.fillRect(-r * 0.8 - step, -r * 0.85, r * 0.25, r * 0.4);
+      ctx.fillRect(-r * 0.8 + step, r * 0.45, r * 0.25, r * 0.4);
+      ctx.fillRect(-r * 1.7, -r * 0.1, r * 0.6, r * 0.2);
+    } else if (kind !== 'bloater') {
       ctx.fillStyle = dark;
       ctx.fillRect(r * 0.2, -r * 0.85 + swing * 0.3, r * 1.1 + swing, r * 0.36);
       ctx.fillRect(r * 0.2, r * 0.5 - swing * 0.3, r * 1.1 - swing, r * 0.36);
     }
-    const pulse = kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : 1;
+    const crouch = z.leap?.state === 'crouch' ? 0.85 : 1;
+    const pulse = (kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.12 : 1) * crouch;
     ctx.fillStyle = body;
     ctx.beginPath();
-    ctx.arc(0, 0, r * pulse, 0, Math.PI * 2);
+    if (kind === 'dog') ctx.ellipse(-r * 0.2, 0, r * 1.25, r * 0.7, 0, 0, Math.PI * 2);
+    else ctx.arc(0, 0, r * pulse, 0, Math.PI * 2);
     ctx.fill();
     if (kind === 'bloater') {
       // Boils
@@ -2461,6 +3448,88 @@ export class Game {
     ctx.beginPath();
     ctx.arc(r * 0.2, 0, r * 0.55, 0, Math.PI * 2);
     ctx.fill();
+    if (kind === 'soldier' && z.plates > 0) {
+      // Armor plates, one per side and one on the back; they fall off as they break.
+      ctx.fillStyle = hit ? '#fff' : '#8a9298';
+      const spots = [
+        [0, -r * 0.62],
+        [0, r * 0.62],
+        [-r * 0.62, 0],
+      ];
+      for (let i = 0; i < z.plates; i++) ctx.fillRect(spots[i][0] - r * 0.35, spots[i][1] - r * 0.22, r * 0.7, r * 0.44);
+      ctx.fillStyle = '#3a4048';
+      ctx.fillRect(r * 0.05, -r * 0.4, r * 0.55, r * 0.8);
+    }
+    if (kind === 'juggernaut') {
+      // Front armor plate and a glowing weak spot on the back.
+      ctx.fillStyle = hit ? '#fff' : '#8a9098';
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 1.05, -1.1, 1.1);
+      ctx.arc(0, 0, r * 0.7, 1.1, -1.1, true);
+      ctx.fill();
+      ctx.fillStyle = '#3a3e44';
+      for (let i = -2; i <= 2; i++) ctx.fillRect(r * 0.75, i * r * 0.22 - 2, r * 0.25, 4);
+      ctx.fillStyle = `rgba(255,${120 + Math.floor(60 * Math.sin(this.clock * 6))},40,1)`;
+      ctx.beginPath();
+      ctx.arc(-r * 0.62, 0, r * 0.24, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (kind === 'electric') {
+      ctx.strokeStyle = '#a0f0ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 3; i++) {
+        const a = this.clock * 9 + i * 2.1 + z.id;
+        ctx.moveTo(Math.cos(a) * r * 0.4, Math.sin(a) * r * 0.4);
+        ctx.lineTo(Math.cos(a + 0.4) * r * 1.1, Math.sin(a + 0.4) * r * 1.1);
+      }
+      ctx.stroke();
+    }
+    if (kind === 'screamer') {
+      // Gaping mouth
+      ctx.fillStyle = '#1a0006';
+      ctx.beginPath();
+      ctx.ellipse(r * 0.55, 0, r * 0.28, r * (z.abilityCd < 0.6 ? 0.34 : 0.2), 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (kind === 'leaper') {
+      // Long back legs
+      ctx.fillStyle = dark;
+      ctx.fillRect(-r * 1.3, -r * 0.8, r * 0.9, r * 0.3);
+      ctx.fillRect(-r * 1.3, r * 0.5, r * 0.9, r * 0.3);
+    }
+    if (kind === 'necro') {
+      // Hood and a glowing staff
+      ctx.fillStyle = hit ? '#fff' : '#26263a';
+      ctx.beginPath();
+      ctx.arc(-r * 0.15, 0, r * 0.8, Math.PI * 0.5, Math.PI * 1.5);
+      ctx.fill();
+      ctx.fillStyle = '#6a5a3a';
+      ctx.fillRect(r * 0.3, r * 0.6, r * 1.4, r * 0.18);
+      ctx.fillStyle = '#5dffb0';
+      ctx.beginPath();
+      ctx.arc(r * 1.75, r * 0.69, r * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (kind === 'brood') {
+      // Egg sacs on her back
+      ctx.fillStyle = hit ? '#fff' : '#e8d8a0';
+      for (let i = 0; i < 6; i++) {
+        const a = Math.PI * 0.65 + (i / 5) * Math.PI * 0.7;
+        const pr = r * (0.22 + 0.04 * Math.sin(this.clock * 5 + i));
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * r * 0.75, Math.sin(a) * r * 0.75, pr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#3a2410';
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(r * 0.7, side * r * 0.3);
+        ctx.lineTo(r * 1.35, side * r * 0.5);
+        ctx.lineTo(r * 0.8, side * r * 0.55);
+        ctx.fill();
+      }
+    }
     if (kind === 'tank') {
       ctx.fillStyle = hit ? '#fff' : '#3a4a44';
       ctx.fillRect(-r * 0.7, -r * 0.95, r * 1.1, r * 0.4);
@@ -2478,12 +3547,60 @@ export class Game {
       }
     }
     ctx.restore();
-    if (z.hp < z.maxHp && kind !== 'boss') {
+    ctx.globalAlpha = 1;
+    if (z.frozenT > 0) {
+      // Ice block
+      ctx.fillStyle = 'rgba(190,235,255,0.45)';
+      ctx.strokeStyle = 'rgba(230,250,255,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(z.x - r * 1.2, z.y - r * 1.2, r * 2.4, r * 2.4, 4);
+      ctx.fill();
+      ctx.stroke();
+    }
+    if (z.elite) {
+      const c = ELITES[z.elite].color;
+      ctx.strokeStyle = c;
+      ctx.globalAlpha = 0.55 + 0.25 * Math.sin(this.clock * 8 + z.id);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, r + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (z.hp < z.maxHp && !isBoss(z) && this.crawlerAlpha(z) > 0.5) {
       const w = r * 2;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(z.x - w / 2, z.y - r - 10, w, 4);
       ctx.fillStyle = '#e0483e';
       ctx.fillRect(z.x - w / 2, z.y - r - 10, w * Math.max(0, z.hp / z.maxHp), 4);
+    }
+  }
+
+  private drawEgg(z: Zombie) {
+    const ctx = this.ctx;
+    const ripe = 1 - clamp(z.abilityCd / 3.6, 0, 1);
+    const wob = Math.sin(this.clock * (8 + ripe * 20) + z.id) * ripe * 0.12;
+    ctx.save();
+    ctx.translate(z.x, z.y);
+    ctx.rotate(wob);
+    ctx.fillStyle = z.flash > 0 ? '#fff' : '#d8c89a';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, z.r * 0.85, z.r * 1.1, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#8a7a4a';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = `rgba(120,30,20,${0.2 + ripe * 0.5})`;
+    ctx.beginPath();
+    ctx.ellipse(0, 2, z.r * 0.45, z.r * 0.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    if (z.hp < z.maxHp) {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(z.x - z.r, z.y - z.r - 14, z.r * 2, 4);
+      ctx.fillStyle = '#ffcf5a';
+      ctx.fillRect(z.x - z.r, z.y - z.r - 14, z.r * 2 * Math.max(0, z.hp / z.maxHp), 4);
     }
   }
 
@@ -2616,6 +3733,9 @@ export class Game {
     ctx.font = '15px system-ui, sans-serif';
     ctx.fillStyle = '#fff';
     ctx.fillText(`💣 ${this.grenadeCount}`, pad + cashW + 16, pad + 40);
+    ctx.font = `${this.brainsPulse > 0 ? 17 : 15}px system-ui, sans-serif`;
+    ctx.fillStyle = '#ff8ad8';
+    ctx.fillText(`🧠 ${this.report.brains}${this.reviveLeft ? '  ✚' : ''}`, pad + cashW + 62, pad + 40);
 
     // Perks
     let px = pad;
@@ -2639,20 +3759,28 @@ export class Game {
     ctx.fillText(`WAVE ${this.wave}`, this.w / 2, pad + 10);
     ctx.font = '600 12px system-ui, sans-serif';
     ctx.fillStyle = '#c9d1b8';
-    ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left`, this.w / 2, pad + 31);
+    ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left${this.modeLabel ? `  ·  ${this.modeLabel}` : ''}`, this.w / 2, pad + 31);
 
     let rowY = pad + 50;
-    const boss = this.zombies.find((z) => z.boss);
+    if (this.challenge) {
+      const beat = this.wave > this.challenge.wave;
+      ctx.font = `13px ${FONT}`;
+      ctx.fillStyle = beat ? '#5dff7a' : '#ffd23f';
+      ctx.fillText(beat ? `⚔ CHALLENGE BEATEN (WAVE ${this.challenge.wave})` : `⚔ BEAT WAVE ${this.challenge.wave}`, this.w / 2, rowY - 2);
+      rowY += 16;
+    }
+    const boss = this.zombies.find(isBoss);
     if (boss) {
       const bw = Math.min(360, this.w * 0.5);
       const bx = this.w / 2 - bw / 2;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(bx, rowY - 6, bw, 12);
-      ctx.fillStyle = '#b05bd6';
+      const shielded = boss.def.kind === 'brood' && this.countKind('egg') > 0;
+      ctx.fillStyle = BOSS_COLORS[boss.def.kind] ?? '#b05bd6';
       ctx.fillRect(bx + 2, rowY - 4, (bw - 4) * Math.max(0, boss.hp / boss.maxHp), 8);
       ctx.fillStyle = '#fff';
       ctx.font = `11px ${FONT}`;
-      ctx.fillText('THE ABOMINATION', this.w / 2, rowY + 15);
+      ctx.fillText(`${BOSS_NAMES[boss.def.kind]}${shielded ? '  (SHIELDED BY EGGS)' : ''}`, this.w / 2, rowY + 15);
       rowY += 34;
     }
     // Active power-ups
@@ -2737,6 +3865,10 @@ export class Game {
         ctx.font = '800 10px system-ui, sans-serif';
         ctx.fillText(String(this.grenadeCount), b.x, b.y + 13);
       }
+      if (b.id === 'deploy' && this.kit.length > 1) {
+        ctx.font = '800 10px system-ui, sans-serif';
+        ctx.fillText(`x${this.kit.length}`, b.x + b.r * 0.7, b.y - b.r * 0.7);
+      }
     }
 
     // Touch sticks
@@ -2780,6 +3912,24 @@ export class Game {
       ctx.stroke();
     }
 
+    // Toasts (badges, clips)
+    if (this.state === 'playing' || this.state === 'between') {
+      ctx.textAlign = 'center';
+      ctx.font = '700 14px system-ui, sans-serif';
+      this.toasts.forEach((t, i) => {
+        const y = this.h - 120 - i * 34;
+        const tw = ctx.measureText(t.text).width + 28;
+        ctx.globalAlpha = Math.min(1, t.t * 2, (2.6 - t.t) * 6);
+        ctx.fillStyle = 'rgba(10,12,8,0.82)';
+        ctx.fillRect(this.w / 2 - tw / 2, y - 13, tw, 26);
+        ctx.strokeStyle = '#ffd23f';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(this.w / 2 - tw / 2, y - 13, tw, 26);
+        ctx.fillStyle = '#ffd23f';
+        ctx.fillText(t.text, this.w / 2, y + 1);
+      });
+      ctx.globalAlpha = 1;
+    }
     // Banner
     if (this.banner.t > 0 && this.state === 'playing') {
       const age = 2.4 - this.banner.t;

@@ -2,7 +2,15 @@
 
 A top-down zombie horde shooter for the phone browser, inspired by SAS: Zombie Assault 4.
 
-Survive escalating waves, pick a roguelite perk after every wave, spend your cash in the armory, and take down the boss every 10th wave.
+Survive escalating waves, pick a roguelite perk after every wave, spend your cash in the armory, and take down a boss every 10th wave (The Abomination, Mother Brood on every 20th, The Juggernaut on every 30th).
+
+Between runs you keep **brains** 🧠 and XP: unlock and master guns, train permanent stats, level up to unlock perks and a second loadout slot, and clear three daily missions. Progress is saved on the device and can be moved with a save code. Special zombies (shield brutes, leapers, screamers, crawlers, dog packs, necromancers, armored soldiers, electric zombies) join from wave 5, and elite zombies with auras from wave 15. When you die you get a share card of your run.
+
+Three maps (Parking Lot, Gas Station with exploding fuel pumps, Subway Yard with trains) and four modes: Endless, a Daily Challenge (same map and two mutators for everyone each day), Boss Rush and Hardcore.
+
+Gear and loot: bosses (and rare elites) drop loot crates with an armor piece or trinket in four rarities; equip them on the Gear tab, scrap spares for brains, or buy supply crates. The in-run shop also sells deployables (auto-turret, land mines, sandbag wall, healing station) that you put down with the deploy button or F.
+
+Built for sharing: 28 badges with silly names, multi-kill slow-mo and a boss kill cam, and the game records itself so a boss kill, a massacre or your last stand can be saved as a video clip from the game-over screen. "Challenge a friend" makes a code (or a `#c=` link when hosted) that loads the same map, mode and mutators with your wave as the target.
 
 ## Controls
 
@@ -20,10 +28,25 @@ npm run build:single # whole game in one HTML file in dist-single/
 
 Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (set Settings → Pages → Source to "GitHub Actions" once).
 
+## Leaderboards
+
+Endless and Daily Challenge runs can be posted to global leaderboards on Supabase. One-time setup: run `supabase/leaderboard.sql` in the Supabase SQL editor, then put the project's publishable key in `KEY` in `src/leaderboard.ts` (never a secret key). Leaderboards stay hidden while the key is empty.
+
 ## Code map
 
 - `src/game.ts` – game state, update loop, rendering and HUD
 - `src/data.ts` – weapons, zombie types and perks (tweak balance here)
 - `src/input.ts` – keyboard/mouse and twin touch joysticks
 - `src/audio.ts` – synthesized sound effects
-- `src/main.ts` – menus, perk picker, shop and the frame loop
+- `src/maps.ts` – map layouts, ground textures and train tracks
+- `src/meta.ts` – save data, brains, XP and levels, training, gun mastery, daily missions
+- `src/share.ts` – the game-over share card, file saving and challenge codes
+- `src/achievements.ts` – badges
+- `src/gear.ts` – armor and trinket loot with rarities
+- `src/leaderboard.ts` – Supabase leaderboards (table and rules in `supabase/leaderboard.sql`)
+- `src/clips.ts` – rolling replay recorder for video clips
+- `src/main.ts` – menus, base screen, perk picker, shop and the frame loop
+
+## License
+
+All rights reserved. The source is public to read, not to reuse; see [LICENSE](LICENSE).
