@@ -2,9 +2,9 @@
 
 A top-down zombie horde shooter for the phone browser, inspired by SAS: Zombie Assault 4.
 
-Survive escalating waves, pick a roguelite perk after every wave, spend your cash in the armory, and take down a boss every 10th wave (The Abomination, and Mother Brood on every 20th).
+Survive escalating waves, pick a roguelite perk after every wave, spend your cash in the armory, and take down a boss every 10th wave (The Abomination, Mother Brood on every 20th, The Juggernaut on every 30th).
 
-Between runs you keep **brains** 🧠 and XP: unlock and master guns, train permanent stats, level up to unlock perks and a second loadout slot, and clear three daily missions. Progress is saved on the device and can be moved with a save code. Special zombies (shield brutes, leapers, screamers, necromancers) join from wave 5, and elite zombies with auras from wave 15. When you die you get a share card of your run.
+Between runs you keep **brains** 🧠 and XP: unlock and master guns, train permanent stats, level up to unlock perks and a second loadout slot, and clear three daily missions. Progress is saved on the device and can be moved with a save code. Special zombies (shield brutes, leapers, screamers, crawlers, dog packs, necromancers, armored soldiers, electric zombies) join from wave 5, and elite zombies with auras from wave 15. When you die you get a share card of your run.
 
 ## Controls
 

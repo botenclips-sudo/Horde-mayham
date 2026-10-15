@@ -25,7 +25,7 @@ interface Wall {
 }
 
 interface Bullet {
-  kind: 'bullet' | 'flame' | 'rocket';
+  kind: 'bullet' | 'flame' | 'rocket' | 'frost';
   x: number;
   y: number;
   vx: number;
@@ -70,10 +70,25 @@ interface Zombie {
   elite?: EliteKind;
   mini?: boolean;
   buff: number; // seconds of screamer rage left
-  abilityCd: number; // screamer scream / necromancer raise / egg hatch timer
+  abilityCd: number; // screamer scream / necromancer raise / egg hatch / electric zap timer
+  chill: number; // freeze-ray hits soaked up; enough of them freeze the zombie solid
+  frozenT: number;
+  plates: number; // armored soldier plates left
+  plateHp: number;
+  zapT: number; // electric zombie charging a zap
+  jug?: { slam: number; windup: number };
 }
 
-const isBoss = (z: Zombie) => z.def.kind === 'boss' || z.def.kind === 'brood';
+interface Bolt {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  life: number;
+  color: string;
+}
+
+const isBoss = (z: Zombie) => z.def.kind === 'boss' || z.def.kind === 'brood' || z.def.kind === 'juggernaut';
 
 interface Particle {
   x: number;
@@ -142,6 +157,9 @@ interface Grenade {
   z: number;
   vz: number;
   fuse: number;
+  dmg?: number; // launcher shells carry their own damage and go off on contact
+  radius?: number;
+  impact?: boolean;
 }
 
 interface Spit {
@@ -289,9 +307,30 @@ const NEIGHBORS = [
 ];
 
 // Which wave each new zombie type starts showing up, announced on the wave banner.
+const WEAPON_BLURB: Record<string, string> = {
+  flamer: 'Sets the horde on fire',
+  rocket: 'Huge explosions',
+  minigun: 'Spins up, shreds everything',
+  launcher: 'Explodes on contact',
+  sniper: 'Punches through 6 zombies',
+  freeze: 'Freezes zombies solid',
+  tesla: 'Lightning chains between zombies',
+};
+
+const BOSS_COLORS: Partial<Record<ZombieKind, string>> = { boss: '#c065ff', brood: '#ffcf5a', juggernaut: '#ff6a3a' };
+
 const ELITE_KINDS = Object.keys(ELITES) as EliteKind[];
 
-const NEW_KIND_WAVES: Record<number, string> = { 5: 'SHIELD BRUTES SPOTTED', 6: 'WATCH FOR LEAPERS', 8: 'SCREAMERS ARE HERE', 12: 'NECROMANCERS RAISE THE DEAD' };
+const NEW_KIND_WAVES: Record<number, string> = {
+  5: 'SHIELD BRUTES SPOTTED',
+  6: 'WATCH FOR LEAPERS',
+  8: 'SCREAMERS ARE HERE',
+  9: 'CRAWLERS IN THE DARK',
+  11: 'DOG PACKS INCOMING',
+  12: 'NECROMANCERS RAISE THE DEAD',
+  13: 'ARMORED SOLDIERS: BREAK THEIR PLATES',
+  14: 'ELECTRIC ZOMBIES',
+};
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
@@ -392,6 +431,7 @@ export class Game {
   private reviveLeft = 0;
   private corpses: { x: number; y: number }[] = [];
   private nadeBlast = false;
+  private bolts: Bolt[] = [];
   brainsPulse = 0;
   private clean = false;
   private moodLevel = -1;
@@ -550,6 +590,7 @@ export class Game {
     this.reviveLeft = t('revive');
     this.report = Game.emptyReport();
     this.corpses = [];
+    this.bolts = [];
     this.p = { x: WORLD_W / 2, y: WORLD_H / 2, hp: this.stats.maxHp, angle: -Math.PI / 2, vx: 0, vy: 0 };
     this.cam = { x: this.p.x, y: this.p.y };
     this.zombies = [];
@@ -608,9 +649,9 @@ export class Game {
     this.resetBarrels();
     if (boss) {
       const g = this.farthestGate();
-      const kind: ZombieKind = this.wave % 20 === 0 ? 'brood' : 'boss';
+      const kind: ZombieKind = this.wave % 30 === 0 ? 'juggernaut' : this.wave % 20 === 0 ? 'brood' : 'boss';
       this.spawnZombie(kind, g.x, g.y + (g.y < WORLD_H / 2 ? 60 : -60));
-      this.showBanner(`WAVE ${this.wave}`, `${BOSS_NAMES[kind]} IS COMING`, kind === 'brood' ? '#ffcf5a' : '#c065ff');
+      this.showBanner(`WAVE ${this.wave}`, `${BOSS_NAMES[kind]} IS COMING`, BOSS_COLORS[kind]!);
       this.sfx.play('boss');
       this.addShake(0.6);
     } else {
@@ -683,7 +724,7 @@ export class Game {
       const owned = this.weapons.find((w) => w.def.id === def.id);
       if (!owned) {
         const sub =
-          def.kind === 'flame' ? 'Sets the horde on fire' : def.kind === 'rocket' ? `${def.damage} dmg explosions` : def.spinup ? 'Spins up, shreds everything' : `${def.pellets > 1 ? `${def.pellets}x` : ''}${def.damage} dmg, ${def.fireRate}/s`;
+          WEAPON_BLURB[def.id] ?? `${def.pellets > 1 ? `${def.pellets}x` : ''}${def.damage} dmg, ${def.fireRate}/s`;
         items.push({ id: `buy:${def.id}`, label: `🔫 ${def.name}`, sub, price: def.price, enabled: this.cash >= def.price });
       } else if (owned.level < 10) {
         const price = Math.round(def.upgradeBase * Math.pow(1.55, owned.level - 1));
@@ -816,7 +857,7 @@ export class Game {
   /** Title screen: zombies shamble around the dark lot under a sweeping searchlight. */
   private updateAttract(dt: number) {
     if (this.zombies.length < 26) {
-      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter', 'shield', 'leaper', 'screamer', 'necro'];
+      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter', 'shield', 'leaper', 'screamer', 'necro', 'dog', 'soldier', 'electric'];
       const z = this.spawnZombie(kinds[Math.floor(Math.random() * kinds.length)], rand(150, WORLD_W - 150), rand(150, WORLD_H - 150));
       z.tx = rand(150, WORLD_W - 150);
       z.ty = rand(150, WORLD_H - 150);
@@ -979,10 +1020,28 @@ export class Game {
     if (this.active.ammo <= 0) w.ammo--;
     const dmg = this.weaponDamage(w);
     const kind = w.def.kind;
-    const n = kind === 'bullet' ? w.def.pellets + this.stats.extraShots : 1 + (kind === 'rocket' ? Math.floor(this.stats.extraShots / 2) : 0);
+    const n = kind === 'bullet' ? w.def.pellets + this.stats.extraShots : 1 + (kind === 'rocket' || kind === 'grenade' || kind === 'tesla' ? Math.floor(this.stats.extraShots / 2) : 0);
     const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
     const my = p.y + Math.sin(p.angle) * (w.def.length + 4);
     const rage = this.active.rage > 0;
+    if (kind === 'tesla') {
+      for (let i = 0; i < n; i++) this.teslaArc(mx, my, p.angle + (i - (n - 1) / 2) * 0.35, dmg);
+      this.addLight(mx, my, 200, 0.08, '#8ad8ff');
+      this.sfx.play('tesla');
+      if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
+      return;
+    }
+    if (kind === 'grenade') {
+      for (let i = 0; i < n; i++) {
+        const a = p.angle + rand(-w.def.spread / 2, w.def.spread / 2) + (i - (n - 1) / 2) * 0.15;
+        this.grenades.push({ x: mx, y: my, vx: Math.cos(a) * w.def.speed, vy: Math.sin(a) * w.def.speed, z: 8, vz: 160, fuse: w.def.life, dmg, radius: 110, impact: true });
+      }
+      this.addLight(mx, my, 160, 0.07, '#b0ff7a');
+      this.addShake(w.def.shake * 0.5);
+      this.sfx.play('launcher');
+      if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
+      return;
+    }
     for (let i = 0; i < n; i++) {
       let a = p.angle + rand(-w.def.spread / 2, w.def.spread / 2);
       if (w.def.pellets === 1 && n > 1) a += (i - (n - 1) / 2) * 0.1;
@@ -991,22 +1050,22 @@ export class Game {
         kind,
         x: mx,
         y: my,
-        vx: Math.cos(a) * sp + (kind === 'flame' ? p.vx * 0.5 : 0),
-        vy: Math.sin(a) * sp + (kind === 'flame' ? p.vy * 0.5 : 0),
+        vx: Math.cos(a) * sp + (kind === 'flame' || kind === 'frost' ? p.vx * 0.5 : 0),
+        vy: Math.sin(a) * sp + (kind === 'flame' || kind === 'frost' ? p.vy * 0.5 : 0),
         dmg,
-        life: w.def.life * (kind === 'flame' ? rand(0.8, 1.1) : 1),
+        life: w.def.life * (kind === 'flame' || kind === 'frost' ? rand(0.8, 1.1) : 1),
         max: w.def.life,
-        pierce: kind === 'flame' ? 99 : kind === 'rocket' ? 0 : this.stats.pierce,
+        pierce: kind === 'flame' || kind === 'frost' ? 99 : kind === 'rocket' ? 0 : this.stats.pierce + (w.def.pierce ?? 0),
         ricochet: kind === 'bullet' ? this.stats.ricochet : 0,
         hits: [],
         color: rage ? '#ff5a4a' : w.def.color,
-        width: w.def.id === 'shotgun' ? 2.5 : w.def.id === 'minigun' ? 2.5 : 3,
+        width: w.def.id === 'shotgun' ? 2.5 : w.def.id === 'minigun' ? 2.5 : w.def.id === 'sniper' ? 4 : 3,
         canExplode: kind === 'bullet',
       });
     }
-    if (kind === 'flame') {
-      if (Math.random() < 0.4) this.addLight(mx, my, 150, 0.12, '#ff7a20');
-      this.sfx.play('flamer');
+    if (kind === 'flame' || kind === 'frost') {
+      if (Math.random() < 0.4) this.addLight(mx, my, 150, 0.12, kind === 'flame' ? '#ff7a20' : '#7fd8ff');
+      this.sfx.play(kind === 'flame' ? 'flamer' : 'freeze');
       return;
     }
     // Muzzle flash, light, smoke and a shell casing.
@@ -1059,6 +1118,10 @@ export class Game {
       ['leaper', w >= 6 ? Math.min(0.09, 0.05 + (w - 6) * 0.008) : 0],
       ['screamer', w >= 8 && this.countKind('screamer') < 3 ? Math.min(0.05, 0.03 + (w - 8) * 0.004) : 0],
       ['necro', w >= 12 && this.countKind('necro') < 2 ? Math.min(0.035, 0.02 + (w - 12) * 0.003) : 0],
+      ['crawler', w >= 9 ? Math.min(0.08, 0.045 + (w - 9) * 0.004) : 0],
+      ['dog', w >= 11 ? Math.min(0.045, 0.025 + (w - 11) * 0.003) : 0],
+      ['soldier', w >= 13 ? Math.min(0.06, 0.035 + (w - 13) * 0.004) : 0],
+      ['electric', w >= 14 && this.countKind('electric') < 3 ? Math.min(0.05, 0.03 + (w - 14) * 0.003) : 0],
       ['runner', w >= 2 ? Math.min(0.36, 0.12 + (w - 2) * 0.04) : 0],
     ];
     const eliteChance = w >= 15 ? Math.min(0.15, 0.04 + (w - 15) * 0.006) : 0;
@@ -1075,8 +1138,10 @@ export class Game {
       const inward = { x: WORLD_W / 2 - gate.x, y: WORLD_H / 2 - gate.y };
       const d = Math.hypot(inward.x, inward.y);
       const elite = Math.random() < eliteChance ? ELITE_KINDS[Math.floor(Math.random() * ELITE_KINDS.length)] : undefined;
-      this.spawnZombie(kind, gate.x + (inward.x / d) * 30 + rand(-40, 40), gate.y + (inward.y / d) * 30 + rand(-40, 40), { elite });
-      this.toSpawn--;
+      // Dogs always arrive as a pack.
+      const pack = kind === 'dog' ? 4 + Math.floor(Math.random() * 3) : 1;
+      for (let k = 0; k < pack; k++) this.spawnZombie(kind, gate.x + (inward.x / d) * 30 + rand(-50, 50), gate.y + (inward.y / d) * 30 + rand(-50, 50), { elite: k === 0 ? elite : undefined });
+      this.toSpawn = Math.max(0, this.toSpawn - pack);
     }
   }
 
@@ -1119,11 +1184,20 @@ export class Game {
       spitCd: rand(1, 2.5),
       buff: 0,
       abilityCd: kind === 'egg' ? 3.6 : rand(2, 4),
+      chill: 0,
+      frozenT: 0,
+      plates: kind === 'soldier' ? 3 : 0,
+      plateHp: hp * 0.25,
+      zapT: 0,
       elite,
       mini,
     };
     if (kind === 'boss') z.boss = { state: 'walk', t: 3, dx: 0, dy: 0, summon: 6 };
     if (kind === 'brood') z.brood = { lay: 4, spit: 2.5 };
+    if (kind === 'juggernaut') {
+      z.boss = { state: 'walk', t: 4, dx: 0, dy: 0, summon: 0 };
+      z.jug = { slam: 3, windup: 0 };
+    }
     if (kind === 'leaper') z.leap = { state: 'walk', t: rand(1, 2), dx: 0, dy: 0 };
     if (kind === 'shield') z.face = Math.atan2(this.p.y - z.y, this.p.x - z.x);
     this.zombies.push(z);
@@ -1208,6 +1282,11 @@ export class Game {
         }
       }
       if (frozen) continue;
+      if (z.frozenT > 0) {
+        z.frozenT -= dt;
+        continue;
+      }
+      if (z.chill > 0) z.chill = Math.max(0, z.chill - dt * 3);
       const dx = p.x - z.x;
       const dy = p.y - z.y;
       const d = Math.hypot(dx, dy) || 1;
@@ -1299,6 +1378,34 @@ export class Game {
         }
       }
 
+      if (kind === 'electric') {
+        z.abilityCd -= dt;
+        if (z.zapT > 0) {
+          // Charging: stands still and crackles, then zaps.
+          vx *= 0.2;
+          vy *= 0.2;
+          z.zapT -= dt;
+          if (Math.random() < 0.5) this.spawnParticle(z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), 0, 0, 0.12, 3, '#a0f0ff', 1, false, true);
+          if (z.zapT <= 0) this.zap(z, d);
+        } else if (z.abilityCd <= 0 && d < 250) {
+          z.zapT = 0.6;
+          z.abilityCd = rand(2.6, 3.4);
+        }
+      }
+
+      if (z.jug) {
+        const J = z.jug;
+        J.slam -= dt;
+        if (J.windup > 0) {
+          vx = vy = 0;
+          J.windup -= dt;
+          if (J.windup <= 0) this.groundSlam(z);
+        } else if (J.slam <= 0 && d < 280 && z.boss?.state === 'walk') {
+          J.windup = 0.9;
+          J.slam = rand(4.5, 6.5);
+        }
+      }
+
       if (z.brood) {
         const B = z.brood;
         B.lay -= dt;
@@ -1329,11 +1436,12 @@ export class Game {
         const b = z.boss;
         b.t -= dt;
         b.summon -= dt;
-        if (b.summon <= 0) {
+        if (kind === 'boss' && b.summon <= 0) {
           b.summon = 7;
           for (let i = 0; i < 3 + Math.floor(this.wave / 10); i++) this.spawnZombie(Math.random() < 0.3 ? 'bloater' : 'runner', z.x + rand(-60, 60), z.y + rand(-60, 60));
           this.rings.push({ x: z.x, y: z.y, r: 0, max: 130, life: 0.5, color: 'rgba(190,90,255,' });
         }
+        if (z.jug && z.jug.windup > 0) b.t = Math.max(b.t, 0.5);
         if (b.state === 'walk' && b.t <= 0) {
           b.state = 'windup';
           b.t = 0.8;
@@ -1440,6 +1548,89 @@ export class Game {
     for (let i = 0; i < n; i++) this.spawnZombie(Math.random() < 0.5 ? 'leaper' : 'runner', z.x + rand(-20, 20), z.y + rand(-20, 20));
     for (let i = 0; i < 14; i++) this.spawnBlood(z.x, z.y, rand(0, Math.PI * 2), i % 2 ? '#d8c89a' : '#8a7a4a');
     this.sfx.play('splat');
+  }
+
+  /** Electric zombie: lightning to the player if still in range, arcing on to nearby zombies and speeding them up. */
+  private zap(z: Zombie, d: number) {
+    this.sfx.play('zap');
+    this.addLight(z.x, z.y, 200, 0.2, '#a0f0ff');
+    if (d < 300) {
+      this.bolts.push({ x1: z.x, y1: z.y, x2: this.p.x, y2: this.p.y, life: 0.18, color: '#a0f0ff' });
+      this.hurtPlayer(12 * (1 + 0.04 * this.wave), z);
+    }
+    let n = 0;
+    for (const o of this.zombies) {
+      if (n >= 3 || o === z || o.dead || isBoss(o) || o.def.kind === 'egg') continue;
+      if (Math.hypot(o.x - z.x, o.y - z.y) > 220) continue;
+      this.bolts.push({ x1: z.x, y1: z.y, x2: o.x, y2: o.y, life: 0.18, color: '#a0f0ff' });
+      o.buff = Math.max(o.buff, 3);
+      n++;
+    }
+  }
+
+  /** Juggernaut: a shockwave around it after a telegraphed wind-up. */
+  private groundSlam(z: Zombie) {
+    const R = 240;
+    this.rings.push({ x: z.x, y: z.y, r: 20, max: R, life: 0.5, color: 'rgba(255,140,80,' });
+    this.rings.push({ x: z.x, y: z.y, r: 10, max: R * 0.7, life: 0.4, color: 'rgba(255,220,180,' });
+    for (let i = 0; i < 30; i++) {
+      const a = rand(0, Math.PI * 2);
+      this.spawnParticle(z.x + Math.cos(a) * z.r, z.y + Math.sin(a) * z.r, Math.cos(a) * rand(200, 500), Math.sin(a) * rand(200, 500), rand(0.4, 0.8), rand(6, 12), 'rgba(120,100,90,0.45)', 3, false, false, 16);
+    }
+    this.addShake(0.8);
+    this.zoomKick = Math.max(this.zoomKick, 0.06);
+    this.sfx.play('slam');
+    const d = Math.hypot(this.p.x - z.x, this.p.y - z.y);
+    if (d < R) this.hurtPlayer(38 * (1 + 0.03 * this.wave), z);
+  }
+
+  /** Tesla gun: an arc to the nearest zombie in front, chaining onward. */
+  private teslaArc(x: number, y: number, angle: number, dmg: number) {
+    let best: Zombie | null = null;
+    let bd = 360;
+    for (const z of this.zombies) {
+      if (z.dead) continue;
+      const d = Math.hypot(z.x - x, z.y - y);
+      if (d > bd) continue;
+      let da = Math.atan2(z.y - y, z.x - x) - angle;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      if (Math.abs(da) > 0.55) continue;
+      bd = d;
+      best = z;
+    }
+    if (!best) {
+      this.bolts.push({ x1: x, y1: y, x2: x + Math.cos(angle) * 130, y2: y + Math.sin(angle) * 130, life: 0.08, color: '#8ad8ff' });
+      return;
+    }
+    const hit: number[] = [];
+    let from = { x, y };
+    let cur: Zombie | null = best;
+    const jumps = 4 + this.stats.ricochet * 2;
+    for (let i = 0; cur && i <= jumps; i++) {
+      this.bolts.push({ x1: from.x, y1: from.y, x2: cur.x, y2: cur.y, life: 0.1, color: i ? '#b8ecff' : '#ffffff' });
+      hit.push(cur.id);
+      const crit = Math.random() < this.stats.crit;
+      from = { x: cur.x, y: cur.y };
+      this.damageZombie(cur, dmg * Math.pow(0.85, i) * (crit ? 2.5 : 1), Math.atan2(cur.y - y, cur.x - x), crit, 60);
+      cur = this.nearestZombie(from.x, from.y, 170, hit);
+    }
+  }
+
+  private chill(z: Zombie) {
+    if (z.def.kind === 'electric' || z.frozenT > 0) return;
+    if (isBoss(z)) {
+      // Bosses only get slowed, never frozen solid.
+      z.slow = Math.max(z.slow, 0.5);
+      return;
+    }
+    z.slow = Math.max(z.slow, 1.5);
+    z.chill += 1;
+    if (z.chill >= 10) {
+      z.chill = 0;
+      z.frozenT = 1.8;
+      for (let i = 0; i < 6; i++) this.spawnParticle(z.x, z.y, rand(-80, 80), rand(-80, 80), 0.3, 3, '#dff6ff', 5, false, true);
+    }
   }
 
   /** Screamer: buffs every zombie around it. */
@@ -1551,7 +1742,7 @@ export class Game {
   private updateBullets(dt: number) {
     const out: Bullet[] = [];
     for (const b of this.bullets) {
-      if (b.kind === 'flame') {
+      if (b.kind === 'flame' || b.kind === 'frost') {
         const k = Math.exp(-dt * 2.5);
         b.vx *= k;
         b.vy *= k;
@@ -1582,7 +1773,7 @@ export class Game {
             alive = false;
             break;
           }
-          br.hp -= b.kind === 'flame' ? 3 : b.dmg;
+          br.hp -= b.kind === 'flame' ? 3 : b.kind === 'frost' ? 0 : b.dmg;
           this.spawnParticle(b.x, b.y, rand(-80, 80), rand(-80, 80), 0.15, 2, '#ffd27a', 6, false, true);
           if (br.hp <= 0) br.fuse = 0.05;
           if (b.kind === 'bullet') {
@@ -1596,7 +1787,7 @@ export class Game {
         if (z.dead || b.hits.includes(z.id)) continue;
         const dx = z.x - b.x;
         const dy = z.y - b.y;
-        const rr = z.r + (b.kind === 'flame' ? 10 : 4);
+        const rr = z.r + (b.kind === 'flame' || b.kind === 'frost' ? 10 : 4);
         if (dx * dx + dy * dy > rr * rr) continue;
         if (b.kind === 'rocket') {
           this.explode(b.x, b.y, b.dmg, 115, 0);
@@ -1617,6 +1808,11 @@ export class Game {
         let dmg = b.dmg;
         const crit = b.kind === 'bullet' && Math.random() < this.stats.crit;
         if (crit) dmg *= 2.5;
+        if (b.kind === 'frost') {
+          this.chill(z);
+          this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 10, true);
+          continue;
+        }
         if (b.kind === 'flame') {
           z.burn = 2.5;
           this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 20, true);
@@ -1660,15 +1856,18 @@ export class Game {
       const oy = g.y;
       g.x += g.vx * dt;
       g.y += g.vy * dt;
+      let boom = g.fuse <= 0;
       if (this.pointInWall(g.x, g.y)) {
         g.x = ox;
         g.y = oy;
         g.vx *= -0.5;
         g.vy *= -0.5;
+        if (g.impact) boom = true;
       }
-      if (g.fuse <= 0) {
+      if (g.impact && !boom) for (const z of this.zombies) if (!z.dead && Math.hypot(z.x - g.x, z.y - g.y) < z.r + 6) boom = true;
+      if (boom) {
         this.nadeBlast = true;
-        this.explode(g.x, g.y, 170 * this.stats.damage, 135, 18);
+        this.explode(g.x, g.y, g.dmg ?? 170 * this.stats.damage, g.radius ?? 135, g.impact ? 8 : 18);
         this.nadeBlast = false;
         continue;
       }
@@ -1740,12 +1939,32 @@ export class Game {
     if (z.dead) return;
     // Mother Brood is shielded by her eggs.
     if (z.def.kind === 'brood' && this.countKind('egg') > 0) dmg *= 0.25;
+    if (z.def.kind === 'juggernaut') {
+      // Armored front, glowing weak spot on the back.
+      const c = Math.cos(angle - z.face);
+      if (c < -0.3) dmg *= 0.2;
+      else if (c > 0.5) {
+        dmg *= 1.6;
+        if (!quiet && Math.random() < 0.15) this.addText(z.x, z.y - z.r - 10, 'WEAK SPOT!', '#ffd23f', 14);
+      }
+    }
+    if (z.plates > 0) {
+      z.plateHp -= dmg;
+      dmg *= 0.3;
+      if (z.plateHp <= 0) {
+        z.plates--;
+        z.plateHp = z.maxHp * 0.25;
+        for (let i = 0; i < 6; i++) this.spawnParticle(z.x, z.y, rand(-220, 220), rand(-220, 220), rand(0.4, 0.7), rand(4, 7), '#8a9298', 4, true, false);
+        this.sfx.play('plate');
+        if (z.plates === 0) this.addText(z.x, z.y - z.r - 8, 'ARMOR BROKEN', '#c9d1d8', 12);
+      }
+    }
     z.hp -= dmg;
     z.flash = 0.07;
     const k = knock / z.def.mass;
     z.kx += Math.cos(angle) * k;
     z.ky += Math.sin(angle) * k;
-    if (this.stats.frost > 0) z.slow = 1.5;
+    if (this.stats.frost > 0 && z.def.kind !== 'electric') z.slow = 1.5;
     if (!quiet) {
       for (let i = 0; i < (crit ? 5 : 2); i++) this.spawnBlood(z.x, z.y, angle + rand(-0.6, 0.6), z.def.kind === 'bloater' ? '#6a8f10' : '#7a1010');
       if (crit || dmg >= 20) this.addText(z.x + rand(-8, 8), z.y - z.r - 4, String(Math.round(dmg)), crit ? '#ffd23f' : '#ffffff', crit ? 18 : 12);
@@ -1778,6 +1997,13 @@ export class Game {
     }
     if (z.elite === 'splitting' && kind !== 'egg')
       for (let i = 0; i < 2; i++) this.spawnZombie(kind, z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), { mini: true }).flash = 0.2;
+    if (z.frozenT > 0) {
+      for (let i = 0; i < 14; i++) {
+        const a = rand(0, Math.PI * 2);
+        this.spawnParticle(z.x, z.y, Math.cos(a) * rand(100, 320), Math.sin(a) * rand(100, 320), rand(0.3, 0.6), rand(3, 7), i % 2 ? '#dff6ff' : '#7fd8ff', 4, false, true);
+      }
+      this.sfx.play('shatter');
+    }
     if (z.elite === 'explosive') this.explode(z.x, z.y, 70 * this.stats.damage, 110, 22);
     const big = boss || kind === 'tank' || kind === 'shield';
     const n = boss ? 60 : big ? 22 : 12;
@@ -1830,7 +2056,7 @@ export class Game {
     if (boss) {
       this.slowT = 1.4;
       this.explode(z.x, z.y, 0, 160, 0);
-      this.showBanner('BOSS DOWN', `${BOSS_NAMES[kind]} SLAIN`, kind === 'brood' ? '#ffcf5a' : '#c065ff');
+      this.showBanner('BOSS DOWN', `${BOSS_NAMES[kind]} SLAIN`, BOSS_COLORS[kind] ?? '#c065ff');
       this.flash = { t: 0.4, color: '#ffffff', max: 0.4 };
       // Her unhatched eggs die with her.
       if (kind === 'brood') for (const e of this.zombies) if (e.def.kind === 'egg') this.killZombie(e, rand(0, Math.PI * 2));
@@ -2034,6 +2260,7 @@ export class Game {
     });
     this.lights = this.lights.filter((l) => (l.life -= dt) > 0);
     this.ghosts = this.ghosts.filter((g) => (g.life -= dt) > 0);
+    this.bolts = this.bolts.filter((b) => (b.life -= dt) > 0);
     this.trauma = Math.max(0, this.trauma - rawDt * 1.8);
     this.zoomKick = Math.max(0, this.zoomKick - rawDt * 0.4);
     if (this.banner.t > 0) this.banner.t -= rawDt;
@@ -2270,6 +2497,7 @@ export class Game {
       const ey = z.y + s * r * 0.6;
       const ox = -s * r * 0.25;
       const oy = c * r * 0.25;
+      if (this.crawlerAlpha(z) < 0.6) continue;
       ctx.fillStyle = this.active.freeze > 0 ? '#9fe8ff' : z.def.eye;
       const es = Math.max(2, r * 0.13);
       ctx.fillRect(ex + ox - es / 2, ey + oy - es / 2, es, es);
@@ -2280,6 +2508,9 @@ export class Game {
       if (z.elite) glowDot(z.x, z.y, r * 2.2, ELITES[z.elite].color, 0.22);
       if (z.buff > 0) glowDot(z.x, z.y, r * 1.8, '#ff3050', 0.3 + 0.1 * Math.sin(this.clock * 14 + z.id));
       if (z.def.kind === 'necro') glowDot(z.x, z.y, r * 2.4, '#5dffb0', 0.2);
+      if (z.def.kind === 'electric') glowDot(z.x, z.y, r * (z.zapT > 0 ? 3.2 : 2), '#8ad8ff', z.zapT > 0 ? 0.5 : 0.22);
+      if (z.def.kind === 'juggernaut') glowDot(z.x - Math.cos(z.face) * r * 0.62, z.y - Math.sin(z.face) * r * 0.62, r * 0.9, '#ffa040', 0.5);
+      if (z.frozenT > 0) glowDot(z.x, z.y, r * 2, '#9fe8ff', 0.25);
       if (z.def.kind === 'brood' && this.countKind('egg') > 0) glowDot(z.x, z.y, r * 1.9, '#ffcf5a', 0.2 + 0.08 * Math.sin(this.clock * 5));
     }
     ctx.globalAlpha = 1;
@@ -2287,10 +2518,11 @@ export class Game {
     // Bullets, flames, rockets
     ctx.lineCap = 'round';
     for (const b of this.bullets) {
-      if (b.kind === 'flame') {
+      if (b.kind === 'flame' || b.kind === 'frost') {
         const t = 1 - b.life / b.max;
         const r = 6 + t * 22;
-        glowDot(b.x, b.y, r, t < 0.3 ? '#ffe08a' : t < 0.65 ? '#ff8a2b' : '#c0301a', 0.55 * (1 - t * 0.6));
+        if (b.kind === 'flame') glowDot(b.x, b.y, r, t < 0.3 ? '#ffe08a' : t < 0.65 ? '#ff8a2b' : '#c0301a', 0.55 * (1 - t * 0.6));
+        else glowDot(b.x, b.y, r, t < 0.4 ? '#ffffff' : '#7fd8ff', 0.5 * (1 - t * 0.6));
         continue;
       }
       if (b.kind === 'rocket') {
@@ -2315,6 +2547,34 @@ export class Game {
       ctx.globalAlpha = 0.25;
       ctx.lineWidth = b.width * 3.5;
       ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Lightning: a fresh jagged path every frame so it flickers.
+    for (const bo of this.bolts) {
+      const dx = bo.x2 - bo.x1;
+      const dy = bo.y2 - bo.y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const segs = Math.max(3, Math.round(len / 22));
+      ctx.beginPath();
+      ctx.moveTo(bo.x1, bo.y1);
+      for (let i = 1; i < segs; i++) {
+        const t = i / segs;
+        const off = rand(-14, 14);
+        ctx.lineTo(bo.x1 + dx * t + nx * off, bo.y1 + dy * t + ny * off);
+      }
+      ctx.lineTo(bo.x2, bo.y2);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = bo.color;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.globalAlpha = 0.3;
+      ctx.lineWidth = 9;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      glowDot(bo.x2, bo.y2, 26, bo.color, 0.6);
     }
     ctx.globalAlpha = 1;
 
@@ -2380,7 +2640,7 @@ export class Game {
     // Laser sight
     if (this.state === 'playing') {
       const w = this.weapons[this.wi];
-      if (w.def.kind !== 'flame') {
+      if (w.def.kind !== 'flame' && w.def.kind !== 'frost') {
         const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
         const my = p.y + Math.sin(p.angle) * (w.def.length + 4);
         const g = ctx.createLinearGradient(mx, my, mx + Math.cos(p.angle) * 260, my + Math.sin(p.angle) * 260);
@@ -2417,13 +2677,23 @@ export class Game {
       ctx.lineTo(z.x + z.leap.dx * 300, z.y + z.leap.dy * 300);
       ctx.stroke();
     }
+    for (const z of this.zombies) {
+      if (!z.jug || z.jug.windup <= 0) continue;
+      ctx.strokeStyle = `rgba(255,120,60,${0.35 + 0.3 * Math.sin(this.clock * 30)})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, 240 * (1 - z.jug.windup / 0.9 * 0.3), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,90,40,0.08)';
+      ctx.fill();
+    }
     // Grenade danger circles
     for (const g of this.grenades) {
       if (g.fuse > 0.5) continue;
       ctx.strokeStyle = `rgba(255,80,40,${0.5 * (1 - g.fuse * 2)})`;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(g.x, g.y, 135, 0, Math.PI * 2);
+      ctx.arc(g.x, g.y, g.radius ?? 135, 0, Math.PI * 2);
       ctx.stroke();
     }
   }
@@ -2692,8 +2962,15 @@ export class Game {
     }
   }
 
+  /** Crawlers hide in the dark until they're close. */
+  private crawlerAlpha(z: Zombie) {
+    if (z.def.kind !== 'crawler' || this.state === 'menu') return 1;
+    return clamp((260 - Math.hypot(z.x - this.p.x, z.y - this.p.y)) / 120, 0.1, 1);
+  }
+
   private drawZombieShadow(z: Zombie) {
     const ctx = this.ctx;
+    if (this.crawlerAlpha(z) < 1) return;
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();
     ctx.ellipse(z.x + 3, z.y + 5, z.r * 1.05, z.r * 0.9, 0, 0, Math.PI * 2);
@@ -2712,9 +2989,11 @@ export class Game {
     ctx.rotate(z.face);
     const hit = z.flash > 0;
     const frozen = this.active.freeze > 0;
-    const windup = z.boss?.state === 'windup' || z.leap?.state === 'crouch';
-    const body = hit ? '#ffffff' : windup ? (Math.floor(this.clock * 20) % 2 ? '#ff4040' : z.def.body) : frozen || z.slow > 0 ? '#8fc4d9' : z.burn > 0 ? '#5a3a20' : z.def.body;
-    const dark = hit ? '#ffffff' : frozen ? '#4f7f99' : z.def.dark;
+    const windup = z.boss?.state === 'windup' || z.leap?.state === 'crouch' || (z.jug?.windup ?? 0) > 0 || z.zapT > 0;
+    ctx.globalAlpha = this.crawlerAlpha(z);
+    const icy = frozen || z.frozenT > 0;
+    const body = hit ? '#ffffff' : windup ? (Math.floor(this.clock * 20) % 2 ? (z.zapT > 0 ? '#c8f8ff' : '#ff4040') : z.def.body) : icy || z.slow > 0 ? '#8fc4d9' : z.burn > 0 ? '#5a3a20' : z.def.body;
+    const dark = hit ? '#ffffff' : icy ? '#4f7f99' : z.def.dark;
     const kind = z.def.kind;
     // Arms reaching forward, swinging as they walk.
     const swing = Math.sin(z.phase) * r * 0.25;
@@ -2727,6 +3006,15 @@ export class Game {
       ctx.fill();
       ctx.fillStyle = 'rgba(30,40,50,0.6)';
       ctx.fillRect(r * 1.2, -r * 0.35, r * 0.18, r * 0.7);
+    } else if (kind === 'dog') {
+      // Four legs and a long body instead of reaching arms.
+      ctx.fillStyle = dark;
+      const step = Math.sin(z.phase * 1.6) * r * 0.35;
+      ctx.fillRect(r * 0.3 + step, -r * 0.85, r * 0.25, r * 0.4);
+      ctx.fillRect(r * 0.3 - step, r * 0.45, r * 0.25, r * 0.4);
+      ctx.fillRect(-r * 0.8 - step, -r * 0.85, r * 0.25, r * 0.4);
+      ctx.fillRect(-r * 0.8 + step, r * 0.45, r * 0.25, r * 0.4);
+      ctx.fillRect(-r * 1.7, -r * 0.1, r * 0.6, r * 0.2);
     } else if (kind !== 'bloater') {
       ctx.fillStyle = dark;
       ctx.fillRect(r * 0.2, -r * 0.85 + swing * 0.3, r * 1.1 + swing, r * 0.36);
@@ -2736,7 +3024,8 @@ export class Game {
     const pulse = (kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.12 : 1) * crouch;
     ctx.fillStyle = body;
     ctx.beginPath();
-    ctx.arc(0, 0, r * pulse, 0, Math.PI * 2);
+    if (kind === 'dog') ctx.ellipse(-r * 0.2, 0, r * 1.25, r * 0.7, 0, 0, Math.PI * 2);
+    else ctx.arc(0, 0, r * pulse, 0, Math.PI * 2);
     ctx.fill();
     if (kind === 'bloater') {
       // Boils
@@ -2758,6 +3047,43 @@ export class Game {
     ctx.beginPath();
     ctx.arc(r * 0.2, 0, r * 0.55, 0, Math.PI * 2);
     ctx.fill();
+    if (kind === 'soldier' && z.plates > 0) {
+      // Armor plates, one per side and one on the back; they fall off as they break.
+      ctx.fillStyle = hit ? '#fff' : '#8a9298';
+      const spots = [
+        [0, -r * 0.62],
+        [0, r * 0.62],
+        [-r * 0.62, 0],
+      ];
+      for (let i = 0; i < z.plates; i++) ctx.fillRect(spots[i][0] - r * 0.35, spots[i][1] - r * 0.22, r * 0.7, r * 0.44);
+      ctx.fillStyle = '#3a4048';
+      ctx.fillRect(r * 0.05, -r * 0.4, r * 0.55, r * 0.8);
+    }
+    if (kind === 'juggernaut') {
+      // Front armor plate and a glowing weak spot on the back.
+      ctx.fillStyle = hit ? '#fff' : '#8a9098';
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 1.05, -1.1, 1.1);
+      ctx.arc(0, 0, r * 0.7, 1.1, -1.1, true);
+      ctx.fill();
+      ctx.fillStyle = '#3a3e44';
+      for (let i = -2; i <= 2; i++) ctx.fillRect(r * 0.75, i * r * 0.22 - 2, r * 0.25, 4);
+      ctx.fillStyle = `rgba(255,${120 + Math.floor(60 * Math.sin(this.clock * 6))},40,1)`;
+      ctx.beginPath();
+      ctx.arc(-r * 0.62, 0, r * 0.24, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (kind === 'electric') {
+      ctx.strokeStyle = '#a0f0ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 3; i++) {
+        const a = this.clock * 9 + i * 2.1 + z.id;
+        ctx.moveTo(Math.cos(a) * r * 0.4, Math.sin(a) * r * 0.4);
+        ctx.lineTo(Math.cos(a + 0.4) * r * 1.1, Math.sin(a + 0.4) * r * 1.1);
+      }
+      ctx.stroke();
+    }
     if (kind === 'screamer') {
       // Gaping mouth
       ctx.fillStyle = '#1a0006';
@@ -2820,6 +3146,17 @@ export class Game {
       }
     }
     ctx.restore();
+    ctx.globalAlpha = 1;
+    if (z.frozenT > 0) {
+      // Ice block
+      ctx.fillStyle = 'rgba(190,235,255,0.45)';
+      ctx.strokeStyle = 'rgba(230,250,255,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(z.x - r * 1.2, z.y - r * 1.2, r * 2.4, r * 2.4, 4);
+      ctx.fill();
+      ctx.stroke();
+    }
     if (z.elite) {
       const c = ELITES[z.elite].color;
       ctx.strokeStyle = c;
@@ -2830,7 +3167,7 @@ export class Game {
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
-    if (z.hp < z.maxHp && !isBoss(z)) {
+    if (z.hp < z.maxHp && !isBoss(z) && this.crawlerAlpha(z) > 0.5) {
       const w = r * 2;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(z.x - w / 2, z.y - r - 10, w, 4);
@@ -3031,7 +3368,7 @@ export class Game {
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(bx, rowY - 6, bw, 12);
       const shielded = boss.def.kind === 'brood' && this.countKind('egg') > 0;
-      ctx.fillStyle = boss.def.kind === 'brood' ? '#e0a83a' : '#b05bd6';
+      ctx.fillStyle = BOSS_COLORS[boss.def.kind] ?? '#b05bd6';
       ctx.fillRect(bx + 2, rowY - 4, (bw - 4) * Math.max(0, boss.hp / boss.maxHp), 8);
       ctx.fillStyle = '#fff';
       ctx.font = `11px ${FONT}`;

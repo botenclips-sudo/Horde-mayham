@@ -1,6 +1,6 @@
 // Static game data: weapons, zombie types and perks.
 
-export type WeaponKind = 'bullet' | 'flame' | 'rocket';
+export type WeaponKind = 'bullet' | 'flame' | 'rocket' | 'tesla' | 'grenade' | 'frost';
 
 export interface WeaponDef {
   id: string;
@@ -21,6 +21,7 @@ export interface WeaponDef {
   length: number; // drawn barrel length
   spinup?: number; // seconds to reach full fire rate (minigun)
   moveSlow?: number; // movement multiplier while firing
+  pierce?: number; // extra zombies each bullet passes through
 }
 
 export const WEAPONS: WeaponDef[] = [
@@ -30,10 +31,31 @@ export const WEAPONS: WeaponDef[] = [
   { id: 'rifle', name: 'Assault Rifle', kind: 'bullet', damage: 26, fireRate: 9, mag: 30, reload: 1.7, spread: 0.06, pellets: 1, speed: 1150, life: 0.6, price: 900, upgradeBase: 260, shake: 0.14, color: '#a0f0ff', length: 34 },
   { id: 'flamer', name: 'Flamethrower', kind: 'flame', damage: 7, fireRate: 28, mag: 140, reload: 2.2, spread: 0.32, pellets: 1, speed: 430, life: 0.42, price: 1300, upgradeBase: 380, shake: 0.02, color: '#ff8a2b', length: 30 },
   { id: 'rocket', name: 'Rocket Launcher', kind: 'rocket', damage: 130, fireRate: 1.1, mag: 4, reload: 2.4, spread: 0.02, pellets: 1, speed: 620, life: 1.4, price: 1900, upgradeBase: 520, shake: 0.4, color: '#ffcf5a', length: 36 },
+  { id: 'launcher', name: 'Grenade Launcher', kind: 'grenade', damage: 105, fireRate: 1.6, mag: 6, reload: 2.3, spread: 0.04, pellets: 1, speed: 700, life: 0.55, price: 1500, upgradeBase: 420, shake: 0.3, color: '#9fd06a', length: 32 },
+  { id: 'sniper', name: 'Sniper Rifle', kind: 'bullet', damage: 150, fireRate: 1.25, mag: 5, reload: 2.1, spread: 0, pellets: 1, speed: 2300, life: 0.75, price: 1700, upgradeBase: 460, shake: 0.32, color: '#ffffff', length: 42, pierce: 6 },
+  { id: 'freeze', name: 'Freeze Ray', kind: 'frost', damage: 8, fireRate: 24, mag: 130, reload: 2.2, spread: 0.26, pellets: 1, speed: 540, life: 0.5, price: 1900, upgradeBase: 500, shake: 0.02, color: '#9fe8ff', length: 30 },
+  { id: 'tesla', name: 'Tesla Gun', kind: 'tesla', damage: 34, fireRate: 4, mag: 32, reload: 2.2, spread: 0.5, pellets: 1, speed: 0, life: 0, price: 2300, upgradeBase: 600, shake: 0.08, color: '#8ad8ff', length: 30 },
   { id: 'minigun', name: 'Minigun', kind: 'bullet', damage: 15, fireRate: 24, mag: 180, reload: 3.2, spread: 0.17, pellets: 1, speed: 1050, life: 0.55, price: 2800, upgradeBase: 700, shake: 0.07, color: '#ffe9a0', length: 38, spinup: 0.7, moveSlow: 0.6 },
 ];
 
-export type ZombieKind = 'walker' | 'runner' | 'tank' | 'bloater' | 'spitter' | 'screamer' | 'shield' | 'leaper' | 'necro' | 'egg' | 'boss' | 'brood';
+export type ZombieKind =
+  | 'walker'
+  | 'runner'
+  | 'tank'
+  | 'bloater'
+  | 'spitter'
+  | 'screamer'
+  | 'shield'
+  | 'leaper'
+  | 'necro'
+  | 'crawler'
+  | 'dog'
+  | 'soldier'
+  | 'electric'
+  | 'egg'
+  | 'boss'
+  | 'brood'
+  | 'juggernaut';
 
 export interface ZombieDef {
   kind: ZombieKind;
@@ -58,12 +80,17 @@ export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
   shield: { kind: 'shield', hp: 230, speed: 66, damage: 18, radius: 22, cash: 22, body: '#5a6670', dark: '#2e353b', eye: '#ffb02b', mass: 3 },
   leaper: { kind: 'leaper', hp: 50, speed: 112, damage: 16, radius: 13, cash: 12, body: '#8a6a3a', dark: '#4a3818', eye: '#ffe23a', mass: 0.8 },
   necro: { kind: 'necro', hp: 95, speed: 70, damage: 10, radius: 16, cash: 24, body: '#3a3a52', dark: '#1c1c2c', eye: '#5dffb0', mass: 1.1 },
+  crawler: { kind: 'crawler', hp: 32, speed: 150, damage: 10, radius: 11, cash: 8, body: '#5a4a44', dark: '#2e2420', eye: '#ff7a3a', mass: 0.6 },
+  dog: { kind: 'dog', hp: 34, speed: 235, damage: 7, radius: 12, cash: 6, body: '#7a5a4a', dark: '#3e2a20', eye: '#ffdd44', mass: 0.6 },
+  soldier: { kind: 'soldier', hp: 150, speed: 80, damage: 15, radius: 18, cash: 20, body: '#55623f', dark: '#2c3420', eye: '#ff4a2a', mass: 2 },
+  electric: { kind: 'electric', hp: 85, speed: 90, damage: 10, radius: 15, cash: 18, body: '#3a5a7a', dark: '#1c2e40', eye: '#a0f0ff', mass: 1.2 },
   egg: { kind: 'egg', hp: 70, speed: 0, damage: 0, radius: 14, cash: 3, body: '#d8c89a', dark: '#8a7a4a', eye: '#d8c89a', mass: 50 },
   boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
+  juggernaut: { kind: 'juggernaut', hp: 2700, speed: 46, damage: 40, radius: 56, cash: 600, body: '#5a5f66', dark: '#2a2d32', eye: '#ff3a2a', mass: 30 },
   brood: { kind: 'brood', hp: 2400, speed: 50, damage: 34, radius: 54, cash: 450, body: '#8f6a3a', dark: '#4a3218', eye: '#ffef3a', mass: 24 },
 };
 
-export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD' };
+export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT' };
 
 export type EliteKind = 'fast' | 'armored' | 'splitting' | 'vampiric' | 'explosive';
 

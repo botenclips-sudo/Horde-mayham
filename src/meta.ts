@@ -54,7 +54,7 @@ export const trainingCost = (t: TrainingDef, lv: number) => Math.round(t.base * 
 
 // ------------------------------------------------------------------ guns
 
-export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, minigun: 1200 };
+export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400 };
 export const MASTERY_MAX = 10;
 export const masteryCost = (lv: number) => Math.round(40 * Math.pow(1.45, lv));
 
@@ -110,6 +110,11 @@ const kindKills = (k: ZombieKind) => (r: RunReport) => r.killsByKind[k] ?? 0;
 const gunKills = (g: string) => (r: RunReport) => r.killsByWeapon[g] ?? 0;
 
 export const MISSIONS: MissionDef[] = [
+  { id: 'crawlers', text: 'Kill 40 crawlers', goal: 40, reward: 50, measure: kindKills('crawler') },
+  { id: 'dogs', text: 'Kill 60 dogs', goal: 60, reward: 50, measure: kindKills('dog') },
+  { id: 'soldiers', text: 'Kill 15 armored soldiers', goal: 15, reward: 60, measure: kindKills('soldier') },
+  { id: 'tesla', text: 'Kill 250 zombies holding the Tesla Gun', goal: 250, reward: 60, measure: gunKills('tesla') },
+  { id: 'sniper', text: 'Kill 150 zombies holding the Sniper Rifle', goal: 150, reward: 55, measure: gunKills('sniper') },
   { id: 'kill500', text: 'Kill 500 zombies', goal: 500, reward: 40, measure: (r) => r.kills },
   { id: 'kill1500', text: 'Kill 1,500 zombies', goal: 1500, reward: 90, measure: (r) => r.kills },
   { id: 'runners', text: 'Kill 120 runners', goal: 120, reward: 40, measure: kindKills('runner') },
