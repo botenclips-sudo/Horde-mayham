@@ -90,6 +90,7 @@ export interface ModeDef {
   desc: string;
   unlock: number;
   brains: number; // multiplier on brains earned
+  hidden?: boolean; // not on the mode picker (co-op has its own lobby)
 }
 
 export const MODES: ModeDef[] = [
@@ -97,6 +98,7 @@ export const MODES: ModeDef[] = [
   { id: 'daily', name: 'Daily Challenge', icon: '📅', desc: 'Same map and twists for everyone today. First run of the day pays +50 🧠.', unlock: 1, brains: 1 },
   { id: 'bossrush', name: 'Boss Rush', icon: '💀', desc: 'Every wave is a boss. Brains x1.5.', unlock: 3, brains: 1.5 },
   { id: 'hardcore', name: 'Hardcore', icon: '☠️', desc: 'No medkits, no health drops, no Second Wind. Brains x2.', unlock: 5, brains: 2 },
+  { id: 'coop', name: 'Co-op', icon: '👥', desc: 'Online with up to 3 friends.', unlock: 1, brains: 1, hidden: true },
 ];
 
 export interface MutatorDef {
@@ -174,6 +176,8 @@ export interface RunReport {
   bestBurst: number; // most zombies killed in one burst
   flawlessWaves: number;
   time: number;
+  teamRevives: number; // co-op: teammates you picked up
+  coop: boolean;
 }
 
 export interface MissionDef {

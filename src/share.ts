@@ -180,13 +180,19 @@ export function parseChallenge(code: string): Challenge | null {
 }
 
 /** A link that opens the game; outside the artifact viewer it also carries the challenge. */
-export function challengeLink(code: string) {
-  let framed = true;
+/** Where the game is hosted for real (co-op and leaderboards need it). */
+export const LIVE_URL = 'https://botenclips-sudo.github.io/Horde-mayham/';
+
+/** True inside an embed (like the Claude artifact viewer), where some features are blocked. */
+export function isFramed() {
   try {
-    framed = window.top !== window;
+    return window.top !== window;
   } catch {
-    framed = true;
+    return true;
   }
-  if (!framed && /^https?:$/.test(location.protocol)) return `${location.origin}${location.pathname}#c=${code}`;
+}
+
+export function challengeLink(code: string) {
+  if (!isFramed() && /^https?:$/.test(location.protocol)) return `${location.origin}${location.pathname}#c=${code}`;
   return ARTIFACT_URL;
 }

@@ -2,11 +2,11 @@
 // the table's row-level security only lets anyone read scores and insert sane new ones.
 // The table and its rules are in supabase/leaderboard.sql.
 
-const URL = 'https://xmxxxetnjyyvkmvakzji.supabase.co';
+export const SUPABASE_URL = 'https://xmxxxetnjyyvkmvakzji.supabase.co';
 // Supabase publishable key: safe in client code. Never put a secret (sb_secret_ / service_role) key here.
-const KEY = 'sb_publishable_jsKS5CBD7kRKoTmoPATsZw_C1Uwyo5a';
+export const SUPABASE_KEY = 'sb_publishable_jsKS5CBD7kRKoTmoPATsZw_C1Uwyo5a';
 
-export const leaderboardsOn = () => !!KEY;
+export const leaderboardsOn = () => !!SUPABASE_KEY;
 
 export interface Score {
   name: string;
@@ -26,11 +26,11 @@ export const cleanName = (n: string) =>
     .slice(0, 16);
 
 // Publishable keys aren't JWTs, so they go in the apikey header only (no Authorization header).
-const headers = () => ({ apikey: KEY, 'Content-Type': 'application/json' });
+const headers = () => ({ apikey: SUPABASE_KEY, 'Content-Type': 'application/json' });
 
 /** Top scores on a board, one row per player name (their best). */
 export async function topScores(board: string, n = 10): Promise<Score[]> {
-  const q = `${URL}/rest/v1/scores?select=name,wave,kills,map&board=eq.${encodeURIComponent(board)}&order=wave.desc,kills.desc&limit=200`;
+  const q = `${SUPABASE_URL}/rest/v1/scores?select=name,wave,kills,map&board=eq.${encodeURIComponent(board)}&order=wave.desc,kills.desc&limit=200`;
   const res = await fetch(q, { headers: headers() });
   if (!res.ok) throw new Error(`leaderboard ${res.status}`);
   const rows = (await res.json()) as Score[];
@@ -47,7 +47,7 @@ export async function topScores(board: string, n = 10): Promise<Score[]> {
 }
 
 export async function postScore(board: string, s: Score): Promise<void> {
-  const res = await fetch(`${URL}/rest/v1/scores`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/scores`, {
     method: 'POST',
     headers: { ...headers(), Prefer: 'return=minimal' },
     body: JSON.stringify({ board, name: s.name, wave: s.wave, kills: s.kills, map: s.map }),

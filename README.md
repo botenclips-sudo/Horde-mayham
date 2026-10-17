@@ -30,7 +30,13 @@ Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (
 
 ## Leaderboards
 
-Endless and Daily Challenge runs can be posted to global leaderboards on Supabase. One-time setup: run `supabase/leaderboard.sql` in the Supabase SQL editor, then put the project's publishable key in `KEY` in `src/leaderboard.ts` (never a secret key). Leaderboards stay hidden while the key is empty.
+Endless and Daily Challenge runs can be posted to global leaderboards on Supabase. One-time setup: run `supabase/leaderboard.sql` in the Supabase SQL editor, then put the project's publishable key in `SUPABASE_KEY` in `src/leaderboard.ts` (never a secret key). Leaderboards stay hidden while the key is empty.
+
+## Co-op
+
+Online co-op for 2 to 4 players: one phone hosts a room and the others join with its 4-letter code. Players find each other through Supabase Realtime broadcast (no database tables needed), then talk over direct WebRTC data channels; if a direct link can't be made, messages go through Supabase instead at a lower rate. The host runs the zombies; each player runs their own soldier, shooting and loadout and sends hits to the host. Downed players are revived by a teammate standing next to them; the run ends when everyone is down.
+
+To test without the internet, open two tabs with `?local` (add `&relay` to force the slow path).
 
 ## Code map
 
@@ -45,6 +51,7 @@ Endless and Daily Challenge runs can be posted to global leaderboards on Supabas
 - `src/gear.ts` – armor and trinket loot with rarities
 - `src/leaderboard.ts` – Supabase leaderboards (table and rules in `supabase/leaderboard.sql`)
 - `src/clips.ts` – rolling replay recorder for video clips
+- `src/net.ts` – co-op rooms: signaling, WebRTC data channels and the relay fallback
 - `src/main.ts` – menus, base screen, perk picker, shop and the frame loop
 
 ## License
