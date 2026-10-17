@@ -25,6 +25,7 @@
           <div class="brains">🧠 <b id="m-brains">0</b></div>
         </div>
         <button id="play" class="big">PLAY</button>
+        <button id="coop-btn" class="big coop-btn">👥 CO-OP</button>
         <div class="base-row">
           <button class="base-btn" data-tab="armory">🔫 Armory</button>
           <button class="base-btn" data-tab="training">💪 Training</button>
@@ -35,6 +36,7 @@
         <div class="help">
           <p><b>Phone:</b> left thumb moves, right thumb aims and fires. Buttons for dash, grenade, swap, reload and anything you deploy.</p>
           <p><b>PC:</b> WASD move, mouse aim and fire, Space dash, G grenade, F deploy, Q or 1-9 swap, R reload, M mute, P pause.</p>
+          <p><b>Co-op:</b> host a game and send your friends the room code. If someone goes down, stand next to them to revive.</p>
         </div>
       </div>
     </div>
@@ -50,6 +52,26 @@
           <button id="modes-back" class="ghost">Back</button>
           <button id="start" class="big">START</button>
         </div>
+      </div>
+    </div>
+
+    <div id="coop" class="overlay hidden">
+      <div class="panel coop">
+        <h2>Online co-op</h2>
+        <p class="tag">Up to 4 players. Everyone brings their own guns, training and gear.</p>
+        <input id="co-name" class="co-input" maxlength="16" placeholder="Your name" autocomplete="off" />
+        <div id="co-pick">
+          <button id="co-host" class="big">HOST A GAME</button>
+          <div class="challenge-row"><input id="co-code" class="co-code" maxlength="4" placeholder="Room code" autocomplete="off" autocapitalize="characters" /><button id="co-join" class="buy">Join</button></div>
+        </div>
+        <div id="co-room" class="hidden">
+          <p class="co-codeline">Room code <b id="co-codeview"></b> <button id="co-share" class="buy">📤 Invite</button></p>
+          <ul id="co-players" class="co-players"></ul>
+          <div id="co-maps" class="map-row"></div>
+          <button id="co-start" class="big">START</button>
+        </div>
+        <p id="co-msg" class="tiny"></p>
+        <button id="co-back" class="ghost">Leave</button>
       </div>
     </div>
 
@@ -86,6 +108,7 @@
         <p class="tag">Cash: <b id="shop-cash">$0</b></p>
         <div id="shop-items" class="shop-items"></div>
         <button id="next-wave" class="big">NEXT WAVE</button>
+        <p id="wait-msg" class="tiny"></p>
       </div>
     </div>
 

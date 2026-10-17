@@ -1,16 +1,17 @@
 import './style.css';
 import { Sfx } from './audio';
-import { Game, RunSummary } from './game';
+import { Game, RunSummary, SUITS } from './game';
 import { Input } from './input';
 import { Challenge, dailySetup, GUN_UNLOCK, LEVEL_REWARDS, MASTERY_MAX, masteryCost, meta, MISSIONS, MODES, MUTATORS, RunResult, today, TRAINING, trainingCost, xpToNext } from './meta';
 import { MAPS, mapById } from './maps';
 import { WEAPONS } from './data';
-import { challengeCode, challengeLink, makeShareCard, parseChallenge, SaveOutcome, shareCard, shareFile } from './share';
+import { challengeCode, challengeLink, isFramed, LIVE_URL, makeShareCard, parseChallenge, SaveOutcome, shareCard, shareFile } from './share';
 import { BadgeDef, BADGES } from './achievements';
 import { Clip, ClipRecorder } from './clips';
 import { gearDef, gearValue, RARITIES, RARITY_COLOR, SCRAP_VALUE } from './gear';
 import { CRATE_COST, GEAR_MAX } from './meta';
 import { boardFor, cleanName, leaderboardsOn, postScore, Score, topScores } from './leaderboard';
+import { NetMsg, Room } from './net';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -19,7 +20,7 @@ const input = new Input(canvas);
 input.touchMode = window.matchMedia('(pointer: coarse)').matches;
 const sfx = new Sfx();
 
-const screens = ['menu', 'modes', 'base', 'perks', 'shop', 'pause', 'over'];
+const screens = ['menu', 'modes', 'coop', 'base', 'perks', 'shop', 'pause', 'over'];
 function show(id: string | null) {
   for (const s of screens) $(s).classList.toggle('hidden', s !== id);
   canvas.style.cursor = id === null && !input.touchMode ? 'none' : 'default';
@@ -133,6 +134,8 @@ function showGameOver(s: RunSummary) {
   renderClips();
   renderPostScore(s);
   refreshMenu();
+  $('challenge-btn').classList.toggle('hidden', !!game.net);
+  coopOverButtons();
   show('over');
 }
 
@@ -364,6 +367,7 @@ $('base-back').addEventListener('click', () => {
   show('menu');
 });
 $('to-base').addEventListener('click', () => {
+  leaveCoop();
   game.newRun();
   game.state = 'menu';
   openBase('armory');
@@ -549,6 +553,7 @@ function renderModes() {
   const cards = $('mode-cards');
   cards.innerHTML = '';
   for (const m of MODES) {
+    if (m.hidden) continue;
     const locked = d.level < m.unlock;
     const b = document.createElement('button');
     b.className = `mode-card${d.mode === m.id ? ' on' : ''}`;
@@ -648,13 +653,334 @@ $('ch-go').addEventListener('click', () => {
   }
 }
 
+
+// ------------------------------------------------------------------ online co-op
+
+let room: Room | null = null;
+let squad: { id: string; name: string; slot: number }[] = [];
+let coopMap = 'lot';
+const ready = new Set<string>();
+let hostReady = false;
+
+function openCoop(code = '') {
+  sfx.unlock();
+  $<HTMLInputElement>('co-name').value = meta.data.player || '';
+  if (code) $<HTMLInputElement>('co-code').value = code;
+  setCoopMsg(isFramed() ? '' : code ? 'Pick a name and tap Join.' : '');
+  renderCoop();
+  show('coop');
+}
+
+function setCoopMsg(t: string) {
+  $('co-msg').textContent = t;
+}
+
+function coopName() {
+  const n = cleanName($<HTMLInputElement>('co-name').value) || 'Survivor';
+  meta.data.player = n;
+  meta.save();
+  return n;
+}
+
+function renderCoop() {
+  if (isFramed()) {
+    // Embeds block the connection co-op needs, so point at the real site.
+    $('co-pick').innerHTML = `<p class="tag">Co-op needs the full game. Open <a href="${LIVE_URL}" target="_blank" rel="noopener">${LIVE_URL.replace('https://', '')}</a> on each phone.</p>`;
+    $('co-name').classList.add('hidden');
+    return;
+  }
+  const r = room;
+  $('co-pick').classList.toggle('hidden', !!r);
+  $('co-room').classList.toggle('hidden', !r);
+  $<HTMLInputElement>('co-name').disabled = !!r;
+  $('co-back').textContent = r ? 'Leave room' : 'Back';
+  if (!r) return;
+  $('co-codeview').textContent = r.code;
+  const list = $('co-players');
+  list.innerHTML = '';
+  for (const p of squad) {
+    const li = document.createElement('li');
+    li.style.borderLeftColor = SUITS[p.slot]?.[2] ?? '#888';
+    li.textContent = p.name;
+    const tag = document.createElement('span');
+    const link = r.isHost && p.id !== r.me ? r.linkOf(p.id) : '';
+    tag.textContent = [p.slot === 0 ? 'host' : '', p.id === r.me ? 'you' : '', link === 'relay' ? 'slow link' : ''].filter(Boolean).join(' · ');
+    li.appendChild(tag);
+    list.appendChild(li);
+  }
+  const maps = $('co-maps');
+  maps.innerHTML = '';
+  for (const mp of MAPS) {
+    if (!r.isHost && mp.id !== coopMap) continue;
+    const locked = r.isHost && meta.data.level < mp.unlock;
+    const b = document.createElement('button');
+    b.className = `map-chip${coopMap === mp.id ? ' on' : ''}`;
+    b.disabled = locked;
+    b.innerHTML = `<b>${esc(mp.name)}</b><span>${locked ? `Level ${mp.unlock}` : esc(mp.desc)}</span>`;
+    if (r.isHost)
+      b.addEventListener('click', () => {
+        coopMap = mp.id;
+        r.broadcast({ t: 'lobby', pl: squad, map: coopMap });
+        renderCoop();
+      });
+    maps.appendChild(b);
+  }
+  const start = $<HTMLButtonElement>('co-start');
+  start.classList.toggle('hidden', !r.isHost);
+  start.disabled = squad.length < 2;
+  start.textContent = squad.length < 2 ? 'WAITING FOR PLAYERS' : `START (${squad.length} PLAYERS)`;
+}
+
+function wireRoom(r: Room) {
+  room = r;
+  r.onmsg = onRoomMsg;
+  r.onpeers = hostPeersChanged;
+  r.onclose = (why) => {
+    if (room !== r) return;
+    room = null;
+    squad = [];
+    const midRun = game.net && (game.state === 'playing' || game.state === 'paused' || game.state === 'between');
+    if (midRun) {
+      game.toast(why || 'Disconnected');
+      game.endRun();
+    } else if (game.state === 'over') coopOverButtons();
+    else {
+      game.leaveSquad();
+      setCoopMsg(why);
+      renderCoop();
+    }
+  };
+}
+
+function leaveCoop() {
+  const r = room;
+  room = null;
+  squad = [];
+  r?.close();
+  game.leaveSquad();
+  ready.clear();
+  hostReady = false;
+}
+
+function hostPeersChanged() {
+  const r = room;
+  if (!r?.isHost) return;
+  const ids = [...r.peers.keys()];
+  for (const p of squad) if (p.id !== r.me && !ids.includes(p.id) && game.net) game.dropAlly(p.id);
+  squad = squad.filter((p) => p.id === r.me || ids.includes(p.id));
+  for (const id of ids) {
+    if (squad.some((p) => p.id === id)) continue;
+    const used = new Set(squad.map((p) => p.slot));
+    squad.push({ id, name: r.peers.get(id)!.name, slot: [1, 2, 3].find((s) => !used.has(s)) ?? 1 });
+  }
+  r.broadcast({ t: 'lobby', pl: squad, map: coopMap });
+  if (!$('coop').classList.contains('hidden')) renderCoop();
+  tryNextWave();
+  if (game.state === 'over') coopOverButtons();
+}
+
+function onRoomMsg(from: string, m: NetMsg) {
+  const r = room;
+  if (!r) return;
+  if (!r.isHost && (m.t === 'lobby' || m.t === 'start')) {
+    squad = (m.pl as typeof squad) ?? [];
+    coopMap = String(m.map ?? 'lot');
+    if (m.t === 'start') beginCoopRun();
+    else if (!$('coop').classList.contains('hidden')) renderCoop();
+    return;
+  }
+  if (r.isHost && m.t === 'ready') {
+    ready.add(from);
+    tryNextWave();
+    return;
+  }
+  game.netRecv(from, m);
+  if (m.t === 'wave' && !r.isHost) {
+    $<HTMLButtonElement>('next-wave').disabled = false;
+    $('wait-msg').textContent = '';
+    show(null);
+    clips.pause(false);
+  }
+}
+
+function tryNextWave() {
+  if (!room?.isHost || !hostReady || game.state !== 'between') return;
+  const waiting = game.allies.filter((a) => !ready.has(a.id));
+  if (waiting.length) {
+    $('wait-msg').textContent = `Waiting for ${waiting.map((a) => a.name).join(', ')}…`;
+    return;
+  }
+  ready.clear();
+  hostReady = false;
+  $<HTMLButtonElement>('next-wave').disabled = false;
+  $('wait-msg').textContent = '';
+  show(null);
+  game.startWave();
+  clips.pause(false);
+}
+
+/** Host: everyone in the room starts a run together. */
+function coopStart() {
+  const r = room;
+  if (!r?.isHost || !r.peers.size) return;
+  r.open = false;
+  r.broadcast({ t: 'start', pl: squad, map: coopMap });
+  beginCoopRun();
+}
+
+function beginCoopRun() {
+  const r = room;
+  if (!r) return;
+  sfx.unlock();
+  goFullscreen();
+  game.setSquad(r.isHost ? 'host' : 'client', r.me, squad);
+  game.netSend = (to, m, fast) => {
+    if (!room) return;
+    if (to) room.send(to, m, fast);
+    else room.broadcast(m, fast);
+  };
+  challenge = null;
+  game.mode = 'coop';
+  game.challenge = null;
+  game.mutators = new Set();
+  game.setMap(coopMap);
+  game.modeLabel = `CO-OP · ${squad.length} PLAYERS`;
+  runBadges = [];
+  ready.clear();
+  hostReady = false;
+  $<HTMLButtonElement>('next-wave').disabled = false;
+  $('wait-msg').textContent = '';
+  game.newRun();
+  show(null);
+  if (r.isHost) game.startWave();
+  else game.state = 'playing';
+  clips.start();
+}
+
+function coopOverButtons() {
+  const again = $<HTMLButtonElement>('again');
+  again.disabled = false;
+  if (!game.net) again.textContent = 'PLAY AGAIN';
+  else if (room?.isHost && room.peers.size) again.textContent = 'PLAY AGAIN (SQUAD)';
+  else if (room && !room.isHost) {
+    again.textContent = 'WAITING FOR HOST…';
+    again.disabled = true;
+  } else again.textContent = 'BACK TO MENU';
+}
+
+$('coop-btn').addEventListener('click', () => openCoop());
+$('co-host').addEventListener('click', async () => {
+  const name = coopName();
+  setCoopMsg('Opening a room…');
+  $<HTMLButtonElement>('co-host').disabled = true;
+  try {
+    const r = await Room.host(name);
+    wireRoom(r);
+    squad = [{ id: r.me, name, slot: 0 }];
+    coopMap = meta.data.level >= mapById(meta.data.map).unlock ? meta.data.map : 'lot';
+    setCoopMsg('Send your friends the code, then start when everyone is in.');
+  } catch {
+    setCoopMsg("Couldn't reach the co-op server. Check your connection and try again.");
+  }
+  $<HTMLButtonElement>('co-host').disabled = false;
+  renderCoop();
+});
+$('co-join').addEventListener('click', async () => {
+  const code = $<HTMLInputElement>('co-code').value.trim().toUpperCase();
+  if (!/^[A-Z]{4}$/.test(code)) {
+    setCoopMsg('Room codes are 4 letters.');
+    return;
+  }
+  const name = coopName();
+  setCoopMsg('Joining…');
+  $<HTMLButtonElement>('co-join').disabled = true;
+  try {
+    const r = await Room.join(code, name);
+    wireRoom(r);
+    squad = [];
+    setCoopMsg('You are in. Waiting for the host to start…');
+  } catch (e) {
+    const msg = (e as Error).message;
+    setCoopMsg(/^(No game|That game)/.test(msg) ? msg : "Couldn't reach the co-op server. Check your connection and try again.");
+  }
+  $<HTMLButtonElement>('co-join').disabled = false;
+  renderCoop();
+});
+$('co-code').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('co-join').click();
+});
+$('co-start').addEventListener('click', coopStart);
+$('co-back').addEventListener('click', () => {
+  if (room) {
+    leaveCoop();
+    setCoopMsg('');
+    renderCoop();
+  } else show('menu');
+});
+$('co-share').addEventListener('click', async () => {
+  if (!room) return;
+  const link = `${isFramed() ? LIVE_URL : location.origin + location.pathname}#join=${room.code}`;
+  const text = `Join my Horde Mayhem co-op game 🧟 Room code ${room.code}: ${link}`;
+  try {
+    if (navigator.share) {
+      await navigator.share({ text });
+      return;
+    }
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    setCoopMsg('Invite copied. Paste it to your friends.');
+  } catch {
+    setCoopMsg(`Tell your friends the code: ${room.code}`);
+  }
+});
+// The lobby shows who is on a slow (relayed) link; refresh it while it's open.
+setInterval(() => {
+  if (room && !$('coop').classList.contains('hidden')) renderCoop();
+}, 1500);
+// Opened from an invite link: go straight to the co-op screen with the code filled in.
+{
+  const m = location.hash.match(/join=([A-Za-z]{4})/);
+  if (m) {
+    history.replaceState(null, '', location.pathname + location.search);
+    openCoop(m[1].toUpperCase());
+  }
+}
+
 refreshMenu();
 $('play').addEventListener('click', openModes);
 $('start').addEventListener('click', startRun);
 $('modes-back').addEventListener('click', () => show('menu'));
-$('again').addEventListener('click', startRun);
+$('again').addEventListener('click', () => {
+  if (game.net) {
+    if (room?.isHost && room.peers.size) coopStart();
+    else {
+      leaveCoop();
+      game.newRun();
+      game.state = 'menu';
+      refreshMenu();
+      show('menu');
+    }
+    return;
+  }
+  startRun();
+});
 $('next-wave').addEventListener('click', () => {
   sfx.unlock();
+  if (room && game.net) {
+    // Co-op: the next wave starts once the whole squad is ready.
+    $<HTMLButtonElement>('next-wave').disabled = true;
+    if (room.isHost) {
+      hostReady = true;
+      tryNextWave();
+    } else {
+      room.broadcast({ t: 'ready' });
+      $('wait-msg').textContent = 'Waiting for the squad…';
+    }
+    return;
+  }
   show(null);
   game.startWave();
   clips.pause(false);
@@ -669,6 +995,7 @@ $('quit').addEventListener('click', () => {
   clips.stop();
   // Quitting still banks XP, brains and mission progress.
   if (game.wave > 0) meta.finishRun(game.summary().report, game.mode, game.map.id, game.challenge);
+  leaveCoop();
   refreshMenu();
   game.newRun();
   game.state = 'menu';
@@ -715,6 +1042,7 @@ function frame(now: number) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   game.update(dt);
+  game.netTick(dt);
   game.render(dt);
   requestAnimationFrame(frame);
 }
@@ -724,4 +1052,4 @@ if (__PWA__ && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
-if (import.meta.env.DEV) Object.assign(window, { game, clips });
+if (import.meta.env.DEV) Object.assign(window, { game, clips, coop: () => room });

@@ -994,3 +994,86 @@ button.buy:disabled {
 .lb-row.hidden {
   display: none;
 }
+
+/* Co-op lobby */
+button.big.coop-btn {
+  margin-top: 8px;
+  font-size: 22px;
+  padding: 10px;
+  background: #34507a;
+  box-shadow: 0 4px 0 #1e3048;
+}
+
+button.big.coop-btn:active {
+  box-shadow: 0 1px 0 #1e3048;
+}
+
+.co-input {
+  width: 100%;
+  padding: 10px 12px;
+  margin: 6px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: rgba(0, 0, 0, 0.4);
+  color: inherit;
+  font: 700 16px system-ui, sans-serif;
+  text-align: center;
+}
+
+.co-code {
+  text-transform: uppercase;
+  letter-spacing: 4px;
+  text-align: center;
+  font-size: 18px !important;
+}
+
+.co-codeline {
+  font-size: 15px;
+  margin: 6px 0;
+}
+
+.co-codeline b {
+  font-family: 'Black Ops One', 'Arial Black', system-ui, sans-serif;
+  font-weight: 400;
+  font-size: 30px;
+  letter-spacing: 6px;
+  color: var(--accent);
+  vertical-align: middle;
+  margin: 0 6px;
+}
+
+.co-codeline button.buy {
+  margin: 0;
+  vertical-align: middle;
+}
+
+.co-players {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+  text-align: left;
+}
+
+.co-players li {
+  padding: 6px 10px;
+  margin: 4px 0;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+  border-left: 5px solid var(--edge);
+  font-weight: 700;
+}
+
+.co-players li span {
+  float: right;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.panel.coop .map-row {
+  flex-wrap: wrap;
+}
+
+.panel.coop .map-chip {
+  min-width: 30%;
+}

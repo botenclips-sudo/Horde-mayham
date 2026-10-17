@@ -47,6 +47,8 @@ export const BADGES: BadgeDef[] = [
   { id: 'rush5', icon: '🚨', name: 'Boss Rush Hour', desc: 'Kill 5 bosses in one Boss Rush', reward: 80, check: (c) => c.mode === 'bossrush' && c.r.bosses >= 5 },
   { id: 'daily', icon: '📅', name: 'Daily Grind', desc: 'Play a Daily Challenge', reward: 15, check: (c) => c.mode === 'daily' && c.r.wave >= 1 },
   { id: 'challenge', icon: '⚔️', name: 'Called Out', desc: "Beat a friend's challenge", reward: 50, check: (c) => c.challengeBeaten },
+  { id: 'squad', icon: '👥', name: 'Squad Goals', desc: 'Reach wave 10 in online co-op', reward: 40, check: (c) => c.r.coop && c.r.wave >= 10 },
+  { id: 'medic', icon: '🚑', name: 'No Zombie Left Behind', desc: 'Revive 3 teammates in one co-op run', reward: 40, check: (c) => c.r.teamRevives >= 3 },
   { id: 'runs25', icon: '🔁', name: 'Glutton for Punishment', desc: 'Play 25 runs', reward: 50, check: (c) => c.totals.runs >= 25 },
   { id: 'k10k', icon: '🧮', name: 'Zombie Accountant', desc: 'Kill 10,000 zombies in total', reward: 150, check: (c) => c.totals.kills >= 10000 },
 ];

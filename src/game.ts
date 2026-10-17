@@ -9,6 +9,7 @@ export { WORLD_H, WORLD_W };
 const groundCache = new Map<string, HTMLCanvasElement>();
 const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
+import type { NetMsg } from './net';
 
 const PLAYER_R = 16;
 const DASH_TIME = 0.18;
@@ -32,6 +33,8 @@ interface Bullet {
   color: string;
   width: number;
   canExplode: boolean;
+  /** A teammate's shot drawn for show; their own game does the damage. */
+  ghost?: boolean;
 }
 
 interface Zombie {
@@ -70,6 +73,9 @@ interface Zombie {
   plateHp: number;
   zapT: number; // electric zombie charging a zap
   jug?: { slam: number; windup: number };
+  /** Co-op guests: where the host last saw this zombie (we glide toward it). */
+  nx?: number;
+  ny?: number;
 }
 
 interface Train {
@@ -151,6 +157,47 @@ export const DEPLOYS: Record<DeployKind, { icon: string; name: string; desc: str
   medic: { icon: '⛑️', name: 'Healing station', desc: 'Heals you while you stand near it, 40s', price: (w) => 160 + w * 5 },
 };
 
+const KINDS = Object.keys(ZOMBIES) as ZombieKind[];
+const WEAPON_BY_ID = new Map(WEAPONS.map((w) => [w.id, w]));
+const POWER_KINDS: PowerKind[] = ['nuke', 'rage', 'freeze', 'ammo', 'cash'];
+const DEPLOY_KINDS = Object.keys(DEPLOYS) as DeployKind[];
+const SNAP_EVERY = 1 / 15;
+const STATE_EVERY = 1 / 20;
+const REVIVE_TIME = 3;
+const REVIVE_RANGE = 70;
+
+/** Suit colors per co-op slot: body, backpack, helmet. Slot 0 is the solo look. */
+export const SUITS = [
+  ['#3d5a3a', '#2e4430', '#56784f'],
+  ['#34507a', '#253a5a', '#5a7ab0'],
+  ['#7a5a2a', '#5a401c', '#b08a4a'],
+  ['#5e3a70', '#432a50', '#9064aa'],
+];
+
+/** Another player in a co-op run. The host aims the horde at them; everyone draws them. */
+export interface Ally {
+  id: string;
+  name: string;
+  slot: number;
+  x: number;
+  y: number;
+  nx: number;
+  ny: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  hp: number;
+  maxHp: number;
+  down: boolean;
+  revive: number;
+  weapon: string;
+  firing: boolean;
+  dashing: boolean;
+  fireT: number;
+  /** Host: ignore "I'm down" from this guest for a moment after reviving them (it's stale). */
+  grace: number;
+}
+
 interface PowerDrop {
   x: number;
   y: number;
@@ -187,6 +234,8 @@ interface Grenade {
   dmg?: number; // launcher shells carry their own damage and go off on contact
   radius?: number;
   impact?: boolean;
+  /** Co-op guests: the host's grenade, shown in flight only. */
+  remote?: boolean;
 }
 
 interface Spit {
@@ -438,6 +487,24 @@ export class Game {
   private clean = false;
   private moodLevel = -1;
 
+  // Co-op
+  net: '' | 'host' | 'client' = '';
+  myId = '';
+  slot = 0;
+  allies: Ally[] = [];
+  /** Sends to one player by id, or to everyone with null. Set by main.ts while in a room. */
+  netSend: ((to: string | null, m: NetMsg, fast?: boolean) => void) | null = null;
+  down = false;
+  reviveProg = 0;
+  hostPaused = false;
+  private invT = 0;
+  private firing = false;
+  /** The guest whose shot is being applied right now (host only). */
+  private killer = '';
+  private netT = 0;
+  private netHits: number[][] = [];
+  private netEv: (string | number)[][] = [];
+
   constructor(
     private canvas: HTMLCanvasElement,
     private input: Input,
@@ -517,7 +584,7 @@ export class Game {
   }
 
   static emptyReport(): RunReport {
-    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, barrelKills: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0 };
+    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, barrelKills: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0, teamRevives: 0, coop: false };
   }
 
   newRun() {
@@ -558,9 +625,26 @@ export class Game {
     this.trains = (this.map.tracks ?? []).map((y, i) => ({ y, dir: i % 2 ? -1 : 1, phase: 'idle', t: rand(9, 14) + i * 5, x: 0, hitPlayer: false, hitBoss: [] }));
     this.trainWarned = false;
     this.report = Game.emptyReport();
+    this.report.coop = !!this.net;
     this.corpses = [];
     this.bolts = [];
     this.p = { x: WORLD_W / 2, y: WORLD_H / 2, hp: this.stats.maxHp, angle: -Math.PI / 2, vx: 0, vy: 0 };
+    if (this.net) {
+      // Co-op squads start side by side.
+      this.p.x += [-40, 40, 0, 0][this.slot] ?? 0;
+      this.p.y += [0, 0, -40, 40][this.slot] ?? 0;
+    }
+    this.down = false;
+    this.reviveProg = 0;
+    this.invT = 0;
+    this.hostPaused = false;
+    this.netHits = [];
+    this.netEv = [];
+    for (const a of this.allies) {
+      a.down = false;
+      a.revive = 0;
+      a.firing = false;
+    }
     this.cam = { x: this.p.x, y: this.p.y };
     this.zombies = [];
     this.bullets = [];
@@ -611,6 +695,28 @@ export class Game {
     this.toSpawn = 10 + this.wave * 5;
     if (boss) this.toSpawn = Math.round(this.toSpawn * (this.mode === 'bossrush' ? 0.3 : 0.5));
     if (this.has('horde')) this.toSpawn = Math.round(this.toSpawn * 1.5);
+    // More players, more zombies.
+    if (this.net === 'host') this.toSpawn = Math.round(this.toSpawn * (1 + 0.6 * this.allies.length));
+    this.beginWave();
+    let kind: ZombieKind | '' = '';
+    if (boss) {
+      const g = this.farthestGate();
+      kind = this.wave % 30 === 0 ? 'juggernaut' : this.wave % 20 === 0 ? 'brood' : 'boss';
+      this.spawnZombie(kind, g.x, g.y + (g.y < WORLD_H / 2 ? 60 : -60));
+    }
+    this.waveIntro(kind);
+    if (this.net === 'host') this.netSend?.(null, { t: 'wave', w: this.wave, b: kind });
+    const ch = this.challenge;
+    if (ch && this.wave > ch.wave && this.wave - (this.mode === 'bossrush' ? 10 : 1) <= ch.wave) {
+      this.showShout('CHALLENGE BEATEN!', '#ffd23f');
+      this.flash = { t: 0.4, color: '#ffd23f', max: 0.35 };
+      this.sfx.play('levelup');
+      this.buzz([40, 60, 40]);
+    }
+  }
+
+  /** Resets the arena for a new wave (shared by the host and co-op guests). */
+  private beginWave() {
     this.spawnT = 1.2;
     this.clearT = -1;
     this.hitThisWave = false;
@@ -624,24 +730,17 @@ export class Game {
     this.dctx.fillRect(0, 0, this.decals.width, this.decals.height);
     this.dctx.globalCompositeOperation = 'source-over';
     this.resetBarrels();
+  }
+
+  private waveIntro(boss: ZombieKind | '') {
     if (boss) {
-      const g = this.farthestGate();
-      const kind: ZombieKind = this.wave % 30 === 0 ? 'juggernaut' : this.wave % 20 === 0 ? 'brood' : 'boss';
-      this.spawnZombie(kind, g.x, g.y + (g.y < WORLD_H / 2 ? 60 : -60));
-      this.showBanner(`WAVE ${this.wave}`, `${BOSS_NAMES[kind]} IS COMING`, BOSS_COLORS[kind]!);
+      this.showBanner(`WAVE ${this.wave}`, `${BOSS_NAMES[boss]} IS COMING`, BOSS_COLORS[boss]!);
       this.sfx.play('boss');
       this.addShake(0.6);
     } else {
-      const sub = this.wave === 1 ? 'SURVIVE THE NIGHT' : this.wave === 15 ? 'ELITE ZOMBIES INCOMING' : (NEW_KIND_WAVES[this.wave] ?? '');
+      const sub = this.wave === 1 ? (this.net ? 'STICK TOGETHER' : 'SURVIVE THE NIGHT') : this.wave === 15 ? 'ELITE ZOMBIES INCOMING' : (NEW_KIND_WAVES[this.wave] ?? '');
       this.showBanner(`WAVE ${this.wave}`, sub, '#ffffff');
       this.sfx.play('wave');
-    }
-    const ch = this.challenge;
-    if (ch && this.wave > ch.wave && this.wave - (this.mode === 'bossrush' ? 10 : 1) <= ch.wave) {
-      this.showShout('CHALLENGE BEATEN!', '#ffd23f');
-      this.flash = { t: 0.4, color: '#ffd23f', max: 0.35 };
-      this.sfx.play('levelup');
-      this.buzz([40, 60, 40]);
     }
   }
 
@@ -662,12 +761,36 @@ export class Game {
     }
   }
 
-  private showBanner(text: string, sub: string, color: string) {
+  /** share: on the co-op host, show it to the whole squad too. */
+  private showBanner(text: string, sub: string, color: string, share = false) {
     this.banner = { text, sub, t: 2.4, color };
+    if (share) this.netEvent('b', text, sub, color);
   }
 
-  private showShout(text: string, color: string) {
+  private showShout(text: string, color: string, share = false) {
     this.shout = { text, t: 1.6, color };
+    if (share) this.netEvent('h', text, color);
+  }
+
+  /** A sound everyone in the squad should hear (zombie attacks, trains). */
+  private wsfx(kind: SfxKind, vol = 1) {
+    this.sfx.play(kind, vol);
+    this.netEvent('a', kind, vol);
+  }
+
+  private ring(r: Ring) {
+    this.rings.push(r);
+    this.netEvent('r', Math.round(r.x), Math.round(r.y), Math.round(r.r), Math.round(r.max), r.life, r.color);
+  }
+
+  private bolt(b: Bolt) {
+    this.bolts.push(b);
+    this.netEvent('z', Math.round(b.x1), Math.round(b.y1), Math.round(b.x2), Math.round(b.y2), b.life, b.color);
+  }
+
+  /** Queues a world event for the next co-op snapshot (host only). */
+  private netEvent(...e: (string | number)[]) {
+    if (this.net === 'host' && this.netEv.length < 60) this.netEv.push(e);
   }
 
   // ---------------------------------------------------------------- perks & shop
@@ -780,6 +903,11 @@ export class Game {
       this.input.clearPressed();
       return;
     }
+    const client = this.net === 'client';
+    if (client && this.hostPaused) {
+      this.input.clearPressed();
+      return;
+    }
     if (this.hitstop > 0) {
       this.hitstop -= rawDt;
       return;
@@ -795,61 +923,82 @@ export class Game {
       this.hooks.onPause();
       return;
     }
-    if (inp.consume('q') || inp.consume('swap') || inp.consume('wheeldown')) this.switchWeapon(1);
-    if (inp.consume('wheelup')) this.switchWeapon(-1);
-    for (let i = 0; i < 9; i++) if (inp.consume(String(i + 1)) && this.weapons[i]) this.setWeapon(i);
-    if (inp.consume('r') || inp.consume('reload')) this.startReload();
-    if (inp.consume('g') || inp.consume('e') || inp.consume('nade')) this.throwGrenade();
-    if (inp.consume('f') || inp.consume('deploy')) this.deploy();
+    if (!this.down) {
+      if (inp.consume('q') || inp.consume('swap') || inp.consume('wheeldown')) this.switchWeapon(1);
+      if (inp.consume('wheelup')) this.switchWeapon(-1);
+      for (let i = 0; i < 9; i++) if (inp.consume(String(i + 1)) && this.weapons[i]) this.setWeapon(i);
+      if (inp.consume('r') || inp.consume('reload')) this.startReload();
+      if (inp.consume('g') || inp.consume('e') || inp.consume('nade')) this.throwGrenade();
+      if (inp.consume('f') || inp.consume('deploy')) this.deploy();
+    }
 
     for (const k of Object.keys(this.active) as PowerKind[]) if (this.active[k] > 0) this.active[k] -= dt;
     if (this.comboT > 0) {
       this.comboT -= dt;
       if (this.comboT <= 0) this.combo = 0;
     }
+    if (this.invT > 0) this.invT -= dt;
 
-    this.updatePlayer(dt);
-    this.updateSpawning(dt);
-    this.updateZombies(dt);
+    if (this.down) this.updateDowned(dt);
+    else this.updatePlayer(dt);
+    if (client) this.updateMirror(dt);
+    else {
+      this.updateSpawning(dt);
+      this.updateZombies(dt);
+    }
     this.updateBullets(dt);
     this.updateGrenades(dt);
     this.updateHazards(dt);
     this.updateTrains(dt);
     this.updateOrbitals(dt);
-    this.updatePickups(dt);
+    if (!client) this.updatePickups(dt);
     this.updateDeploys(dt);
+    this.updateAllies(dt);
+    if (this.net === 'host') this.updateRevives(dt);
     this.updateEffects(dt, rawDt);
 
-    this.zombies = this.zombies.filter((z) => !z.dead);
+    if (!client) this.zombies = this.zombies.filter((z) => !z.dead);
     inp.clearPressed();
+    if (client || this.state !== 'playing') return;
 
-    if (this.clearT < 0 && this.toSpawn <= 0 && this.zombies.length === 0 && this.state === 'playing') {
+    if (this.clearT < 0 && this.toSpawn <= 0 && this.zombies.length === 0) {
       this.clearT = 1.6;
       this.showBanner('WAVE CLEARED', '', '#5dff7a');
       // Vacuum up any cash left on the floor.
       for (const pk of this.pickups) if (pk.kind !== 'health') pk.pulled = true;
     }
-    if (this.clearT >= 0 && this.state === 'playing') {
+    if (this.clearT >= 0) {
       this.clearT -= rawDt;
       if (this.clearT < 0) {
-        if (!this.hitThisWave) this.report.flawlessWaves++;
-        this.gainBrains(1 + Math.floor(this.wave / 3));
+        // Cash left on the floor is split between the squad.
+        let left = 0;
         for (const pk of this.pickups) {
-          if (pk.kind === 'cash') this.gainCash(pk.value);
+          if (pk.kind === 'cash') left += pk.value;
           else if (pk.kind === 'crate') this.openCrate(pk);
         }
+        const share = left / (1 + this.allies.length);
+        this.gainCash(share);
+        if (this.net === 'host') this.netSend?.(null, { t: 'clear', w: this.wave, c: Math.round(share) });
         this.pickups = [];
-        this.bullets = [];
-        this.spits = [];
-        this.puddles = [];
-        this.grenades = [];
-        this.combo = 0;
-        this.comboT = 0;
-        this.state = 'between';
-        this.input.reset();
-        this.hooks.onWaveCleared(this.wave);
+        this.waveCleared();
       }
     }
+  }
+
+  /** Between-waves bookkeeping, run by the host and (on the host's word) by each guest. */
+  private waveCleared() {
+    if (!this.hitThisWave) this.report.flawlessWaves++;
+    this.gainBrains(1 + Math.floor(this.wave / 3));
+    if (this.down) this.getUp(0.3);
+    this.bullets = [];
+    this.spits = [];
+    this.puddles = [];
+    this.grenades = [];
+    this.combo = 0;
+    this.comboT = 0;
+    this.state = 'between';
+    this.input.reset();
+    this.hooks.onWaveCleared(this.wave);
   }
 
   private updateMusic() {
@@ -969,6 +1118,7 @@ export class Game {
     }
 
     const w = this.weapons[this.wi];
+    this.firing = firing;
 
     // Dash
     this.dashCd -= dt;
@@ -1029,6 +1179,29 @@ export class Game {
         this.sfx.play('heart');
       }
     }
+  }
+
+  /** Knocked down in co-op: you lie there until a teammate stands next to you long enough. */
+  private updateDowned(dt: number) {
+    const p = this.p;
+    const k = Math.exp(-dt * 8);
+    p.vx *= k;
+    p.vy *= k;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    this.collideWalls(p, PLAYER_R);
+    this.firing = false;
+    this.spin = 0;
+    if (this.hurtFlash > 0) this.hurtFlash -= dt;
+  }
+
+  private getUp(frac: number) {
+    this.down = false;
+    this.reviveProg = 0;
+    this.p.hp = Math.max(1, Math.round(this.stats.maxHp * frac));
+    this.invT = 2;
+    this.showBanner('BACK UP!', '', '#5dff7a');
+    this.sfx.play('power');
   }
 
   private fire(w: OwnedWeapon) {
@@ -1226,13 +1399,16 @@ export class Game {
   private buildFlow() {
     const f = this.flow;
     f.fill(-1);
-    const px = clamp(Math.floor(this.p.x / CELL), 0, FLOW_W - 1);
-    const py = clamp(Math.floor(this.p.y / CELL), 0, FLOW_H - 1);
     const queue = FLOW_QUEUE;
     let head = 0;
     let tail = 0;
-    f[py * FLOW_W + px] = 0;
-    queue[tail++] = py * FLOW_W + px;
+    // Every player is a source, so each zombie heads for whoever is closest around the walls.
+    for (const t of this.targets()) {
+      const i = clamp(Math.floor(t.y / CELL), 0, FLOW_H - 1) * FLOW_W + clamp(Math.floor(t.x / CELL), 0, FLOW_W - 1);
+      if (f[i] === 0) continue;
+      f[i] = 0;
+      queue[tail++] = i;
+    }
     while (head < tail) {
       const i = queue[head++];
       const cx = i % FLOW_W;
@@ -1278,8 +1454,30 @@ export class Game {
     return { x: tx / d, y: ty / d };
   }
 
+  /** Everyone the horde can go for: the host and any co-op guests still on their feet. */
+  private targets(): { x: number; y: number; vx: number; vy: number }[] {
+    const ts: { x: number; y: number; vx: number; vy: number }[] = [];
+    if (!this.down) ts.push(this.p);
+    for (const a of this.allies) if (!a.down) ts.push(a);
+    if (!ts.length) ts.push(this.p);
+    return ts;
+  }
+
+  private nearest<T extends { x: number; y: number }>(ts: T[], x: number, y: number): T {
+    let best = ts[0];
+    let bd = Infinity;
+    for (const t of ts) {
+      const d = (t.x - x) ** 2 + (t.y - y) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = t;
+      }
+    }
+    return best;
+  }
+
   private updateZombies(dt: number) {
-    const p = this.p;
+    const ts = this.targets();
     const zs = this.zombies;
     const frozen = this.active.freeze > 0;
     this.flowT -= dt;
@@ -1306,6 +1504,7 @@ export class Game {
         continue;
       }
       if (z.chill > 0) z.chill = Math.max(0, z.chill - dt * 3);
+      const p = ts.length > 1 ? this.nearest(ts, z.x, z.y) : ts[0];
       const dx = p.x - z.x;
       const dy = p.y - z.y;
       const d = Math.hypot(dx, dy) || 1;
@@ -1328,7 +1527,7 @@ export class Game {
             const ay = p.y + p.vy * lead * 0.5 - z.y;
             const ad = Math.hypot(ax, ay) || 1;
             this.spits.push({ x: z.x, y: z.y, vx: (ax / ad) * 300, vy: (ay / ad) * 300, life: Math.min(1.4, ad / 300) });
-            this.sfx.play('spit');
+            this.wsfx('spit');
           }
         }
       }
@@ -1384,7 +1583,7 @@ export class Game {
           if (L.t <= 0) {
             L.state = 'leap';
             L.t = 0.42;
-            this.sfx.play('pounce');
+            this.wsfx('pounce');
           }
         } else if (L.state === 'leap') {
           vx = L.dx * 720;
@@ -1405,7 +1604,7 @@ export class Game {
           vy *= 0.2;
           z.zapT -= dt;
           if (Math.random() < 0.5) this.spawnParticle(z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), 0, 0, 0.12, 3, '#a0f0ff', 1, false, true);
-          if (z.zapT <= 0) this.zap(z, d);
+          if (z.zapT <= 0) this.zap(z, d, p);
         } else if (z.abilityCd <= 0 && d < 250) {
           z.zapT = 0.6;
           z.abilityCd = rand(2.6, 3.4);
@@ -1436,9 +1635,9 @@ export class Game {
             const a = z.face + Math.PI + rand(-1.4, 1.4);
             this.spawnZombie('egg', z.x + Math.cos(a) * (z.r + 30), z.y + Math.sin(a) * (z.r + 30));
           }
-          this.showShout('SHOOT THE EGGS!', '#ffcf5a');
-          this.sfx.play('splat');
-          this.rings.push({ x: z.x, y: z.y, r: 0, max: 120, life: 0.45, color: 'rgba(255,220,120,' });
+          this.showShout('SHOOT THE EGGS!', '#ffcf5a', true);
+          this.wsfx('splat');
+          this.ring({ x: z.x, y: z.y, r: 0, max: 120, life: 0.45, color: 'rgba(255,220,120,' });
         }
         if (B.spit <= 0 && d < 560) {
           B.spit = rand(2.2, 3);
@@ -1447,7 +1646,7 @@ export class Game {
             const a = base + i * 0.22;
             this.spits.push({ x: z.x + Math.cos(a) * z.r, y: z.y + Math.sin(a) * z.r, vx: Math.cos(a) * 320, vy: Math.sin(a) * 320, life: 1.5 });
           }
-          this.sfx.play('spit');
+          this.wsfx('spit');
         }
       }
 
@@ -1458,7 +1657,7 @@ export class Game {
         if (kind === 'boss' && b.summon <= 0) {
           b.summon = 7;
           for (let i = 0; i < 3 + Math.floor(this.wave / 10); i++) this.spawnZombie(Math.random() < 0.3 ? 'bloater' : 'runner', z.x + rand(-60, 60), z.y + rand(-60, 60));
-          this.rings.push({ x: z.x, y: z.y, r: 0, max: 130, life: 0.5, color: 'rgba(190,90,255,' });
+          this.ring({ x: z.x, y: z.y, r: 0, max: 130, life: 0.5, color: 'rgba(190,90,255,' });
         }
         if (z.jug && z.jug.windup > 0) b.t = Math.max(b.t, 0.5);
         if (b.state === 'walk' && b.t <= 0) {
@@ -1471,7 +1670,7 @@ export class Game {
           if (b.t <= 0) {
             b.state = 'charge';
             b.t = 0.8;
-            this.sfx.play('dash');
+            this.wsfx('dash');
           }
         } else if (b.state === 'charge') {
           vx = b.dx * 540;
@@ -1508,8 +1707,8 @@ export class Game {
           z.boss.state = 'walk';
           z.boss.t = rand(3, 4.5);
           this.addShake(0.7);
-          this.sfx.play('explode', 0.6);
-          this.rings.push({ x: z.x, y: z.y, r: 0, max: 90, life: 0.4, color: 'rgba(200,180,160,' });
+          this.wsfx('explode', 0.6);
+          this.ring({ x: z.x, y: z.y, r: 0, max: 90, life: 0.4, color: 'rgba(200,180,160,' });
         }
       }
       if (z.attackCd > 0) z.attackCd -= dt;
@@ -1534,7 +1733,7 @@ export class Game {
         }
         if (kind === 'egg') continue;
         z.attackCd = 0.8;
-        this.hurtPlayer(z.dmg, z);
+        this.hurtPlayer(z.dmg, z, p);
         if (z.elite === 'vampiric') {
           z.hp = Math.min(z.maxHp, z.hp + z.maxHp * 0.25);
           this.addText(z.x, z.y - z.r - 8, 'DRAIN', '#ff2a4a', 12);
@@ -1576,22 +1775,22 @@ export class Game {
     const n = this.wave >= 40 ? 3 : 2;
     for (let i = 0; i < n; i++) this.spawnZombie(Math.random() < 0.5 ? 'leaper' : 'runner', z.x + rand(-20, 20), z.y + rand(-20, 20));
     for (let i = 0; i < 14; i++) this.spawnBlood(z.x, z.y, rand(0, Math.PI * 2), i % 2 ? '#d8c89a' : '#8a7a4a');
-    this.sfx.play('splat');
+    this.wsfx('splat');
   }
 
   /** Electric zombie: lightning to the player if still in range, arcing on to nearby zombies and speeding them up. */
-  private zap(z: Zombie, d: number) {
-    this.sfx.play('zap');
+  private zap(z: Zombie, d: number, target: { x: number; y: number }) {
+    this.wsfx('zap');
     this.addLight(z.x, z.y, 200, 0.2, '#a0f0ff');
     if (d < 300) {
-      this.bolts.push({ x1: z.x, y1: z.y, x2: this.p.x, y2: this.p.y, life: 0.18, color: '#a0f0ff' });
-      this.hurtPlayer(12 * (1 + 0.04 * this.wave), z);
+      this.bolt({ x1: z.x, y1: z.y, x2: target.x, y2: target.y, life: 0.18, color: '#a0f0ff' });
+      this.hurtPlayer(12 * (1 + 0.04 * this.wave), z, target);
     }
     let n = 0;
     for (const o of this.zombies) {
       if (n >= 3 || o === z || o.dead || isBoss(o) || o.def.kind === 'egg') continue;
       if (Math.hypot(o.x - z.x, o.y - z.y) > 220) continue;
-      this.bolts.push({ x1: z.x, y1: z.y, x2: o.x, y2: o.y, life: 0.18, color: '#a0f0ff' });
+      this.bolt({ x1: z.x, y1: z.y, x2: o.x, y2: o.y, life: 0.18, color: '#a0f0ff' });
       o.buff = Math.max(o.buff, 3);
       n++;
     }
@@ -1600,17 +1799,16 @@ export class Game {
   /** Juggernaut: a shockwave around it after a telegraphed wind-up. */
   private groundSlam(z: Zombie) {
     const R = 240;
-    this.rings.push({ x: z.x, y: z.y, r: 20, max: R, life: 0.5, color: 'rgba(255,140,80,' });
-    this.rings.push({ x: z.x, y: z.y, r: 10, max: R * 0.7, life: 0.4, color: 'rgba(255,220,180,' });
+    this.ring({ x: z.x, y: z.y, r: 20, max: R, life: 0.5, color: 'rgba(255,140,80,' });
+    this.ring({ x: z.x, y: z.y, r: 10, max: R * 0.7, life: 0.4, color: 'rgba(255,220,180,' });
     for (let i = 0; i < 30; i++) {
       const a = rand(0, Math.PI * 2);
       this.spawnParticle(z.x + Math.cos(a) * z.r, z.y + Math.sin(a) * z.r, Math.cos(a) * rand(200, 500), Math.sin(a) * rand(200, 500), rand(0.4, 0.8), rand(6, 12), 'rgba(120,100,90,0.45)', 3, false, false, 16);
     }
     this.addShake(0.8);
     this.zoomKick = Math.max(this.zoomKick, 0.06);
-    this.sfx.play('slam');
-    const d = Math.hypot(this.p.x - z.x, this.p.y - z.y);
-    if (d < R) this.hurtPlayer(38 * (1 + 0.03 * this.wave), z);
+    this.wsfx('slam');
+    for (const t of this.targets()) if (Math.hypot(t.x - z.x, t.y - z.y) < R) this.hurtPlayer(38 * (1 + 0.03 * this.wave), z, t);
   }
 
   /** Tesla gun: an arc to the nearest zombie in front, chaining onward. */
@@ -1666,14 +1864,14 @@ export class Game {
   private scream(z: Zombie) {
     z.abilityCd = rand(4.5, 6);
     const R = 300;
-    this.rings.push({ x: z.x, y: z.y, r: 10, max: R, life: 0.6, color: 'rgba(255,90,120,' });
-    this.rings.push({ x: z.x, y: z.y, r: 10, max: R * 0.6, life: 0.45, color: 'rgba(255,200,210,' });
+    this.ring({ x: z.x, y: z.y, r: 10, max: R, life: 0.6, color: 'rgba(255,90,120,' });
+    this.ring({ x: z.x, y: z.y, r: 10, max: R * 0.6, life: 0.45, color: 'rgba(255,200,210,' });
     this.addLight(z.x, z.y, 220, 0.4, '#ff5a78');
     for (const o of this.zombies) {
       if (o === z || o.dead || isBoss(o) || o.def.kind === 'egg') continue;
       if (Math.hypot(o.x - z.x, o.y - z.y) < R) o.buff = 5;
     }
-    this.sfx.play('scream');
+    this.wsfx('scream');
     this.addShake(0.15);
   }
 
@@ -1691,13 +1889,24 @@ export class Game {
       // A beam from the necromancer to each raised corpse.
       for (let t = 0.1; t < 1; t += 0.12) this.spawnParticle(z.x + (c.x - z.x) * t, z.y + (c.y - z.y) * t, 0, 0, 0.35, 4, '#5dffb0', 1, false, true);
     }
-    this.rings.push({ x: z.x, y: z.y, r: 0, max: 90, life: 0.45, color: 'rgba(93,255,176,' });
+    this.ring({ x: z.x, y: z.y, r: 0, max: 90, life: 0.45, color: 'rgba(93,255,176,' });
     this.addLight(z.x, z.y, 200, 0.4, '#5dffb0');
-    this.sfx.play('raise');
+    this.wsfx('raise');
   }
 
-  private hurtPlayer(amount: number, from: { x: number; y: number } | null) {
-    if (this.dashT > 0 || this.state !== 'playing' || amount <= 0) return;
+  /** Hurts the local player, or (on the co-op host) tells a guest it got hurt. */
+  private hurtPlayer(amount: number, from: { x: number; y: number } | null, who: { x: number; y: number } = this.p, knock?: { x: number; y: number }) {
+    if (who !== this.p) {
+      const a = who as Ally;
+      if (a.down || amount <= 0) return;
+      this.netSend?.(a.id, { t: 'hurt', a: Math.round(amount * 10) / 10, x: from ? Math.round(from.x) : null, y: from ? Math.round(from.y) : null, kx: knock ? Math.round(knock.x) : 0, ky: knock ? Math.round(knock.y) : 0 });
+      return;
+    }
+    if (this.dashT > 0 || this.invT > 0 || this.down || this.state !== 'playing' || amount <= 0) return;
+    if (knock) {
+      this.p.vx += knock.x;
+      this.p.vy += knock.y;
+    }
     const dmg = amount * (1 - this.armor);
     this.p.hp -= dmg;
     this.report.hitsTaken++;
@@ -1716,7 +1925,7 @@ export class Game {
     if (this.stats.nova > 0 && this.novaCd <= 0) {
       this.novaCd = 3;
       const radius = 130 + 40 * this.stats.nova;
-      this.rings.push({ x: this.p.x, y: this.p.y, r: 0, max: radius, life: 0.4, color: 'rgba(120,200,255,' });
+      this.ring({ x: this.p.x, y: this.p.y, r: 0, max: radius, life: 0.4, color: 'rgba(120,200,255,' });
       this.addLight(this.p.x, this.p.y, radius * 1.5, 0.3, '#78c8ff');
       for (const z of this.zombies) {
         const d = Math.hypot(z.x - this.p.x, z.y - this.p.y);
@@ -1742,7 +1951,30 @@ export class Game {
       this.sfx.play('power');
       return;
     }
+    if (this.net && (this.net === 'client' || this.allies.some((a) => !a.down))) {
+      // Co-op: go down and wait for a teammate. The host calls it when the whole squad is down.
+      this.p.hp = 0;
+      this.down = true;
+      this.reviveProg = 0;
+      this.hurtFlash = 0;
+      this.addShake(0.8);
+      this.flash = { t: 0.4, color: '#a00000', max: 0.4 };
+      for (let i = 0; i < 20; i++) this.spawnBlood(this.p.x, this.p.y, rand(0, Math.PI * 2), '#a0201a', 1.3);
+      this.showBanner("YOU'RE DOWN", 'A TEAMMATE CAN REVIVE YOU', '#ff5a4a');
+      this.sfx.play('hurt');
+      this.buzz([60, 40, 120]);
+      if (this.net === 'host') this.netEvent('down', this.myId);
+      return;
+    }
+    this.endRun();
+  }
+
+  /** The run is over for good: everyone down, or solo death. */
+  endRun() {
+    if (this.state === 'over') return;
+    if (this.net === 'host') this.netSend?.(null, { t: 'over' });
     this.p.hp = 0;
+    this.down = false;
     this.state = 'over';
     this.addShake(1);
     this.flash = { t: 0.5, color: '#a00000', max: 0.5 };
@@ -1784,12 +2016,17 @@ export class Game {
       b.y += b.vy * dt;
       b.life -= dt;
       if (b.life <= 0) {
-        if (b.kind === 'rocket') this.explode(b.x, b.y, b.dmg, 115, 0);
+        if (b.kind === 'rocket' && !b.ghost) this.explode(b.x, b.y, b.dmg, 115, 0);
         continue;
       }
       if (this.pointInWall(b.x, b.y)) {
-        if (b.kind === 'rocket') this.explode(b.x - b.vx * dt, b.y - b.vy * dt, b.dmg, 115, 0);
+        if (b.kind === 'rocket' && !b.ghost) this.explode(b.x - b.vx * dt, b.y - b.vy * dt, b.dmg, 115, 0);
         else if (b.kind === 'bullet') for (let i = 0; i < 3; i++) this.spawnParticle(b.x - b.vx * dt, b.y - b.vy * dt, rand(-120, 120), rand(-120, 120), 0.15, 2, '#ffd27a', 6, false, true);
+        continue;
+      }
+      if (b.ghost) {
+        // A teammate's shot: stops on the first zombie, their game does the damage.
+        if (b.kind === 'flame' || b.kind === 'frost' || !this.zombies.some((z) => !z.dead && (z.x - b.x) ** 2 + (z.y - b.y) ** 2 < (z.r + 4) ** 2)) out.push(b);
         continue;
       }
       // Barrels
@@ -1802,7 +2039,9 @@ export class Game {
             alive = false;
             break;
           }
-          br.hp -= b.kind === 'flame' ? 3 : b.kind === 'frost' ? 0 : b.dmg;
+          const bd = b.kind === 'flame' ? 3 : b.kind === 'frost' ? 0 : b.dmg;
+          br.hp -= bd;
+          if (this.net === 'client' && bd > 0) this.netSend?.(null, { t: 'bar', i: this.barrels.indexOf(br), d: Math.round(bd) });
           this.spawnParticle(b.x, b.y, rand(-80, 80), rand(-80, 80), 0.15, 2, '#ffd27a', 6, false, true);
           if (br.hp <= 0) br.fuse = 0.05;
           if (b.kind === 'bullet') {
@@ -1838,13 +2077,13 @@ export class Game {
         const crit = b.kind === 'bullet' && Math.random() < this.stats.crit;
         if (crit) dmg *= 2.5;
         if (b.kind === 'frost') {
-          this.chill(z);
-          this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 10, true);
+          if (this.net !== 'client') this.chill(z);
+          this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 10, true, 8);
           continue;
         }
         if (b.kind === 'flame') {
-          z.burn = 2.5;
-          this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 20, true);
+          if (this.net !== 'client') z.burn = 2.5;
+          this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), false, 20, true, 4);
           continue;
         }
         this.damageZombie(z, dmg, Math.atan2(b.vy, b.vx), crit, 140);
@@ -1895,6 +2134,7 @@ export class Game {
       }
       if (g.impact && !boom) for (const z of this.zombies) if (!z.dead && Math.hypot(z.x - g.x, z.y - g.y) < z.r + 6) boom = true;
       if (boom) {
+        if (g.remote) continue;
         this.nadeBlast = true;
         this.explode(g.x, g.y, g.dmg ?? 170 * this.stats.damage, g.radius ?? 135, g.impact ? 8 : 18);
         this.nadeBlast = false;
@@ -1907,38 +2147,44 @@ export class Game {
 
   private updateHazards(dt: number) {
     const p = this.p;
-    // Acid spit
+    const client = this.net === 'client';
+    // Acid spit (guests only see it fly: the host decides who it hits)
     const spits: Spit[] = [];
+    const ts = client ? [] : this.targets();
     for (const s of this.spits) {
       s.x += s.vx * dt;
       s.y += s.vy * dt;
       s.life -= dt;
       if (Math.random() < 0.5) this.spawnParticle(s.x, s.y, rand(-20, 20), rand(-20, 20), 0.3, 4, '#b04aff', 4, false, true);
-      if (Math.hypot(s.x - p.x, s.y - p.y) < PLAYER_R + 8) {
-        this.hurtPlayer(10 * (1 + 0.04 * this.wave), s);
+      const hit = ts.find((t) => Math.hypot(s.x - t.x, s.y - t.y) < PLAYER_R + 8);
+      if (hit) {
+        this.hurtPlayer(10 * (1 + 0.04 * this.wave), s, hit);
         this.puddles.push({ x: s.x, y: s.y, r: 34, life: 2.5, max: 2.5, kind: 'acid' });
         continue;
       }
       if (s.life <= 0 || this.pointInWall(s.x, s.y)) {
-        this.puddles.push({ x: s.x, y: s.y, r: 40, life: 3.5, max: 3.5, kind: 'acid' });
-        this.sfx.play('splat', 0.4);
+        if (!client) {
+          this.puddles.push({ x: s.x, y: s.y, r: 40, life: 3.5, max: 3.5, kind: 'acid' });
+          this.wsfx('splat', 0.4);
+        }
         continue;
       }
       spits.push(s);
     }
     this.spits = spits;
-    // Puddles hurt over time
+    // Puddles hurt over time (each player checks their own feet)
     let dps = 0;
     this.puddles = this.puddles.filter((pd) => {
       pd.life -= dt;
       if (Math.hypot(pd.x - p.x, pd.y - p.y) < pd.r + PLAYER_R * 0.5) dps = Math.max(dps, pd.kind === 'acid' ? 14 : 12);
       return pd.life > 0;
     });
-    if (dps > 0 && this.dashT <= 0) {
+    if (dps > 0 && this.dashT <= 0 && this.invT <= 0 && !this.down) {
       p.hp -= dps * dt * (1 - this.armor);
       this.hurtFlash = Math.max(this.hurtFlash, 0.08);
       if (p.hp <= 0) this.gameOver();
     }
+    if (client) return;
     // Barrels with a lit fuse go off (this is how chain reactions ripple).
     for (const b of this.barrels) {
       if (b.dead || b.fuse <= 0) continue;
@@ -1957,21 +2203,26 @@ export class Game {
 
   private updateTrains(dt: number) {
     for (const tr of this.trains) {
+      if (this.net === 'client') {
+        // Guests just roll the host's trains along between snapshots.
+        if (tr.phase === 'go') tr.x += tr.dir * TRAIN_SPEED * dt;
+        continue;
+      }
       tr.t -= dt;
       if (tr.phase === 'idle' && tr.t <= 0) {
         tr.phase = 'warn';
         tr.t = 2.2;
-        this.sfx.play('horn');
+        this.wsfx('horn');
         if (!this.trainWarned) {
           this.trainWarned = true;
-          this.showShout('TRAIN INCOMING!', '#ff5a4a');
+          this.showShout('TRAIN INCOMING!', '#ff5a4a', true);
         }
       } else if (tr.phase === 'warn' && tr.t <= 0) {
         tr.phase = 'go';
         tr.x = tr.dir > 0 ? -TRAIN_LEN - 100 : WORLD_W + 100;
         tr.hitPlayer = false;
         tr.hitBoss = [];
-        this.sfx.play('train');
+        this.wsfx('train');
         this.addShake(0.3);
       } else if (tr.phase === 'go') {
         tr.x += tr.dir * TRAIN_SPEED * dt;
@@ -1996,12 +2247,17 @@ export class Game {
             this.cause = '';
           }
         }
-        const p = this.p;
-        if (!tr.hitPlayer && Math.abs(p.y - tr.y) < 48 + PLAYER_R && p.x > x0 && p.x < x1 && this.dashT <= 0) {
-          tr.hitPlayer = true;
-          this.hurtPlayer(55, null);
-          p.vy += (p.y < tr.y ? -1 : 1) * 900;
-          p.vx += tr.dir * 500;
+        for (const p of this.targets()) {
+          if (Math.abs(p.y - tr.y) >= 48 + PLAYER_R || p.x <= x0 || p.x >= x1) continue;
+          if (p === this.p) {
+            if (tr.hitPlayer || this.dashT > 0) continue;
+            tr.hitPlayer = true;
+          } else {
+            const a = p as Ally;
+            if (tr.hitBoss.includes(-1 - this.allies.indexOf(a))) continue;
+            tr.hitBoss.push(-1 - this.allies.indexOf(a));
+          }
+          this.hurtPlayer(55, null, p, { x: tr.dir * 500, y: (p.y < tr.y ? -1 : 1) * 900 });
         }
       }
     }
@@ -2060,8 +2316,12 @@ export class Game {
     return best;
   }
 
-  private damageZombie(z: Zombie, dmg: number, angle: number, crit: boolean, knock: number, quiet = false) {
+  private damageZombie(z: Zombie, dmg: number, angle: number, crit: boolean, knock: number, quiet = false, fx = 0) {
     if (z.dead) return;
+    if (this.net === 'client') {
+      this.netHit(z, dmg, angle, crit, knock, quiet, fx);
+      return;
+    }
     // Mother Brood is shielded by her eggs.
     if (z.def.kind === 'brood' && this.countKind('egg') > 0) dmg *= 0.25;
     if (z.def.kind === 'juggernaut') {
@@ -2101,68 +2361,20 @@ export class Game {
   private killZombie(z: Zombie, angle: number) {
     if (z.dead) return;
     z.dead = true;
-    this.kills++;
     const kind = z.def.kind;
     const boss = isBoss(z);
-    const rep = this.report;
-    rep.killsByKind[kind] = (rep.killsByKind[kind] ?? 0) + 1;
-    const wid = this.weapons[this.wi].def.id;
-    rep.killsByWeapon[wid] = (rep.killsByWeapon[wid] ?? 0) + 1;
-    if (this.nadeBlast) rep.grenadeKills++;
-    if (this.cause === 'train') rep.trainKills++;
-    else if (this.cause === 'barrel') rep.barrelKills++;
-    this.countBurst(z);
-    if (boss) {
-      rep.bosses++;
-      this.gainBrains(25 + this.wave, z.x, z.y - z.r - 20);
-    } else if (z.elite) {
-      rep.elites++;
-      this.gainBrains(3, z.x, z.y - z.r - 10);
-    } else if (this.kills % 10 === 0) this.gainBrains(1);
+    // A guest's kill: their game keeps score, combos and brains for it.
+    if (this.killer) this.netSend?.(this.killer, { t: 'kill', k: kind, e: z.elite ? 1 : 0, x: Math.round(z.x), y: Math.round(z.y), n: this.nadeBlast ? 1 : 0, c: this.cause });
+    else this.creditKill(kind, !!z.elite, z.x, z.y, z.r);
     if (!boss && kind !== 'egg' && !z.mini) {
       this.corpses.push({ x: z.x, y: z.y });
       if (this.corpses.length > 40) this.corpses.shift();
     }
     if (z.elite === 'splitting' && kind !== 'egg')
       for (let i = 0; i < 2; i++) this.spawnZombie(kind, z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), { mini: true }).flash = 0.2;
-    if (z.frozenT > 0) {
-      for (let i = 0; i < 14; i++) {
-        const a = rand(0, Math.PI * 2);
-        this.spawnParticle(z.x, z.y, Math.cos(a) * rand(100, 320), Math.sin(a) * rand(100, 320), rand(0.3, 0.6), rand(3, 7), i % 2 ? '#dff6ff' : '#7fd8ff', 4, false, true);
-      }
-      this.sfx.play('shatter');
-    }
     if (this.has('boom') && !boss && kind !== 'egg' && z.elite !== 'explosive') this.explode(z.x, z.y, 45 * this.stats.damage, 80, 10);
     if (z.elite === 'explosive') this.explode(z.x, z.y, 70 * this.stats.damage, 110, 22);
-    const big = boss || kind === 'tank' || kind === 'shield';
-    const n = boss ? 60 : big ? 22 : 12;
-    for (let i = 0; i < n; i++) this.spawnBlood(z.x, z.y, angle + rand(-1.2, 1.2), i % 3 ? '#8a1414' : z.def.dark, rand(1, boss ? 3 : 1.8));
-    // Gibs
-    for (let i = 0; i < (boss ? 16 : big ? 8 : 4); i++) {
-      const a = angle + rand(-1.4, 1.4);
-      const s = rand(120, 380);
-      this.spawnParticle(z.x, z.y, Math.cos(a) * s, Math.sin(a) * s, rand(0.3, 0.6), rand(4, big ? 11 : 8), i % 2 ? z.def.body : z.def.dark, 5, true, false);
-    }
-    // A big splat on the floor.
-    this.dctx.fillStyle = kind === 'bloater' ? 'rgba(80,110,10,0.5)' : 'rgba(90,10,10,0.55)';
-    for (let i = 0; i < (boss ? 14 : 5); i++) {
-      this.dctx.beginPath();
-      this.dctx.arc((z.x + rand(-z.r, z.r)) / 2, (z.y + rand(-z.r, z.r)) / 2, rand(2, z.r / 2.5), 0, Math.PI * 2);
-      this.dctx.fill();
-    }
-
-    // Combo
-    this.combo++;
-    this.comboT = COMBO_TIME;
-    this.comboPop = 0.15;
-    if (this.combo > this.bestCombo) this.bestCombo = this.combo;
-    for (const [at, text] of COMBO_TIERS) {
-      if (this.combo === at) {
-        this.showShout(text, at >= 100 ? '#ff3bd0' : at >= 50 ? '#ff5a4a' : '#ffd23f');
-        this.sfx.play('combo');
-        if (at === 100) this.hooks.onHighlight?.('x100 combo');
-      }
-    }
+    this.deathFx(z, angle);
 
     const mult = (1 + Math.min(this.combo, 100) * 0.01) * (this.active.cash > 0 ? 2 : 1);
     const value = z.def.cash * this.stats.cash * (1 + 0.06 * (this.wave - 1)) * mult;
@@ -2180,10 +2392,7 @@ export class Game {
     }
     // Loot crates: always from bosses, rarely from elites.
     if (boss || (z.elite && Math.random() < 0.03)) this.pickups.push({ x: z.x, y: z.y, vx: rand(-60, 60), vy: rand(-60, 60), kind: 'crate', value: boss ? 1 : 0, pulled: false });
-    if (this.stats.lifesteal > 0) this.p.hp = Math.min(this.stats.maxHp, this.p.hp + this.stats.lifesteal);
-    this.sfx.play('death', boss ? 2 : 1);
-    this.addShake(boss ? 1 : big ? 0.3 : 0.06);
-    if (big) this.hitstop = boss ? 0.12 : 0.05;
+    if (kind === 'tank' || kind === 'shield' || boss) this.hitstop = boss ? 0.12 : 0.05;
     if (kind === 'bloater') this.explode(z.x, z.y, 60 * this.stats.damage, 95, 18, false, 'toxic');
     if (boss) {
       this.slowT = 1.8;
@@ -2193,15 +2402,83 @@ export class Game {
       this.buzz([80, 50, 160]);
       this.hooks.onHighlight?.(`${BOSS_NAMES[kind]} kill`);
       this.explode(z.x, z.y, 0, 160, 0);
-      this.showBanner('BOSS DOWN', `${BOSS_NAMES[kind]} SLAIN`, BOSS_COLORS[kind] ?? '#c065ff');
+      this.showBanner('BOSS DOWN', `${BOSS_NAMES[kind]} SLAIN`, BOSS_COLORS[kind] ?? '#c065ff', true);
       this.flash = { t: 0.4, color: '#ffffff', max: 0.4 };
       // Her unhatched eggs die with her.
       if (kind === 'brood') for (const e of this.zombies) if (e.def.kind === 'egg') this.killZombie(e, rand(0, Math.PI * 2));
     }
   }
 
+  /** Score, combo, brains and lifesteal for a kill you made (on the host, or told by the host). */
+  private creditKill(kind: ZombieKind, elite: boolean, x: number, y: number, r: number) {
+    this.kills++;
+    const boss = kind === 'boss' || kind === 'brood' || kind === 'juggernaut';
+    const rep = this.report;
+    rep.killsByKind[kind] = (rep.killsByKind[kind] ?? 0) + 1;
+    const wid = this.weapons[this.wi].def.id;
+    rep.killsByWeapon[wid] = (rep.killsByWeapon[wid] ?? 0) + 1;
+    if (this.nadeBlast) rep.grenadeKills++;
+    if (this.cause === 'train') rep.trainKills++;
+    else if (this.cause === 'barrel') rep.barrelKills++;
+    this.countBurst(x, y);
+    if (boss) {
+      rep.bosses++;
+      this.gainBrains(25 + this.wave, x, y - r - 20);
+    } else if (elite) {
+      rep.elites++;
+      this.gainBrains(3, x, y - r - 10);
+    } else if (this.kills % 10 === 0) this.gainBrains(1);
+    this.combo++;
+    this.comboT = COMBO_TIME;
+    this.comboPop = 0.15;
+    if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+    for (const [at, text] of COMBO_TIERS) {
+      if (this.combo === at) {
+        this.showShout(text, at >= 100 ? '#ff3bd0' : at >= 50 ? '#ff5a4a' : '#ffd23f');
+        this.sfx.play('combo');
+        if (at === 100) this.hooks.onHighlight?.('x100 combo');
+      }
+    }
+    if (this.stats.lifesteal > 0 && !this.down) this.p.hp = Math.min(this.stats.maxHp, this.p.hp + this.stats.lifesteal);
+    if (boss && this.net === 'client') {
+      this.hooks.onHighlight?.(`${BOSS_NAMES[kind]} kill`);
+      this.killCam = { x, y, t: 1.6 };
+    }
+  }
+
+  /** Blood, gibs and the splat on the floor. Co-op guests play it when the host's zombie disappears. */
+  private deathFx(z: Zombie, angle: number) {
+    const kind = z.def.kind;
+    const boss = isBoss(z);
+    if (z.frozenT > 0) {
+      for (let i = 0; i < 14; i++) {
+        const a = rand(0, Math.PI * 2);
+        this.spawnParticle(z.x, z.y, Math.cos(a) * rand(100, 320), Math.sin(a) * rand(100, 320), rand(0.3, 0.6), rand(3, 7), i % 2 ? '#dff6ff' : '#7fd8ff', 4, false, true);
+      }
+      this.sfx.play('shatter');
+    }
+    const big = boss || kind === 'tank' || kind === 'shield';
+    const n = boss ? 60 : big ? 22 : 12;
+    for (let i = 0; i < n; i++) this.spawnBlood(z.x, z.y, angle + rand(-1.2, 1.2), i % 3 ? '#8a1414' : z.def.dark, rand(1, boss ? 3 : 1.8));
+    // Gibs
+    for (let i = 0; i < (boss ? 16 : big ? 8 : 4); i++) {
+      const a = angle + rand(-1.4, 1.4);
+      const s = rand(120, 380);
+      this.spawnParticle(z.x, z.y, Math.cos(a) * s, Math.sin(a) * s, rand(0.3, 0.6), rand(4, big ? 11 : 8), i % 2 ? z.def.body : z.def.dark, 5, true, false);
+    }
+    // A big splat on the floor.
+    this.dctx.fillStyle = kind === 'bloater' ? 'rgba(80,110,10,0.5)' : 'rgba(90,10,10,0.55)';
+    for (let i = 0; i < (boss ? 14 : 5); i++) {
+      this.dctx.beginPath();
+      this.dctx.arc((z.x + rand(-z.r, z.r)) / 2, (z.y + rand(-z.r, z.r)) / 2, rand(2, z.r / 2.5), 0, Math.PI * 2);
+      this.dctx.fill();
+    }
+    this.sfx.play('death', boss ? 2 : 1);
+    this.addShake(boss ? 1 : big ? 0.3 : 0.06);
+  }
+
   /** Kills landing within a blink of each other count as one burst: big ones get slow-mo and a shout. */
-  private countBurst(z: Zombie) {
+  private countBurst(x: number, y: number) {
     if (this.burstT <= 0) this.burst = 0;
     this.burst++;
     this.burstT = 0.3;
@@ -2221,13 +2498,48 @@ export class Game {
       this.buzz(Math.round(40 + slow * 60));
       this.sfx.play('combo');
       // Extra gore for the camera.
-      for (let i = 0; i < 10; i++) this.spawnBlood(z.x, z.y, rand(0, Math.PI * 2), '#9a1010', 2.2);
+      for (let i = 0; i < 10; i++) this.spawnBlood(x, y, rand(0, Math.PI * 2), '#9a1010', 2.2);
       if (n >= 15) this.hooks.onHighlight?.(n >= 25 ? 'Massacre' : 'Mega kill');
     }
   }
 
   private explode(x: number, y: number, dmg: number, radius: number, playerDmg: number, barrel = false, style: 'fire' | 'toxic' = 'fire') {
     const toxic = style === 'toxic';
+    this.explodeFx(x, y, radius, toxic, barrel);
+    this.netEvent('x', Math.round(x), Math.round(y), Math.round(radius), toxic ? 1 : 0, barrel ? 1 : 0, this.killer);
+    const client = this.net === 'client';
+    if (toxic && !client) this.puddles.push({ x, y, r: radius * 0.6, life: 4, max: 4, kind: 'toxic' });
+    if (playerDmg > 0) {
+      // Your own grenades only hurt you; barrels and bursting zombies hurt the whole squad.
+      for (const t of this.nadeBlast || client ? [this.p] : this.targets()) {
+        const d = Math.hypot(t.x - x, t.y - y);
+        if (d < radius) this.hurtPlayer(playerDmg * (1 - d / radius / 2), { x, y }, t);
+      }
+    }
+    if (client) {
+      // The host applies the damage (and sets off any barrels).
+      if (dmg > 0) this.netSend?.(null, { t: 'boom', x: Math.round(x), y: Math.round(y), d: Math.round(dmg), r: Math.round(radius), s: toxic ? 1 : 0, n: this.nadeBlast ? 1 : 0 });
+      return;
+    }
+    for (const b of this.barrels) {
+      if (b.dead || b.fuse > 0) continue;
+      if (Math.hypot(b.x - x, b.y - y) < radius + 10) b.fuse = rand(0.08, 0.2);
+    }
+    if (dmg <= 0) return;
+    const prev = this.cause;
+    if (barrel) this.cause = 'barrel';
+    for (const z of this.zombies) {
+      if (z.dead) continue;
+      const d = Math.hypot(z.x - x, z.y - y);
+      if (d < radius + z.r) {
+        if (!toxic) z.burn = Math.max(z.burn, 1.2);
+        this.damageZombie(z, dmg * (1 - (d / (radius + z.r)) * 0.4), Math.atan2(z.y - y, z.x - x), false, 420);
+      }
+    }
+    this.cause = prev;
+  }
+
+  private explodeFx(x: number, y: number, radius: number, toxic: boolean, barrel: boolean) {
     this.rings.push({ x, y, r: 10, max: radius, life: 0.35, color: toxic ? 'rgba(160,255,60,' : 'rgba(255,170,60,' });
     this.addLight(x, y, radius * 2.6, 0.45, toxic ? '#9aff3a' : '#ff9a3a');
     const n = Math.round(radius / 5);
@@ -2251,36 +2563,19 @@ export class Game {
     this.dctx.beginPath();
     this.dctx.arc(x / 2, y / 2, radius / 3.2, 0, Math.PI * 2);
     this.dctx.fill();
-    if (toxic) this.puddles.push({ x, y, r: radius * 0.6, life: 4, max: 4, kind: 'toxic' });
-    this.addShake(barrel ? 0.6 : Math.min(0.55, radius / 260));
-    this.zoomKick = Math.max(this.zoomKick, barrel ? 0.06 : 0.03);
-    if (radius >= 130) this.hitstop = Math.max(this.hitstop, 0.04);
-    this.sfx.play(toxic ? 'splat' : 'explode', toxic ? 1 : Math.min(1, radius / 130));
-    if (playerDmg > 0) {
-      const d = Math.hypot(this.p.x - x, this.p.y - y);
-      if (d < radius) this.hurtPlayer(playerDmg * (1 - d / radius / 2), { x, y });
-    }
-    for (const b of this.barrels) {
-      if (b.dead || b.fuse > 0) continue;
-      if (Math.hypot(b.x - x, b.y - y) < radius + 10) b.fuse = rand(0.08, 0.2);
-    }
-    if (radius >= 110) this.buzz(barrel ? 60 : 25);
-    if (dmg <= 0) return;
-    const prev = this.cause;
-    if (barrel) this.cause = 'barrel';
-    for (const z of this.zombies) {
-      if (z.dead) continue;
-      const d = Math.hypot(z.x - x, z.y - y);
-      if (d < radius + z.r) {
-        if (!toxic) z.burn = Math.max(z.burn, 1.2);
-        this.damageZombie(z, dmg * (1 - (d / (radius + z.r)) * 0.4), Math.atan2(z.y - y, z.x - x), false, 420);
-      }
-    }
-    this.cause = prev;
+    // Far-off blasts (a teammate's) shake the screen less.
+    const far = clamp(1 - (Math.hypot(this.p.x - x, this.p.y - y) - 300) / 900, 0.15, 1);
+    this.addShake((barrel ? 0.6 : Math.min(0.55, radius / 260)) * far);
+    this.zoomKick = Math.max(this.zoomKick, (barrel ? 0.06 : 0.03) * far);
+    if (radius >= 130 && far > 0.5) this.hitstop = Math.max(this.hitstop, 0.04);
+    this.sfx.play(toxic ? 'splat' : 'explode', (toxic ? 1 : Math.min(1, radius / 130)) * Math.max(0.35, far));
+    if (radius >= 110 && far > 0.5) this.buzz(barrel ? 60 : 25);
   }
 
   private activatePower(kind: PowerKind) {
     const def = POWERUPS[kind];
+    // Power-ups count for the whole squad.
+    if (this.net === 'host') this.netSend?.(null, { t: 'pw', k: kind });
     this.showBanner(def.name, '', def.color);
     this.sfx.play('power');
     this.flash = { t: 0.25, color: def.color, max: 0.25 };
@@ -2290,7 +2585,7 @@ export class Game {
       this.addShake(1);
       this.zoomKick = 0.1;
       for (const z of this.zombies) {
-        if (z.dead) continue;
+        if (z.dead || this.net === 'client') continue;
         if (isBoss(z)) this.damageZombie(z, z.maxHp * 0.2, 0, false, 0);
         else this.killZombie(z, Math.atan2(z.y - this.p.y, z.x - this.p.x));
       }
@@ -2338,14 +2633,16 @@ export class Game {
   }
 
   private updatePickups(dt: number) {
-    const p = this.p;
+    const ts = this.targets();
     const range = 110 * this.stats.magnet;
     const keep: Pickup[] = [];
     for (const pk of this.pickups) {
+      // Floats to whoever is closest; your own magnet perk reaches further for you.
+      const p = ts.length > 1 ? this.nearest(ts, pk.x, pk.y) : ts[0];
       const dx = p.x - pk.x;
       const dy = p.y - pk.y;
       const d = Math.hypot(dx, dy) || 1;
-      if (pk.pulled || d < range) {
+      if (pk.pulled || d < (p === this.p ? range : 110)) {
         pk.pulled = true;
         const s = 700;
         pk.vx += (dx / d) * s * dt * 6;
@@ -2362,16 +2659,15 @@ export class Game {
       pk.x += pk.vx * dt;
       pk.y += pk.vy * dt;
       if (d < PLAYER_R + 8) {
-        if (pk.kind === 'cash') {
+        if (p !== this.p) {
+          const id = (p as Ally).id;
+          this.netSend?.(id, pk.kind === 'cash' ? { t: 'cash', v: Math.round(pk.value * 10) / 10 } : pk.kind === 'crate' ? { t: 'crate', l: pk.value } : { t: 'heal', v: pk.value });
+        } else if (pk.kind === 'cash') {
           this.gainCash(pk.value);
           this.sfx.play('coin');
         } else if (pk.kind === 'crate') {
           this.openCrate(pk);
-        } else {
-          this.p.hp = Math.min(this.stats.maxHp, this.p.hp + pk.value);
-          this.addText(p.x, p.y - 26, `+${pk.value}`, '#5dff7a', 15);
-          this.sfx.play('buy');
-        }
+        } else this.heal(pk.value);
         continue;
       }
       keep.push(pk);
@@ -2379,12 +2675,18 @@ export class Game {
     this.pickups = keep;
     this.powers = this.powers.filter((pw) => {
       pw.life -= dt;
-      if (Math.hypot(pw.x - p.x, pw.y - p.y) < PLAYER_R + 18) {
+      if (ts.some((p) => Math.hypot(pw.x - p.x, pw.y - p.y) < PLAYER_R + 18)) {
         this.activatePower(pw.kind);
         return false;
       }
       return pw.life > 0;
     });
+  }
+
+  private heal(v: number) {
+    this.p.hp = Math.min(this.stats.maxHp, this.p.hp + v);
+    this.addText(this.p.x, this.p.y - 26, `+${v}`, '#5dff7a', 15);
+    this.sfx.play('buy');
   }
 
   private openCrate(pk: Pickup) {
@@ -2397,7 +2699,7 @@ export class Game {
     this.toast(scrapped ? `📦 ${def.icon} ${def.name} (stash full: +${scrapped} 🧠)` : `📦 ${def.icon} ${it.rarity} ${def.name}: ${def.desc(gearValue(it))}`);
     this.addText(pk.x, pk.y - 20, `${def.icon} ${it.rarity.toUpperCase()}`, color, 18);
     this.addLight(pk.x, pk.y, 220, 0.5, color);
-    this.rings.push({ x: pk.x, y: pk.y, r: 0, max: 90, life: 0.5, color: 'rgba(255,210,63,' });
+    this.ring({ x: pk.x, y: pk.y, r: 0, max: 90, life: 0.5, color: 'rgba(255,210,63,' });
     this.sfx.play(it.rarity === 'legendary' || it.rarity === 'epic' ? 'levelup' : 'power');
   }
 
@@ -2406,6 +2708,14 @@ export class Game {
     const kind = this.kit.shift();
     if (!kind) return;
     const p = this.p;
+    if (this.net === 'client') this.netSend?.(null, { t: 'dep', k: kind, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.angle * 100) / 100 });
+    else this.placeDeploy(kind, p);
+    this.sfx.play('clank');
+    this.addShake(0.1);
+  }
+
+  /** Puts a deployable down in front of someone (you, or a co-op guest on the host). */
+  private placeDeploy(kind: DeployKind, p: { x: number; y: number; angle: number }) {
     const at = (dist: number) => {
       const o = { x: p.x + Math.cos(p.angle) * dist, y: p.y + Math.sin(p.angle) * dist };
       this.collideWalls(o, 24);
@@ -2423,8 +2733,6 @@ export class Game {
     } else if (kind === 'turret') this.deploys.push({ ...base, kind, ...at(44), hp: 260, maxHp: 260, life: 60, r: 16 });
     else if (kind === 'barricade') this.deploys.push({ ...base, kind, ...at(56), hp: 700 + this.wave * 25, maxHp: 700 + this.wave * 25, r: 30 });
     else this.deploys.push({ ...base, kind, ...at(40), hp: 200, maxHp: 200, life: 40, r: 16 });
-    this.sfx.play('clank');
-    this.addShake(0.1);
   }
 
   private pushOut(o: { x: number; y: number }, r: number, d: Deployable) {
@@ -2439,9 +2747,11 @@ export class Game {
 
   private updateDeploys(dt: number) {
     const p = this.p;
+    const client = this.net === 'client';
     for (const d of this.deploys) {
       if (d.life !== Infinity) d.life -= dt;
       d.t -= dt;
+      if (client && d.kind !== 'medic') continue;
       if (d.kind === 'turret' && d.t <= 0) {
         const t = this.nearestZombie(d.x, d.y, 380);
         if (t) {
@@ -2461,7 +2771,7 @@ export class Game {
           this.explode(d.x, d.y, 220 * this.stats.damage * (1 + 0.04 * this.wave), 120, 0);
         }
       } else if (d.kind === 'medic') {
-        if (Math.hypot(p.x - d.x, p.y - d.y) < 90 && p.hp < this.stats.maxHp) {
+        if (Math.hypot(p.x - d.x, p.y - d.y) < 90 && p.hp < this.stats.maxHp && !this.down) {
           p.hp = Math.min(this.stats.maxHp, p.hp + 9 * dt);
           if (d.t <= 0) {
             d.t = 0.5;
@@ -2471,6 +2781,7 @@ export class Game {
         if (Math.random() < dt * 2) this.addLight(d.x, d.y, 160, 0.5, '#5dff7a');
       }
     }
+    if (client) return;
     const gone = this.deploys.filter((d) => d.hp <= 0 || d.life <= 0);
     for (const d of gone) {
       if (d.kind === 'mine') continue;
@@ -2673,6 +2984,438 @@ export class Game {
     return { x: (x - this.cam.x) * this.zoom + this.w / 2, y: (y - this.cam.y) * this.zoom + this.h / 2 };
   }
 
+  // ---------------------------------------------------------------- co-op
+
+  /** Sets up the squad for a co-op run. `players` includes you. */
+  setSquad(role: 'host' | 'client', myId: string, players: { id: string; name: string; slot: number }[]) {
+    this.net = role;
+    this.myId = myId;
+    this.slot = players.find((p) => p.id === myId)?.slot ?? 0;
+    this.allies = players
+      .filter((p) => p.id !== myId)
+      .map((p) => {
+        const x = WORLD_W / 2 + ([-40, 40, 0, 0][p.slot] ?? 0);
+        const y = WORLD_H / 2 + ([0, 0, -40, 40][p.slot] ?? 0);
+        return { id: p.id, name: p.name, slot: p.slot, x, y, nx: x, ny: y, vx: 0, vy: 0, angle: -Math.PI / 2, hp: 100, maxHp: 100, down: false, revive: 0, weapon: 'pistol', firing: false, dashing: false, fireT: 0, grace: 0 };
+      });
+  }
+
+  /** Back to solo play. */
+  leaveSquad() {
+    this.net = '';
+    this.myId = '';
+    this.slot = 0;
+    this.allies = [];
+    this.netSend = null;
+    this.down = false;
+    this.hostPaused = false;
+  }
+
+  /** A guest left mid-run (host only). */
+  dropAlly(id: string) {
+    const a = this.allies.find((x) => x.id === id);
+    if (!a) return;
+    this.allies = this.allies.filter((x) => x !== a);
+    this.toast(`${a.name} left the game`);
+    this.netEvent('h', `${a.name.toUpperCase()} LEFT`, '#c9d1b8');
+  }
+
+  /** Sends what the others need to know, at a steady rate. Called every frame by main.ts. */
+  netTick(dt: number) {
+    if (!this.net || !this.netSend) return;
+    if (this.netHits.length) {
+      this.netSend(null, { t: 'h', h: this.netHits });
+      this.netHits = [];
+    }
+    this.netT -= dt;
+    if (this.netT > 0 || (this.state !== 'playing' && this.state !== 'paused')) return;
+    const r = Math.round;
+    if (this.net === 'host') {
+      this.netT = SNAP_EVERY;
+      this.netSend(null, this.buildSnap(), true);
+      this.netEv = [];
+    } else {
+      this.netT = STATE_EVERY;
+      const p = this.p;
+      const firing = this.firing && this.state === 'playing' && !this.hostPaused;
+      this.netSend(null, { t: 'p', x: r(p.x), y: r(p.y), a: r(p.angle * 100) / 100, vx: r(p.vx), vy: r(p.vy), hp: r(p.hp), mh: r(this.stats.maxHp), dn: this.down ? 1 : 0, w: this.weapons[this.wi].def.id, f: firing ? 1 : 0, d: this.dashT > 0 ? 1 : 0 }, true);
+    }
+  }
+
+  private buildSnap(): NetMsg {
+    const r = Math.round;
+    const p = this.p;
+    const zs = this.zombies
+      .filter((z) => !z.dead)
+      .map((z) => [
+        z.id,
+        KINDS.indexOf(z.def.kind),
+        r(z.x),
+        r(z.y),
+        r(z.face * 100),
+        r(z.hp),
+        r(z.maxHp),
+        r(z.r),
+        (z.elite ? ELITE_KINDS.indexOf(z.elite) + 1 : 0) | (z.mini ? 8 : 0) | (z.frozenT > 0 ? 16 : 0) | (z.burn > 0 ? 32 : 0) | (z.buff > 0 ? 64 : 0) | (z.zapT > 0 ? 128 : 0) | (z.slow > 0 ? 256 : 0),
+        z.boss ? ['walk', 'windup', 'charge'].indexOf(z.boss.state) : 0,
+        z.leap ? ['walk', 'crouch', 'leap'].indexOf(z.leap.state) : 0,
+        z.jug ? r(z.jug.windup * 100) : 0,
+        z.plates,
+      ]);
+    const me = [this.myId, r(p.x), r(p.y), r(p.angle * 100), r(p.hp), r(this.stats.maxHp), this.down ? 1 : 0, this.weapons[this.wi].def.id, this.firing && this.state === 'playing' ? 1 : 0, r(this.reviveProg * 100), this.dashT > 0 ? 1 : 0];
+    const pl = [me, ...this.allies.map((a) => [a.id, r(a.x), r(a.y), r(a.angle * 100), r(a.hp), r(a.maxHp), a.down ? 1 : 0, a.weapon, a.firing ? 1 : 0, r(a.revive * 100), a.dashing ? 1 : 0])];
+    return {
+      t: 's',
+      w: this.wave,
+      left: this.toSpawn + zs.length,
+      pz: this.state === 'paused' ? 1 : 0,
+      z: zs,
+      pl,
+      pk: this.pickups.map((k) => [r(k.x), r(k.y), r(k.vx), r(k.vy), k.kind === 'cash' ? 0 : k.kind === 'health' ? 1 : 2]),
+      pw: this.powers.map((w) => [r(w.x), r(w.y), POWER_KINDS.indexOf(w.kind), r(w.life * 10)]),
+      sp: this.spits.map((q) => [r(q.x), r(q.y), r(q.vx), r(q.vy), r(q.life * 100)]),
+      pd: this.puddles.map((q) => [r(q.x), r(q.y), r(q.r), r(q.life * 100), r(q.max * 100), q.kind === 'acid' ? 0 : 1]),
+      dp: this.deploys.map((d) => [DEPLOY_KINDS.indexOf(d.kind), r(d.x), r(d.y), r(d.angle * 100), r(d.hp), r(d.maxHp), d.life === Infinity ? -1 : r(d.life * 10), d.r, d.t > 0 ? 1 : 0]),
+      tr: this.trains.map((t) => [['idle', 'warn', 'go'].indexOf(t.phase), r(t.x)]),
+      br: this.barrels.map((b) => (b.dead ? 1 : 0)).join(''),
+      gr: this.grenades.map((g) => [r(g.x), r(g.y), r(g.vx), r(g.vy), r(g.z), r(g.vz), r(g.fuse * 100), g.radius ?? 135]),
+      ev: this.netEv,
+    };
+  }
+
+  /** A zombie the host told us about, built just well enough to draw and to shoot at. */
+  private mirrorZombie(id: number, kind: ZombieKind, x: number, y: number): Zombie {
+    const def = ZOMBIES[kind];
+    const z: Zombie = { id, def, x, y, kx: 0, ky: 0, hp: 1, maxHp: 1, speed: 0, dmg: 0, r: def.radius, flash: 0, slow: 0, burn: 0, attackCd: 0, bladeCd: 0, phase: Math.random() * 10, face: 0, dead: false, spitCd: 0, buff: 0, abilityCd: 0, chill: 0, frozenT: 0, plates: 0, plateHp: 0, zapT: 0 };
+    if (kind === 'boss' || kind === 'juggernaut') z.boss = { state: 'walk', t: 0, dx: 0, dy: 0, summon: 0 };
+    if (kind === 'juggernaut') z.jug = { slam: 0, windup: 0 };
+    if (kind === 'brood') z.brood = { lay: 0, spit: 0 };
+    if (kind === 'leaper') z.leap = { state: 'walk', t: 0, dx: 0, dy: 0 };
+    return z;
+  }
+
+  private applySnap(s: NetMsg) {
+    type Row = number[];
+    this.hostPaused = !!s.pz;
+    const old = new Map(this.zombies.map((z) => [z.id, z]));
+    const next: Zombie[] = [];
+    for (const e of s.z as Row[]) {
+      const [id, ki, x, y, face, hp, maxHp, rad, fl, bs, ls, jw, plates] = e;
+      let z = old.get(id);
+      if (z) old.delete(id);
+      else z = this.mirrorZombie(id, KINDS[ki], x, y);
+      if (Math.hypot(z.x - x, z.y - y) > 250) {
+        z.x = x;
+        z.y = y;
+      }
+      z.nx = x;
+      z.ny = y;
+      z.face = face / 100;
+      z.hp = hp;
+      z.maxHp = maxHp;
+      z.r = rad;
+      z.elite = fl & 7 ? ELITE_KINDS[(fl & 7) - 1] : undefined;
+      z.mini = !!(fl & 8);
+      z.frozenT = fl & 16 ? 1 : 0;
+      z.burn = fl & 32 ? 1 : 0;
+      z.buff = fl & 64 ? 1 : 0;
+      z.zapT = fl & 128 ? 0.3 : 0;
+      z.slow = fl & 256 ? 1 : 0;
+      if (z.boss) z.boss.state = (['walk', 'windup', 'charge'] as const)[bs] ?? 'walk';
+      if (z.leap) {
+        z.leap.state = (['walk', 'crouch', 'leap'] as const)[ls] ?? 'walk';
+        z.leap.dx = Math.cos(z.face);
+        z.leap.dy = Math.sin(z.face);
+      }
+      if (z.jug) z.jug.windup = jw / 100;
+      z.plates = plates;
+      next.push(z);
+    }
+    // Whatever the host no longer has just died.
+    for (const z of old.values()) this.deathFx(z, z.face + Math.PI);
+    this.zombies = next;
+    this.toSpawn = Math.max(0, (s.left as number) - next.length);
+
+    for (const e of s.pl as (string | number)[][]) {
+      const [id, x, y, ang, hp, maxHp, down, weapon, firing, revive, dashing] = e as [string, number, number, number, number, number, number, string, number, number, number];
+      if (id === this.myId) {
+        this.reviveProg = revive / 100;
+        continue;
+      }
+      const a = this.allies.find((q) => q.id === id);
+      if (!a) continue;
+      a.nx = x;
+      a.ny = y;
+      if (Math.hypot(a.x - x, a.y - y) > 300) {
+        a.x = x;
+        a.y = y;
+      }
+      a.angle = ang / 100;
+      a.hp = hp;
+      a.maxHp = maxHp;
+      a.down = !!down;
+      a.weapon = weapon;
+      a.firing = !!firing;
+      a.revive = revive / 100;
+      a.dashing = !!dashing;
+    }
+    const kinds: Pickup['kind'][] = ['cash', 'health', 'crate'];
+    this.pickups = (s.pk as Row[]).map(([x, y, vx, vy, k]) => ({ x, y, vx, vy, kind: kinds[k], value: 0, pulled: true }));
+    this.powers = (s.pw as Row[]).map(([x, y, k, life]) => ({ x, y, kind: POWER_KINDS[k], life: life / 10 }));
+    this.spits = (s.sp as Row[]).map(([x, y, vx, vy, life]) => ({ x, y, vx, vy, life: life / 100 }));
+    this.puddles = (s.pd as Row[]).map(([x, y, r, life, max, k]) => ({ x, y, r, life: life / 100, max: max / 100, kind: k ? 'toxic' : 'acid' }));
+    this.deploys = (s.dp as Row[]).map(([k, x, y, a, hp, maxHp, life, r, arming]) => ({ kind: DEPLOY_KINDS[k], x, y, angle: a / 100, hp, maxHp, life: life < 0 ? Infinity : life / 10, r, t: arming ? 1 : 0 }));
+    (s.tr as Row[]).forEach(([ph, x], i) => {
+      const tr = this.trains[i];
+      if (!tr) return;
+      tr.phase = (['idle', 'warn', 'go'] as const)[ph];
+      tr.x = x;
+    });
+    const br = String(s.br);
+    this.barrels.forEach((b, i) => {
+      if (br[i] === '1' && !b.dead) b.dead = true;
+    });
+    this.grenades = [...this.grenades.filter((g) => !g.remote), ...(s.gr as Row[]).map(([x, y, vx, vy, z, vz, fuse, radius]) => ({ x, y, vx, vy, z, vz, fuse: fuse / 100, radius, remote: true }))];
+    for (const e of s.ev as (string | number)[][]) this.applyEvent(e);
+  }
+
+  private applyEvent(e: (string | number)[]) {
+    const [k, ...a] = e;
+    const n = a as number[];
+    if (k === 'x') {
+      if (a[5] !== this.myId) this.explodeFx(n[0], n[1], n[2], !!n[3], !!n[4]);
+    } else if (k === 'a') this.sfx.play(a[0] as SfxKind, n[1]);
+    else if (k === 'r') this.rings.push({ x: n[0], y: n[1], r: n[2], max: n[3], life: n[4], color: String(a[5]) });
+    else if (k === 'z') this.bolts.push({ x1: n[0], y1: n[1], x2: n[2], y2: n[3], life: n[4], color: String(a[5]) });
+    else if (k === 'b') this.showBanner(String(a[0]), String(a[1]), String(a[2]));
+    else if (k === 'h') this.showShout(String(a[0]), String(a[1]));
+    else if (k === 'down') {
+      const who = this.allies.find((q) => q.id === a[0]);
+      if (who) this.toast(`${who.name} is down! Stand next to them to revive`);
+    }
+  }
+
+  /** Messages from the other players. */
+  netRecv(from: string, m: NetMsg) {
+    const num = (k: string) => Number(m[k]) || 0;
+    if (this.net === 'host') {
+      const a = this.allies.find((x) => x.id === from);
+      if (!a) return;
+      if (m.t === 'p') {
+        a.nx = num('x');
+        a.ny = num('y');
+        a.vx = num('vx');
+        a.vy = num('vy');
+        a.angle = num('a');
+        a.hp = num('hp');
+        a.maxHp = num('mh') || 100;
+        a.weapon = String(m.w);
+        a.firing = !!m.f;
+        a.dashing = !!m.d;
+        if (a.grace <= 0) {
+          const was = a.down;
+          a.down = !!m.dn;
+          if (a.down && !was) {
+            a.revive = 0;
+            this.toast(`${a.name} is down! Stand next to them to revive`);
+            this.netEvent('down', a.id);
+          }
+        }
+      } else if (m.t === 'h' && this.state === 'playing') {
+        const byId = new Map(this.zombies.map((z) => [z.id, z]));
+        this.killer = from;
+        for (const [id, dmg, ang, knock, f] of m.h as number[][]) {
+          const z = byId.get(id);
+          if (!z || z.dead) continue;
+          if (f & 4) z.burn = 2.5;
+          if (f & 8) this.chill(z);
+          this.damageZombie(z, dmg, ang, !!(f & 1), knock, !!(f & 2));
+        }
+        this.killer = '';
+      } else if (m.t === 'boom' && this.state === 'playing') {
+        this.killer = from;
+        this.nadeBlast = !!m.n;
+        this.explode(num('x'), num('y'), num('d'), num('r'), 0, false, m.s ? 'toxic' : 'fire');
+        this.nadeBlast = false;
+        this.killer = '';
+      } else if (m.t === 'bar') {
+        const b = this.barrels[num('i')];
+        if (b && !b.dead && b.fuse <= 0) {
+          b.hp -= num('d');
+          if (b.hp <= 0) b.fuse = 0.05;
+        }
+      } else if (m.t === 'dep' && this.state === 'playing') {
+        const k = String(m.k) as DeployKind;
+        if (DEPLOY_KINDS.includes(k)) this.placeDeploy(k, { x: num('x'), y: num('y'), angle: num('a') });
+      }
+      return;
+    }
+    switch (m.t) {
+      case 's':
+        if (this.state === 'playing' || this.state === 'paused') this.applySnap(m);
+        break;
+      case 'wave':
+        this.wave = num('w');
+        this.beginWave();
+        this.waveIntro((m.b as ZombieKind) || '');
+        break;
+      case 'clear':
+        if (this.state === 'playing' || this.state === 'paused') {
+          this.gainCash(num('c'));
+          this.waveCleared();
+        }
+        break;
+      case 'over':
+        this.endRun();
+        break;
+      case 'kill': {
+        const k = String(m.k) as ZombieKind;
+        if (!ZOMBIES[k]) break;
+        this.nadeBlast = !!m.n;
+        this.cause = (m.c as '' | 'train' | 'barrel') || '';
+        this.creditKill(k, !!m.e, num('x'), num('y'), ZOMBIES[k].radius);
+        this.nadeBlast = false;
+        this.cause = '';
+        break;
+      }
+      case 'cash':
+        this.gainCash(num('v'));
+        this.sfx.play('coin');
+        break;
+      case 'heal':
+        if (!this.down) this.heal(num('v'));
+        break;
+      case 'crate':
+        this.openCrate({ x: this.p.x, y: this.p.y, vx: 0, vy: 0, kind: 'crate', value: num('l'), pulled: false });
+        break;
+      case 'pw':
+        if (POWER_KINDS.includes(m.k as PowerKind)) this.activatePower(m.k as PowerKind);
+        break;
+      case 'hurt':
+        this.hurtPlayer(num('a'), m.x === null ? null : { x: num('x'), y: num('y') }, this.p, m.kx || m.ky ? { x: num('kx'), y: num('ky') } : undefined);
+        break;
+      case 'revive':
+        if (this.down) this.getUp(0.35);
+        break;
+      case 'saved':
+        this.report.teamRevives++;
+        this.toast('🚑 You revived a teammate');
+        break;
+    }
+  }
+
+  /** Co-op guests: show the hit right away, and tell the host (who owns the zombie's real health). */
+  private netHit(z: Zombie, dmg: number, angle: number, crit: boolean, knock: number, quiet: boolean, fx: number) {
+    z.hp -= dmg;
+    z.flash = 0.07;
+    if (!quiet) {
+      for (let i = 0; i < (crit ? 5 : 2); i++) this.spawnBlood(z.x, z.y, angle + rand(-0.6, 0.6), z.def.kind === 'bloater' ? '#6a8f10' : '#7a1010');
+      if (crit || dmg >= 20) this.addText(z.x + rand(-8, 8), z.y - z.r - 4, String(Math.round(dmg)), crit ? '#ffd23f' : dmg >= 150 ? '#ffb347' : '#ffffff', clamp(11 + Math.sqrt(dmg) * (crit ? 1.2 : 0.7), 12, crit ? 30 : 22));
+      this.sfx.play('hit');
+    }
+    this.netHits.push([z.id, Math.round(dmg * 10) / 10, Math.round(angle * 100) / 100, Math.round(knock), (crit ? 1 : 0) | (quiet ? 2 : 0) | fx]);
+  }
+
+  /** Co-op guests: glide the host's zombies and pickups between snapshots. */
+  private updateMirror(dt: number) {
+    const k = 1 - Math.exp(-dt * 12);
+    for (const z of this.zombies) {
+      if (z.flash > 0) z.flash -= dt;
+      if (z.nx === undefined || z.ny === undefined) continue;
+      const ox = z.x;
+      const oy = z.y;
+      z.x += (z.nx - z.x) * k;
+      z.y += (z.ny - z.y) * k;
+      z.phase += Math.hypot(z.x - ox, z.y - oy) * 0.08;
+    }
+    for (const pk of this.pickups) {
+      pk.x += pk.vx * dt;
+      pk.y += pk.vy * dt;
+    }
+    for (const pw of this.powers) pw.life -= dt;
+  }
+
+  /** Teammates: glide toward where they really are and fire tracers when they shoot. */
+  private updateAllies(dt: number) {
+    const k = 1 - Math.exp(-dt * 12);
+    for (const a of this.allies) {
+      a.x += (a.nx - a.x) * k;
+      a.y += (a.ny - a.y) * k;
+      if (a.grace > 0) a.grace -= dt;
+      if (!a.firing || a.down) {
+        a.fireT = Math.max(0, a.fireT - dt);
+        continue;
+      }
+      a.fireT -= dt;
+      if (a.fireT > 0) continue;
+      const def = WEAPON_BY_ID.get(a.weapon);
+      if (!def) continue;
+      a.fireT = Math.max(0, a.fireT + 1 / def.fireRate);
+      this.ghostShot(a, def);
+    }
+  }
+
+  private ghostShot(a: Ally, def: WeaponDef) {
+    const mx = a.x + Math.cos(a.angle) * (def.length + 4);
+    const my = a.y + Math.sin(a.angle) * (def.length + 4);
+    const kind = def.kind;
+    if (kind === 'tesla') {
+      const t = this.zombies.find((z) => Math.hypot(z.x - mx, z.y - my) < 360 && Math.cos(Math.atan2(z.y - my, z.x - mx) - a.angle) > 0.85);
+      this.bolts.push({ x1: mx, y1: my, x2: t ? t.x : mx + Math.cos(a.angle) * 130, y2: t ? t.y : my + Math.sin(a.angle) * 130, life: 0.08, color: '#b8ecff' });
+      this.addLight(mx, my, 160, 0.08, '#8ad8ff');
+      this.sfx.play('tesla', 0.3);
+      return;
+    }
+    if (kind === 'grenade') {
+      this.addLight(mx, my, 140, 0.07, '#b0ff7a');
+      this.sfx.play('launcher', 0.3);
+      return;
+    }
+    const n = kind === 'bullet' ? def.pellets : 1;
+    for (let i = 0; i < n; i++) {
+      const ang = a.angle + rand(-def.spread / 2, def.spread / 2);
+      const sp = def.speed * rand(0.92, 1.05);
+      const spray = kind === 'flame' || kind === 'frost';
+      this.bullets.push({ kind, x: mx, y: my, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, dmg: 0, life: def.life * (spray ? rand(0.8, 1.1) : 1), max: def.life, pierce: 0, ricochet: 0, hits: [], color: def.color, width: 2.5, canExplode: false, ghost: true });
+    }
+    if (kind === 'flame' || kind === 'frost') {
+      if (Math.random() < 0.3) this.addLight(mx, my, 130, 0.12, kind === 'flame' ? '#ff7a20' : '#7fd8ff');
+      this.sfx.play(kind === 'flame' ? 'flamer' : 'freeze', 0.3);
+      return;
+    }
+    this.addLight(mx, my, kind === 'rocket' ? 220 : 160, 0.06, '#ffb050');
+    this.sfx.play(def.id as SfxKind, 0.3);
+  }
+
+  /** Host: downed players get back up after a teammate stands next to them for a few seconds. */
+  private updateRevives(dt: number) {
+    const all: { id: string; x: number; y: number; down: boolean; ally: Ally | null }[] = [{ id: this.myId, x: this.p.x, y: this.p.y, down: this.down, ally: null }, ...this.allies.map((a) => ({ id: a.id, x: a.x, y: a.y, down: a.down, ally: a }))];
+    for (const d of all) {
+      if (!d.down) continue;
+      const helper = all.find((o) => !o.down && Math.hypot(o.x - d.x, o.y - d.y) < REVIVE_RANGE);
+      let prog = d.ally ? d.ally.revive : this.reviveProg;
+      prog = helper ? prog + dt / REVIVE_TIME : Math.max(0, prog - dt / REVIVE_TIME);
+      if (prog >= 1 && helper) {
+        prog = 0;
+        if (d.ally) {
+          d.ally.down = false;
+          d.ally.grace = 1.5;
+          this.netSend?.(d.ally.id, { t: 'revive' });
+          this.addText(d.x, d.y - 30, `${d.ally.name} IS BACK UP`, '#5dff7a', 14);
+        } else this.getUp(0.35);
+        if (helper.ally) this.netSend?.(helper.ally.id, { t: 'saved' });
+        else {
+          this.report.teamRevives++;
+          this.toast('🚑 You revived a teammate');
+        }
+      }
+      if (d.ally) d.ally.revive = prog;
+      else this.reviveProg = prog;
+    }
+    // Everyone down: that's the run.
+    if (this.down && this.allies.every((a) => a.down)) this.endRun();
+  }
+
   // ---------------------------------------------------------------- render
 
   render(dt: number) {
@@ -2719,7 +3462,10 @@ export class Game {
     this.drawDeploys();
     for (const z of this.zombies) this.drawZombieShadow(z);
     for (const z of this.zombies) this.drawZombie(z);
-    if (this.state !== 'over' && playing) this.drawPlayer();
+    if (this.state !== 'over' && playing) {
+      this.drawAllies();
+      this.drawPlayer();
+    }
     this.drawTrains();
     this.drawGrenades();
     for (const q of this.particles) {
@@ -2754,6 +3500,7 @@ export class Game {
       ctx.fillText(t.text, t.x, t.y);
     }
     ctx.globalAlpha = 1;
+    if (playing && this.state !== 'over') this.drawAllyTags();
 
     // 4. Screen-space overlays and HUD
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -2818,10 +3565,17 @@ export class Game {
       cone(WORLD_W / 2, WORLD_H / 2, sa, 900, 0.3, 0.95);
       cone(WORLD_W / 2, WORLD_H / 2, sa + Math.PI, 900, 0.3, 0.95);
     } else if (this.state !== 'over') {
-      hole(p.x, p.y, 150, 0.85);
       const fl = FLASHLIGHT * (this.has('dark') ? 0.55 : 1);
-      cone(p.x, p.y, p.angle, fl * 1.1, 0.75, 0.4);
-      cone(p.x, p.y, p.angle, fl, 0.42, 0.95);
+      // Teammates carry lights too, so you can see them (and what they're fighting).
+      for (const a of this.allies) {
+        hole(a.x, a.y, 120, 0.7);
+        if (!a.down) cone(a.x, a.y, a.angle, fl * 0.9, 0.42, 0.75);
+      }
+      hole(p.x, p.y, 150, 0.85);
+      if (!this.down) {
+        cone(p.x, p.y, p.angle, fl * 1.1, 0.75, 0.4);
+        cone(p.x, p.y, p.angle, fl, 0.42, 0.95);
+      }
     }
     void zoom;
   }
@@ -2987,7 +3741,7 @@ export class Game {
     if (this.active.rage > 0 && this.state === 'playing') glowDot(p.x, p.y, 50, '#ff2a2a', 0.35 + 0.15 * Math.sin(this.clock * 12));
     ctx.globalAlpha = 1;
     // Laser sight
-    if (this.state === 'playing') {
+    if (this.state === 'playing' && !this.down) {
       const w = this.weapons[this.wi];
       if (w.def.kind !== 'flame' && w.def.kind !== 'frost') {
         const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
@@ -3009,7 +3763,7 @@ export class Game {
     const ctx = this.ctx;
     for (const z of this.zombies) {
       if (z.boss?.state !== 'windup') continue;
-      const a = Math.atan2(this.p.y - z.y, this.p.x - z.x);
+      const a = z.face;
       ctx.strokeStyle = `rgba(255,40,40,${0.3 + 0.3 * Math.sin(this.clock * 30)})`;
       ctx.lineWidth = z.r * 1.6;
       ctx.beginPath();
@@ -3610,26 +4364,90 @@ export class Game {
     const w = this.weapons[this.wi];
     for (const g of this.ghosts) {
       ctx.globalAlpha = g.life * 1.6;
-      ctx.fillStyle = '#5a8cff';
+      ctx.fillStyle = SUITS[this.slot][2];
       ctx.beginPath();
       ctx.ellipse(g.x, g.y, 13, 17, g.a, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
+    const hurt = this.hurtFlash > 0 && Math.floor(this.hurtFlash * 30) % 2 === 0;
+    this.drawSoldier(p.x, p.y, p.angle, w.def, this.spin, hurt, this.slot, this.down, this.reviveProg);
+    if (!this.down) this.drawOrbitals();
+  }
+
+  private drawAllies() {
+    for (const a of this.allies) this.drawSoldier(a.x, a.y, a.angle, WEAPON_BY_ID.get(a.weapon) ?? WEAPONS[0], a.firing ? 1 : 0, false, a.slot, a.down, a.revive);
+  }
+
+  /** Names and health bars over teammates, drawn above the darkness. */
+  private drawAllyTags() {
+    const ctx = this.ctx;
+    ctx.textAlign = 'center';
+    for (const a of this.allies) {
+      ctx.font = '700 11px system-ui, sans-serif';
+      ctx.fillStyle = '#000';
+      ctx.fillText(a.name, a.x + 1, a.y - 33);
+      ctx.fillStyle = a.down ? '#ff5a4a' : SUITS[a.slot][2];
+      ctx.fillText(a.down ? `${a.name} · DOWN` : a.name, a.x, a.y - 34);
+      if (a.down) continue;
+      const f = clamp(a.hp / a.maxHp, 0, 1);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(a.x - 16, a.y - 29, 32, 4);
+      ctx.fillStyle = f > 0.3 ? '#4fbf4a' : '#e0483e';
+      ctx.fillRect(a.x - 16, a.y - 29, 32 * f, 4);
+    }
+  }
+
+  private drawSoldier(x: number, y: number, angle: number, def: WeaponDef, spin: number, hurt: boolean, slot: number, down: boolean, revive: number) {
+    const ctx = this.ctx;
+    const suit = SUITS[slot] ?? SUITS[0];
     ctx.save();
-    ctx.translate(p.x, p.y);
+    ctx.translate(x, y);
+    if (down) {
+      // Knocked down: flat on the floor with a pulsing ring and the revive progress.
+      ctx.strokeStyle = `rgba(255,70,60,${0.35 + 0.25 * Math.sin(this.clock * 6)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, REVIVE_RANGE, 0, Math.PI * 2);
+      ctx.stroke();
+      if (revive > 0) {
+        ctx.strokeStyle = '#5dff7a';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(0, 0, 26, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * revive);
+        ctx.stroke();
+      }
+      ctx.rotate(angle);
+      ctx.scale(1, 0.75);
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = '#5a1a14';
+      ctx.beginPath();
+      ctx.ellipse(-4, 4, 22, 16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = suit[0];
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 17, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = suit[2];
+      ctx.beginPath();
+      ctx.arc(14, 0, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      return;
+    }
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
     ctx.beginPath();
     ctx.ellipse(3, 5, 17, 15, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.rotate(p.angle);
-    const gl = w.def.length;
-    const kind = w.def.id;
+    ctx.rotate(angle);
+    const gl = def.length;
+    const kind = def.id;
     ctx.fillStyle = '#1c1c1c';
     ctx.fillRect(6, kind === 'minigun' || kind === 'rocket' ? -5 : -3.5, gl, kind === 'minigun' || kind === 'rocket' ? 10 : 7);
     if (kind === 'minigun') {
       ctx.fillStyle = '#555';
-      const spinOff = (this.clock * 60 * this.spin) % 3;
+      const spinOff = (this.clock * 60 * spin) % 3;
       for (let i = -1; i <= 1; i++) ctx.fillRect(14, i * 3 - 1 + spinOff * 0.3, gl - 8, 1.5);
     } else if (kind === 'flamer') {
       ctx.fillStyle = '#8a2c1a';
@@ -3649,15 +4467,14 @@ export class Game {
     ctx.arc(14, 5, 4, 0, Math.PI * 2);
     ctx.arc(20, -1, 4, 0, Math.PI * 2);
     ctx.fill();
-    const hurt = this.hurtFlash > 0 && Math.floor(this.hurtFlash * 30) % 2 === 0;
-    ctx.fillStyle = hurt ? '#ff6a5a' : '#3d5a3a';
+    ctx.fillStyle = hurt ? '#ff6a5a' : suit[0];
     ctx.beginPath();
     ctx.ellipse(0, 0, 13, 17, 0, 0, Math.PI * 2);
     ctx.fill();
     // Backpack
-    ctx.fillStyle = hurt ? '#ff8a7a' : '#2e4430';
+    ctx.fillStyle = hurt ? '#ff8a7a' : suit[1];
     ctx.fillRect(-13, -8, 7, 16);
-    ctx.fillStyle = hurt ? '#ffaaa0' : '#56784f';
+    ctx.fillStyle = hurt ? '#ffaaa0' : suit[2];
     ctx.beginPath();
     ctx.arc(1, 0, 10, 0, Math.PI * 2);
     ctx.fill();
@@ -3665,7 +4482,6 @@ export class Game {
     ctx.fillStyle = '#fff6cc';
     ctx.fillRect(8, -2.5, 3, 5);
     ctx.restore();
-    this.drawOrbitals();
   }
 
   private drawOrbitals() {
@@ -3705,6 +4521,62 @@ export class Game {
       ctx.beginPath();
       ctx.arc(d.x, d.y, 4, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  /** Co-op: teammates' health on the left, arrows to anyone off screen, and the downed overlay. */
+  private drawSquadHud(pad: number) {
+    const ctx = this.ctx;
+    ctx.textAlign = 'left';
+    let y = pad + 86;
+    for (const a of this.allies) {
+      ctx.font = '700 11px system-ui, sans-serif';
+      ctx.fillStyle = a.down ? '#ff5a4a' : SUITS[a.slot][2];
+      ctx.fillText(a.down ? `${a.name} DOWN` : a.name, pad, y);
+      const f = a.down ? a.revive : clamp(a.hp / a.maxHp, 0, 1);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(pad, y + 7, 90, 5);
+      ctx.fillStyle = a.down ? '#5dff7a' : f > 0.3 ? '#4fbf4a' : '#e0483e';
+      ctx.fillRect(pad, y + 7, 90 * f, 5);
+      y += 24;
+      // Off-screen arrow
+      const sp = this.toScreen(a.x, a.y);
+      const m = 28;
+      if (sp.x < m || sp.y < m || sp.x > this.w - m || sp.y > this.h - m) {
+        const cx = this.w / 2;
+        const cy = this.h / 2;
+        const ang = Math.atan2(sp.y - cy, sp.x - cx);
+        const t = Math.min(Math.abs((cx - m) / (Math.cos(ang) || 1e-6)), Math.abs((cy - m) / (Math.sin(ang) || 1e-6)));
+        ctx.save();
+        ctx.translate(cx + Math.cos(ang) * t, cy + Math.sin(ang) * t);
+        ctx.rotate(ang);
+        ctx.fillStyle = a.down ? (Math.sin(this.clock * 8) > 0 ? '#ff5a4a' : '#701010') : SUITS[a.slot][2];
+        ctx.beginPath();
+        ctx.moveTo(12, 0);
+        ctx.lineTo(-8, -9);
+        ctx.lineTo(-8, 9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.textAlign = 'center';
+    if (this.down && this.state === 'playing') {
+      ctx.font = `20px ${FONT}`;
+      ctx.fillStyle = '#ff5a4a';
+      ctx.fillText(this.reviveProg > 0 ? 'GETTING REVIVED…' : "YOU'RE DOWN", this.w / 2, this.h * 0.7);
+      ctx.font = '600 12px system-ui, sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.fillText('A teammate has to stand next to you', this.w / 2, this.h * 0.7 + 20);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(this.w / 2 - 70, this.h * 0.7 + 30, 140, 6);
+      ctx.fillStyle = '#5dff7a';
+      ctx.fillRect(this.w / 2 - 70, this.h * 0.7 + 30, 140 * this.reviveProg, 6);
+    }
+    if (this.hostPaused) {
+      ctx.font = `28px ${FONT}`;
+      ctx.fillStyle = '#ffd23f';
+      ctx.fillText('HOST PAUSED', this.w / 2, this.h * 0.45);
     }
   }
 
@@ -3823,7 +4695,7 @@ export class Game {
     // Combo meter (left side, clear of the touch buttons)
     if (this.combo >= 3) {
       const cx = pad;
-      const cy = Math.max(pad + 100, Math.min(this.h * 0.4, 170));
+      const cy = Math.max(pad + 100, Math.min(this.h * 0.4, 170)) + this.allies.length * 24;
       const pop = 1 + Math.max(0, this.comboPop) * 2;
       ctx.textAlign = 'left';
       ctx.font = `${Math.round(30 * pop)}px ${FONT}`;
@@ -3839,6 +4711,8 @@ export class Game {
       ctx.fillStyle = '#ffd23f';
       ctx.fillRect(cx, cy + 32, 90 * (this.comboT / COMBO_TIME), 3);
     }
+
+    if (this.allies.length) this.drawSquadHud(pad);
 
     // Buttons
     for (const b of this.input.buttons) {
