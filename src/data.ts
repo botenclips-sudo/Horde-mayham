@@ -22,6 +22,9 @@ export interface WeaponDef {
   spinup?: number; // seconds to reach full fire rate (minigun)
   moveSlow?: number; // movement multiplier while firing
   pierce?: number; // extra zombies each bullet passes through
+  ricochet?: number; // extra bounces to another zombie
+  bounce?: number; // times a shot bounces off walls (saw discs)
+  width?: number; // drawn tracer width
 }
 
 export const WEAPONS: WeaponDef[] = [
@@ -36,6 +39,9 @@ export const WEAPONS: WeaponDef[] = [
   { id: 'freeze', name: 'Freeze Ray', kind: 'frost', damage: 8, fireRate: 24, mag: 130, reload: 2.2, spread: 0.26, pellets: 1, speed: 540, life: 0.5, price: 1900, upgradeBase: 500, shake: 0.02, color: '#9fe8ff', length: 30 },
   { id: 'tesla', name: 'Tesla Gun', kind: 'tesla', damage: 34, fireRate: 4, mag: 32, reload: 2.2, spread: 0.5, pellets: 1, speed: 0, life: 0, price: 2300, upgradeBase: 600, shake: 0.08, color: '#8ad8ff', length: 30 },
   { id: 'minigun', name: 'Minigun', kind: 'bullet', damage: 15, fireRate: 24, mag: 180, reload: 3.2, spread: 0.17, pellets: 1, speed: 1050, life: 0.55, price: 2800, upgradeBase: 700, shake: 0.07, color: '#ffe9a0', length: 38, spinup: 0.7, moveSlow: 0.6 },
+  { id: 'crossbow', name: 'Crossbow', kind: 'bullet', damage: 95, fireRate: 1.9, mag: 8, reload: 1.6, spread: 0.01, pellets: 1, speed: 1500, life: 0.7, price: 1100, upgradeBase: 320, shake: 0.18, color: '#d8f0a0', length: 30, pierce: 3, width: 3.5 },
+  { id: 'autoshotgun', name: 'Auto Shotgun', kind: 'bullet', damage: 12, fireRate: 4, mag: 16, reload: 2.4, spread: 0.36, pellets: 6, speed: 800, life: 0.34, price: 1600, upgradeBase: 430, shake: 0.24, color: '#ffb36b', length: 32, width: 2.5 },
+  { id: 'ripper', name: 'Ripper', kind: 'bullet', damage: 70, fireRate: 2.4, mag: 10, reload: 2, spread: 0.03, pellets: 1, speed: 640, life: 1.5, price: 2100, upgradeBase: 560, shake: 0.12, color: '#dfe6ee', length: 30, pierce: 2, ricochet: 1, bounce: 3, width: 5 },
 ];
 
 export type ZombieKind =
@@ -52,10 +58,14 @@ export type ZombieKind =
   | 'dog'
   | 'soldier'
   | 'electric'
+  | 'bomber'
+  | 'burrower'
+  | 'wraith'
   | 'egg'
   | 'boss'
   | 'brood'
-  | 'juggernaut';
+  | 'juggernaut'
+  | 'reaper';
 
 export interface ZombieDef {
   kind: ZombieKind;
@@ -84,13 +94,21 @@ export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
   dog: { kind: 'dog', hp: 34, speed: 235, damage: 7, radius: 12, cash: 6, body: '#7a5a4a', dark: '#3e2a20', eye: '#ffdd44', mass: 0.6 },
   soldier: { kind: 'soldier', hp: 150, speed: 80, damage: 15, radius: 18, cash: 20, body: '#55623f', dark: '#2c3420', eye: '#ff4a2a', mass: 2 },
   electric: { kind: 'electric', hp: 85, speed: 90, damage: 10, radius: 15, cash: 18, body: '#3a5a7a', dark: '#1c2e40', eye: '#a0f0ff', mass: 1.2 },
+  bomber: { kind: 'bomber', hp: 40, speed: 128, damage: 0, radius: 14, cash: 10, body: '#9a6a4a', dark: '#4a2e1c', eye: '#ffcf3a', mass: 0.9 },
+  burrower: { kind: 'burrower', hp: 110, speed: 88, damage: 14, radius: 16, cash: 18, body: '#7a6248', dark: '#3e3020', eye: '#ffa040', mass: 1.4 },
+  wraith: { kind: 'wraith', hp: 70, speed: 104, damage: 13, radius: 14, cash: 16, body: '#9ab0c0', dark: '#4a5a6a', eye: '#7affea', mass: 0.8 },
   egg: { kind: 'egg', hp: 70, speed: 0, damage: 0, radius: 14, cash: 3, body: '#d8c89a', dark: '#8a7a4a', eye: '#d8c89a', mass: 50 },
   boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
   juggernaut: { kind: 'juggernaut', hp: 2700, speed: 46, damage: 40, radius: 56, cash: 600, body: '#5a5f66', dark: '#2a2d32', eye: '#ff3a2a', mass: 30 },
   brood: { kind: 'brood', hp: 2400, speed: 50, damage: 34, radius: 54, cash: 450, body: '#8f6a3a', dark: '#4a3218', eye: '#ffef3a', mass: 24 },
+  reaper: { kind: 'reaper', hp: 2500, speed: 72, damage: 32, radius: 46, cash: 650, body: '#2c2c38', dark: '#14141c', eye: '#7affea', mass: 22 },
 };
 
-export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT' };
+export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT', reaper: 'THE REAPER' };
+
+/** Boss waves cycle through these, one every 10 waves. */
+export const BOSS_ORDER: ZombieKind[] = ['boss', 'brood', 'juggernaut', 'reaper'];
+export const BOSS_KINDS = new Set<ZombieKind>(BOSS_ORDER);
 
 export type EliteKind = 'fast' | 'armored' | 'splitting' | 'vampiric' | 'explosive';
 
