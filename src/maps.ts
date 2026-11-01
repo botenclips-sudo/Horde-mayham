@@ -5,7 +5,7 @@ export const WORLD_W = 2200;
 export const WORLD_H = 1600;
 export const BORDER = 40;
 
-export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar' | 'grave' | 'crypt';
+export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar' | 'grave' | 'crypt' | 'tank' | 'pipe';
 
 export interface Wall {
   x: number;
@@ -26,6 +26,7 @@ export interface MapDef {
   lamps: { x: number; y: number; flicker: boolean }[];
   barrels: { x: number; y: number; big?: boolean }[];
   tracks?: number[]; // subway: y centers of the rail lines trains run along
+  vents?: { x: number; y: number }[]; // refinery: steam vents that blast anything standing on them
   ground: (c: CanvasRenderingContext2D) => void;
 }
 
@@ -275,6 +276,43 @@ function groundGraveyard(c: CanvasRenderingContext2D) {
   grit(c, 20);
 }
 
+function groundRefinery(c: CanvasRenderingContext2D) {
+  c.fillStyle = '#26292a';
+  c.fillRect(0, 0, WORLD_W, WORLD_H);
+  // Riveted steel deck plates
+  c.strokeStyle = 'rgba(0,0,0,0.35)';
+  c.lineWidth = 2;
+  for (let x = 0; x < WORLD_W; x += 120)
+    for (let y = 0; y < WORLD_H; y += 120) {
+      c.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.06)';
+      c.fillRect(x, y, 120, 120);
+      c.strokeRect(x, y, 120, 120);
+      c.fillStyle = 'rgba(160,160,150,0.18)';
+      for (const [ox, oy] of [[8, 8], [112, 8], [8, 112], [112, 112]]) c.fillRect(x + ox - 2, y + oy - 2, 4, 4);
+    }
+  // Toxic run-off channel across the middle, with a yellow hazard edge
+  c.fillStyle = '#1a2410';
+  c.fillRect(BORDER, WORLD_H / 2 - 36, WORLD_W - BORDER * 2, 72);
+  for (let i = 0; i < 3000; i++) {
+    c.fillStyle = Math.random() < 0.5 ? 'rgba(150,230,40,0.16)' : 'rgba(0,0,0,0.25)';
+    c.fillRect(rand(BORDER, WORLD_W - BORDER), WORLD_H / 2 - 36 + rand(0, 72), rand(2, 6), rand(2, 4));
+  }
+  for (const y of [WORLD_H / 2 - 44, WORLD_H / 2 + 36]) {
+    for (let x = BORDER; x < WORLD_W - BORDER; x += 40) {
+      c.fillStyle = (x / 40) % 2 ? '#c8a020' : '#1a1a1a';
+      c.fillRect(x, y, 40, 8);
+    }
+  }
+  // Rusty stains and oil spills
+  for (let i = 0; i < 40; i++) {
+    c.fillStyle = Math.random() < 0.5 ? 'rgba(120,60,20,0.12)' : 'rgba(0,0,0,0.22)';
+    c.beginPath();
+    c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(30, 120), rand(20, 80), rand(0, 3), 0, Math.PI * 2);
+    c.fill();
+  }
+  grit(c, 30);
+}
+
 /** Headstone rows, kept a flow-field cell apart so zombies can weave between them. */
 const GRAVES: Wall[] = (() => {
   const out: Wall[] = [];
@@ -452,6 +490,55 @@ export const MAPS: MapDef[] = [
       { x: 1300, y: 910 },
     ],
     ground: groundGraveyard,
+  },
+  {
+    id: 'refinery',
+    name: 'Toxic Refinery',
+    desc: 'Steam vents blast anything standing on them. Lure the horde in.',
+    unlock: 8,
+    walls: [
+      ...BORDER_WALLS,
+      // Four storage tanks
+      { x: 380, y: 260, w: 200, h: 200, kind: 'tank' },
+      { x: 1620, y: 260, w: 200, h: 200, kind: 'tank' },
+      { x: 380, y: 1140, w: 200, h: 200, kind: 'tank' },
+      { x: 1620, y: 1140, w: 200, h: 200, kind: 'tank' },
+      // Pipe runs (gaps left so the horde can squeeze through)
+      { x: 760, y: 540, w: 240, h: 26, kind: 'pipe' },
+      { x: 1200, y: 540, w: 240, h: 26, kind: 'pipe' },
+      { x: 760, y: 1034, w: 240, h: 26, kind: 'pipe' },
+      { x: 1200, y: 1034, w: 240, h: 26, kind: 'pipe' },
+      { x: 1087, y: 180, w: 26, h: 220, kind: 'pipe' },
+      { x: 1087, y: 1200, w: 26, h: 220, kind: 'pipe' },
+      // Control boxes
+      { x: 240, y: 700, w: 60, h: 44, kind: 'crate' },
+      { x: 1900, y: 856, w: 60, h: 44, kind: 'crate' },
+    ],
+    gates: GATES,
+    lamps: [
+      { x: 700, y: 300, flicker: false },
+      { x: 1500, y: 300, flicker: true },
+      { x: 700, y: 1300, flicker: true },
+      { x: 1500, y: 1300, flicker: false },
+      { x: 1100, y: 800, flicker: false },
+    ],
+    barrels: [
+      { x: 640, y: 420 },
+      { x: 1560, y: 420 },
+      { x: 640, y: 1180 },
+      { x: 1560, y: 1180 },
+      { x: 1100, y: 460 },
+      { x: 1100, y: 1140 },
+    ],
+    vents: [
+      { x: 700, y: 800 },
+      { x: 1500, y: 800 },
+      { x: 880, y: 360 },
+      { x: 1320, y: 1240 },
+      { x: 300, y: 980 },
+      { x: 1900, y: 620 },
+    ],
+    ground: groundRefinery,
   },
 ];
 

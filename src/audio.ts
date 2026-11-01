@@ -48,7 +48,17 @@ export type SfxKind =
   | 'fuse'
   | 'dig'
   | 'blink'
-  | 'scythe';
+  | 'scythe'
+  | 'acid'
+  | 'swarm'
+  | 'singularity'
+  | 'vortex'
+  | 'hiss'
+  | 'vent'
+  | 'heal'
+  | 'web'
+  | 'mortar'
+  | 'gurgle';
 
 export type MusicMood = 'menu' | 'calm' | 'fight' | 'boss' | 'off';
 
@@ -434,6 +444,43 @@ export class Sfx {
       case 'scythe':
         this.burst(now, 0.3, 2200, 0.6 * v, 'bandpass', bus);
         this.tone(now, 0.25, 400, 90, 0.25 * v, 'sawtooth', bus);
+        break;
+      case 'acid':
+        this.burst(now, 0.14, 700, 0.4 * v, 'lowpass', bus);
+        this.tone(now, 0.12, 260, 120, 0.2 * v, 'sine', bus);
+        break;
+      case 'swarm':
+        [0, 0.05, 0.1].forEach((d) => this.burst(now + d, 0.12, 1800, 0.28 * v, 'bandpass', bus));
+        this.tone(now, 0.25, 300, 900, 0.08 * v, 'sawtooth', bus);
+        break;
+      case 'singularity':
+        this.tone(now, 0.4, 180, 60, 0.3 * v, 'sine', bus);
+        this.burst(now, 0.2, 900, 0.3 * v, 'lowpass', bus);
+        break;
+      case 'vortex':
+        this.tone(now, 1.4, 90, 400, 0.18 * v, 'sawtooth', bus);
+        this.tone(now, 1.4, 60, 50, 0.3 * v, 'sine', bus);
+        break;
+      case 'hiss':
+        this.burst(now, 1.1, 5000, 0.18 * v, 'highpass', bus);
+        break;
+      case 'vent':
+        this.burst(now, 0.9, 1800, 0.7 * v, 'bandpass', bus);
+        this.burst(now, 0.5, 300, 0.5 * v, 'lowpass', bus);
+        break;
+      case 'heal':
+        [660, 880, 1100].forEach((f, i) => this.tone(now + i * 0.06, 0.18, f, f * 1.02, 0.08 * v, 'triangle', bus));
+        break;
+      case 'web':
+        this.burst(now, 0.12, 2600, 0.25 * v, 'bandpass', bus);
+        this.tone(now, 0.15, 900, 500, 0.06 * v, 'triangle', bus);
+        break;
+      case 'mortar':
+        this.tone(now, 0.3, 140, 60, 0.35 * v, 'sine', bus);
+        this.burst(now, 0.25, 500, 0.4 * v, 'lowpass', bus);
+        break;
+      case 'gurgle':
+        for (let i = 0; i < 4; i++) this.tone(now + i * 0.08, 0.1, 120 + Math.random() * 80, 60, 0.2 * v, 'sine', bus);
         break;
       case 'levelup':
         [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(now + i * 0.09, 0.22, f, f, 0.16, 'triangle', bus));
