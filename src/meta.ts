@@ -77,7 +77,7 @@ export const trainingCost = (t: TrainingDef, lv: number) => Math.round(t.base * 
 
 // ------------------------------------------------------------------ guns
 
-export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300, acid: 900, swarm: 1350, singularity: 1500 };
+export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300, acid: 900, swarm: 1350, singularity: 1500, glaive: 1100, harpoon: 1250, cluster: 1450 };
 export const MASTERY_MAX = 10;
 export const masteryCost = (lv: number) => Math.round(40 * Math.pow(1.45, lv));
 
@@ -171,6 +171,7 @@ export interface RunReport {
   brains: number; // collected during the run
   trainKills: number;
   ventKills: number;
+  pinKills: number;
   barrelKills: number;
   hitsTaken: number;
   revives: number;
@@ -231,6 +232,12 @@ export const MISSIONS: MissionDef[] = [
   { id: 'webbers', text: 'Kill 25 webbers', goal: 25, reward: 45, measure: kindKills('webber') },
   { id: 'medics', text: 'Kill 12 medics', goal: 12, reward: 60, measure: kindKills('medic') },
   { id: 'sludgers', text: 'Kill 20 sludgers', goal: 20, reward: 55, measure: kindKills('sludger') },
+  { id: 'glaive', text: 'Kill 250 zombies holding the Glaive', goal: 250, reward: 55, measure: gunKills('glaive') },
+  { id: 'harpoon', text: 'Kill 200 zombies holding the Harpoon Gun', goal: 200, reward: 55, measure: gunKills('harpoon') },
+  { id: 'cluster', text: 'Kill 300 zombies holding the Cluster Bomb', goal: 300, reward: 60, measure: gunKills('cluster') },
+  { id: 'icers', text: 'Kill 25 icers', goal: 25, reward: 50, measure: kindKills('icer') },
+  { id: 'rollers', text: 'Kill 20 rollers', goal: 20, reward: 50, measure: kindKills('roller') },
+  { id: 'mimics', text: 'Kill 6 mimics', goal: 6, reward: 50, measure: kindKills('mimic') },
 ];
 
 export const today = () => {

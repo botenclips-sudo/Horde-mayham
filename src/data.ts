@@ -29,6 +29,9 @@ export interface WeaponDef {
   homing?: boolean; // rockets steer toward the nearest zombie
   blast?: number; // rocket blast radius (default 115)
   vortex?: boolean; // grenades open a black hole that drags zombies in, then pops
+  boomerang?: boolean; // the shot flies out, then curves back to you, cutting both ways
+  harpoon?: boolean; // skewers zombies and shoves them back; slam them into a wall for bonus damage
+  cluster?: boolean; // grenades burst into a ring of bomblets
 }
 
 export const WEAPONS: WeaponDef[] = [
@@ -48,6 +51,9 @@ export const WEAPONS: WeaponDef[] = [
   { id: 'ripper', name: 'Ripper', kind: 'bullet', damage: 70, fireRate: 2.4, mag: 10, reload: 2, spread: 0.03, pellets: 1, speed: 640, life: 1.5, price: 2100, upgradeBase: 560, shake: 0.12, color: '#dfe6ee', length: 30, pierce: 2, ricochet: 1, bounce: 3, width: 5 },
   { id: 'acid', name: 'Acid Cannon', kind: 'bullet', damage: 30, fireRate: 3, mag: 14, reload: 1.9, spread: 0.08, pellets: 1, speed: 620, life: 0.6, price: 1400, upgradeBase: 400, shake: 0.12, color: '#9aff3a', length: 30, width: 6, goo: true },
   { id: 'swarm', name: 'Swarm Launcher', kind: 'rocket', damage: 42, fireRate: 1.6, mag: 8, reload: 2.4, spread: 0.2, pellets: 3, speed: 540, life: 1.6, price: 2400, upgradeBase: 620, shake: 0.16, color: '#ff9a5a', length: 32, homing: true, blast: 72 },
+  { id: 'glaive', name: 'Glaive', kind: 'bullet', damage: 46, fireRate: 1.8, mag: 6, reload: 1.7, spread: 0.02, pellets: 1, speed: 780, life: 0.5, price: 1250, upgradeBase: 360, shake: 0.1, color: '#e0f4ff', length: 26, pierce: 99, width: 5, boomerang: true },
+  { id: 'harpoon', name: 'Harpoon Gun', kind: 'bullet', damage: 90, fireRate: 1.3, mag: 5, reload: 1.9, spread: 0.01, pellets: 1, speed: 1300, life: 0.55, price: 1500, upgradeBase: 420, shake: 0.24, color: '#c8d0d8', length: 36, pierce: 3, width: 3, harpoon: true },
+  { id: 'cluster', name: 'Cluster Bomb', kind: 'grenade', damage: 85, fireRate: 1, mag: 4, reload: 2.4, spread: 0.04, pellets: 1, speed: 660, life: 0.55, price: 2200, upgradeBase: 600, shake: 0.28, color: '#ffcf5a', length: 32, cluster: true },
   { id: 'singularity', name: 'Singularity', kind: 'grenade', damage: 170, fireRate: 0.8, mag: 3, reload: 2.6, spread: 0.02, pellets: 1, speed: 640, life: 0.5, price: 2600, upgradeBase: 680, shake: 0.3, color: '#c08aff', length: 34, vortex: true },
 ];
 
@@ -71,12 +77,16 @@ export type ZombieKind =
   | 'webber'
   | 'medic'
   | 'sludger'
+  | 'icer'
+  | 'roller'
+  | 'mimic'
   | 'egg'
   | 'boss'
   | 'brood'
   | 'juggernaut'
   | 'reaper'
-  | 'sludge';
+  | 'sludge'
+  | 'titan';
 
 export interface ZombieDef {
   kind: ZombieKind;
@@ -111,20 +121,24 @@ export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
   webber: { kind: 'webber', hp: 60, speed: 92, damage: 6, radius: 14, cash: 12, body: '#5a5a6a', dark: '#2a2a36', eye: '#e0e0ff', mass: 0.9 },
   medic: { kind: 'medic', hp: 120, speed: 78, damage: 8, radius: 16, cash: 22, body: '#c8c8b8', dark: '#6a6a5a', eye: '#ff4a4a', mass: 1.2 },
   sludger: { kind: 'sludger', hp: 140, speed: 70, damage: 14, radius: 18, cash: 16, body: '#5a7a2a', dark: '#2e4214', eye: '#d0ff3a', mass: 1.6 },
+  icer: { kind: 'icer', hp: 90, speed: 80, damage: 10, radius: 16, cash: 16, body: '#a8d8f0', dark: '#4a7a9a', eye: '#e0ffff', mass: 1.3 },
+  roller: { kind: 'roller', hp: 130, speed: 74, damage: 18, radius: 17, cash: 18, body: '#c8d4dc', dark: '#5a6a78', eye: '#ff6a3a', mass: 2 },
+  mimic: { kind: 'mimic', hp: 150, speed: 150, damage: 20, radius: 15, cash: 30, body: '#8a5a20', dark: '#4a2e10', eye: '#ff2a2a', mass: 1.2 },
   egg: { kind: 'egg', hp: 70, speed: 0, damage: 0, radius: 14, cash: 3, body: '#d8c89a', dark: '#8a7a4a', eye: '#d8c89a', mass: 50 },
   boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
   juggernaut: { kind: 'juggernaut', hp: 2700, speed: 46, damage: 40, radius: 56, cash: 600, body: '#5a5f66', dark: '#2a2d32', eye: '#ff3a2a', mass: 30 },
   brood: { kind: 'brood', hp: 2400, speed: 50, damage: 34, radius: 54, cash: 450, body: '#8f6a3a', dark: '#4a3218', eye: '#ffef3a', mass: 24 },
   reaper: { kind: 'reaper', hp: 2500, speed: 72, damage: 32, radius: 46, cash: 650, body: '#2c2c38', dark: '#14141c', eye: '#7affea', mass: 22 },
   sludge: { kind: 'sludge', hp: 2600, speed: 54, damage: 34, radius: 52, cash: 550, body: '#6a8a2a', dark: '#34461a', eye: '#f0ff3a', mass: 26 },
+  titan: { kind: 'titan', hp: 2800, speed: 50, damage: 38, radius: 58, cash: 600, body: '#9ac8e0', dark: '#3a5a74', eye: '#e0ffff', mass: 30 },
 };
 
-export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT', reaper: 'THE REAPER', sludge: 'THE SLUDGE KING' };
+export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT', reaper: 'THE REAPER', sludge: 'THE SLUDGE KING', titan: 'THE FROST TITAN' };
 
 /** Boss waves cycle through these, one every 10 waves. */
-export const BOSS_ORDER: ZombieKind[] = ['boss', 'brood', 'juggernaut', 'reaper', 'sludge'];
-/** Mini-boss waves (5, 15, 25...) preview the bosses you haven't met yet, at 40% health. */
-export const MINI_BOSS_ORDER: ZombieKind[] = ['sludge', 'juggernaut', 'reaper', 'brood', 'boss'];
+export const BOSS_ORDER: ZombieKind[] = ['boss', 'brood', 'juggernaut', 'reaper', 'sludge', 'titan'];
+/** Mini-boss waves (5, 15, 25...) preview the bosses you haven't met yet, at 40% health: all six show up by wave 30. */
+export const MINI_BOSS_ORDER: ZombieKind[] = ['titan', 'sludge', 'reaper', 'juggernaut', 'brood', 'boss'];
 export const BOSS_KINDS = new Set<ZombieKind>(BOSS_ORDER);
 
 export type EliteKind = 'fast' | 'armored' | 'splitting' | 'vampiric' | 'explosive';

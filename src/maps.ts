@@ -5,7 +5,7 @@ export const WORLD_W = 2200;
 export const WORLD_H = 1600;
 export const BORDER = 40;
 
-export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar' | 'grave' | 'crypt' | 'tank' | 'pipe';
+export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar' | 'grave' | 'crypt' | 'tank' | 'pipe' | 'hut' | 'snowbank';
 
 export interface Wall {
   x: number;
@@ -27,6 +27,8 @@ export interface MapDef {
   barrels: { x: number; y: number; big?: boolean }[];
   tracks?: number[]; // subway: y centers of the rail lines trains run along
   vents?: { x: number; y: number }[]; // refinery: steam vents that blast anything standing on them
+  ice?: { x: number; y: number; w: number; h: number }[]; // outpost: slippery ice sheets
+  blizzard?: boolean; // outpost: blizzards blow through, pushing everyone and burying the view in snow
   ground: (c: CanvasRenderingContext2D) => void;
 }
 
@@ -313,6 +315,69 @@ function groundRefinery(c: CanvasRenderingContext2D) {
   grit(c, 30);
 }
 
+/** Frozen Outpost ice sheets: a frozen lake in the middle and two frozen creeks. */
+const ICE = [
+  { x: 760, y: 600, w: 680, h: 400 },
+  { x: 160, y: 440, w: 300, h: 120 },
+  { x: 1740, y: 1040, w: 300, h: 120 },
+];
+
+function groundOutpost(c: CanvasRenderingContext2D) {
+  c.fillStyle = '#b9c4cc';
+  c.fillRect(0, 0, WORLD_W, WORLD_H);
+  // Wind-blown drifts
+  for (let i = 0; i < 120; i++) {
+    c.fillStyle = Math.random() < 0.6 ? 'rgba(255,255,255,0.18)' : 'rgba(90,110,130,0.1)';
+    c.beginPath();
+    c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(40, 160), rand(14, 40), -0.3 + rand(-0.15, 0.15), 0, Math.PI * 2);
+    c.fill();
+  }
+  // Boot and tyre tracks
+  c.strokeStyle = 'rgba(80,95,110,0.18)';
+  c.lineWidth = 10;
+  for (const y of [WORLD_H / 2 - 330, WORLD_H / 2 + 330]) {
+    c.beginPath();
+    c.moveTo(BORDER, y);
+    for (let x = BORDER; x < WORLD_W; x += 80) c.lineTo(x, y + Math.sin(x / 140) * 18);
+    c.stroke();
+  }
+  // Ice sheets: blue-grey with cracks and a bright rim
+  for (const r of ICE) {
+    c.fillStyle = '#7fa8c4';
+    c.beginPath();
+    c.roundRect(r.x, r.y, r.w, r.h, 40);
+    c.fill();
+    c.fillStyle = 'rgba(200,230,255,0.25)';
+    c.beginPath();
+    c.roundRect(r.x + 14, r.y + 14, r.w - 28, r.h - 28, 30);
+    c.fill();
+    c.strokeStyle = 'rgba(255,255,255,0.6)';
+    c.lineWidth = 4;
+    c.beginPath();
+    c.roundRect(r.x, r.y, r.w, r.h, 40);
+    c.stroke();
+    c.strokeStyle = 'rgba(255,255,255,0.35)';
+    c.lineWidth = 1.5;
+    for (let i = 0; i < r.w / 30; i++) {
+      let x = rand(r.x + 30, r.x + r.w - 30);
+      let y = rand(r.y + 30, r.y + r.h - 30);
+      c.beginPath();
+      c.moveTo(x, y);
+      for (let k = 0; k < 4; k++) {
+        x = Math.min(r.x + r.w - 20, Math.max(r.x + 20, x + rand(-40, 40)));
+        y = Math.min(r.y + r.h - 20, Math.max(r.y + 20, y + rand(-40, 40)));
+        c.lineTo(x, y);
+      }
+      c.stroke();
+    }
+  }
+  for (let i = 0; i < 6000; i++) {
+    c.fillStyle = Math.random() < 0.6 ? 'rgba(255,255,255,0.08)' : 'rgba(60,80,100,0.06)';
+    const sz = rand(2, 5);
+    c.fillRect(rand(0, WORLD_W), rand(0, WORLD_H), sz, sz);
+  }
+}
+
 /** Headstone rows, kept a flow-field cell apart so zombies can weave between them. */
 const GRAVES: Wall[] = (() => {
   const out: Wall[] = [];
@@ -539,6 +604,49 @@ export const MAPS: MapDef[] = [
       { x: 1900, y: 620 },
     ],
     ground: groundRefinery,
+  },
+  {
+    id: 'outpost',
+    name: 'Frozen Outpost',
+    desc: 'Slide on the ice and brace for blizzards. Icers live here.',
+    unlock: 10,
+    walls: [
+      ...BORDER_WALLS,
+      // Four research huts
+      { x: 300, y: 230, w: 220, h: 140, kind: 'hut' },
+      { x: 1680, y: 230, w: 220, h: 140, kind: 'hut' },
+      { x: 300, y: 1230, w: 220, h: 140, kind: 'hut' },
+      { x: 1680, y: 1230, w: 220, h: 140, kind: 'hut' },
+      // Snowbanks around the lake (gaps left so the horde can pour through)
+      { x: 820, y: 330, w: 200, h: 54, kind: 'snowbank' },
+      { x: 1180, y: 330, w: 200, h: 54, kind: 'snowbank' },
+      { x: 820, y: 1216, w: 200, h: 54, kind: 'snowbank' },
+      { x: 1180, y: 1216, w: 200, h: 54, kind: 'snowbank' },
+      { x: 560, y: 700, w: 54, h: 200, kind: 'snowbank' },
+      { x: 1586, y: 700, w: 54, h: 200, kind: 'snowbank' },
+      // Supply crates
+      { x: 220, y: 780, w: 60, h: 44, kind: 'crate' },
+      { x: 1920, y: 780, w: 60, h: 44, kind: 'crate' },
+    ],
+    gates: GATES,
+    lamps: [
+      { x: 620, y: 300, flicker: false },
+      { x: 1580, y: 300, flicker: true },
+      { x: 620, y: 1300, flicker: true },
+      { x: 1580, y: 1300, flicker: false },
+      { x: 1100, y: 560, flicker: false },
+    ],
+    barrels: [
+      { x: 560, y: 420 },
+      { x: 1640, y: 420 },
+      { x: 560, y: 1180 },
+      { x: 1640, y: 1180 },
+      { x: 1100, y: 470, big: true },
+      { x: 1100, y: 1130, big: true },
+    ],
+    ice: ICE,
+    blizzard: true,
+    ground: groundOutpost,
   },
 ];
 
