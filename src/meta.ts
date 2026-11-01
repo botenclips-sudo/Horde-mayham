@@ -77,7 +77,7 @@ export const trainingCost = (t: TrainingDef, lv: number) => Math.round(t.base * 
 
 // ------------------------------------------------------------------ guns
 
-export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300 };
+export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300, acid: 900, swarm: 1350, singularity: 1500 };
 export const MASTERY_MAX = 10;
 export const masteryCost = (lv: number) => Math.round(40 * Math.pow(1.45, lv));
 
@@ -170,6 +170,7 @@ export interface RunReport {
   grenadeKills: number;
   brains: number; // collected during the run
   trainKills: number;
+  ventKills: number;
   barrelKills: number;
   hitsTaken: number;
   revives: number;
@@ -224,6 +225,12 @@ export const MISSIONS: MissionDef[] = [
   { id: 'bombers', text: 'Kill 25 bombers', goal: 25, reward: 45, measure: kindKills('bomber') },
   { id: 'wraiths', text: 'Kill 20 wraiths', goal: 20, reward: 60, measure: kindKills('wraith') },
   { id: 'burrowers', text: 'Kill 12 burrowers', goal: 12, reward: 60, measure: kindKills('burrower') },
+  { id: 'acid', text: 'Kill 250 zombies holding the Acid Cannon', goal: 250, reward: 55, measure: gunKills('acid') },
+  { id: 'swarm', text: 'Kill 300 zombies holding the Swarm Launcher', goal: 300, reward: 60, measure: gunKills('swarm') },
+  { id: 'singularity', text: 'Kill 200 zombies holding the Singularity', goal: 200, reward: 60, measure: gunKills('singularity') },
+  { id: 'webbers', text: 'Kill 25 webbers', goal: 25, reward: 45, measure: kindKills('webber') },
+  { id: 'medics', text: 'Kill 12 medics', goal: 12, reward: 60, measure: kindKills('medic') },
+  { id: 'sludgers', text: 'Kill 20 sludgers', goal: 20, reward: 55, measure: kindKills('sludger') },
 ];
 
 export const today = () => {

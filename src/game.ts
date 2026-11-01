@@ -1,5 +1,5 @@
 import { MusicMood, Sfx, SfxKind } from './audio';
-import { baseStats, BOSS_KINDS, BOSS_NAMES, BOSS_ORDER, COMBO_TIERS, EliteKind, ELITES, PERKS, PerkDef, POWERUPS, PowerKind, RARITY_WEIGHT, Stats, WEAPONS, WeaponDef, ZOMBIES, ZombieDef, ZombieKind } from './data';
+import { baseStats, BOSS_KINDS, BOSS_NAMES, BOSS_ORDER, COMBO_TIERS, MINI_BOSS_ORDER, EliteKind, ELITES, PERKS, PerkDef, POWERUPS, PowerKind, RARITY_WEIGHT, Stats, WEAPONS, WeaponDef, ZOMBIES, ZombieDef, ZombieKind } from './data';
 import { Challenge, dailySetup, meta, RunReport } from './meta';
 import { BORDER, isInnerGate, mapById, MapDef, WORLD_H, WORLD_W } from './maps';
 import { emptyBonus, GearBonus, gearDef, GearItem, gearValue, RARITY_COLOR, rollGear } from './gear';
@@ -35,6 +35,12 @@ interface Bullet {
   canExplode: boolean;
   /** Saw discs: wall bounces left (drawn as a spinning blade). */
   bounce?: number;
+  /** Acid Cannon: bursts into a pool of acid that eats zombies. */
+  goo?: boolean;
+  /** Swarm Launcher: steers toward the nearest zombie. */
+  homing?: boolean;
+  /** Rocket blast radius. */
+  blast?: number;
   /** A teammate's shot drawn for show; their own game does the damage. */
   ghost?: boolean;
 }
@@ -79,6 +85,7 @@ interface Zombie {
   ghostT: number; // wraith: seconds left passing through walls (can't be hit)
   fuse: number; // bomber: seconds until the vest goes off (0 = not lit)
   reap?: { sweep: number; windup: number; aim: number; blink: number; orbs: number; summoned: boolean };
+  sludge?: { mortar: number; drip: number; splits: number }; // The Sludge King
   /** Co-op guests: where the host last saw this zombie (we glide toward it). */
   nx?: number;
   ny?: number;
@@ -244,6 +251,8 @@ interface Grenade {
   dmg?: number; // launcher shells carry their own damage and go off on contact
   radius?: number;
   impact?: boolean;
+  /** Singularity: opens a black hole instead of exploding right away. */
+  vortex?: boolean;
   /** Co-op guests: the host's grenade, shown in flight only. */
   remote?: boolean;
 }
@@ -256,6 +265,8 @@ interface Spit {
   life: number;
   /** The Reaper's soul orbs: no acid puddle, just a hit. */
   soul?: boolean;
+  /** Webber globs: no damage to speak of, but they stick you in place. */
+  web?: boolean;
 }
 
 interface Puddle {
@@ -264,8 +275,59 @@ interface Puddle {
   r: number;
   life: number;
   max: number;
-  kind: 'acid' | 'toxic';
+  kind: 'acid' | 'toxic' | 'sludge';
 }
+
+const PUDDLE_KINDS: Puddle['kind'][] = ['acid', 'toxic', 'sludge'];
+
+/** Acid Cannon pools: yours, they only hurt zombies. Each player's own game owns its pools. */
+interface Goo {
+  x: number;
+  y: number;
+  r: number;
+  life: number;
+  max: number;
+  dps: number;
+  tick: number;
+  /** A teammate's pool, drawn for show. */
+  ghost?: boolean;
+}
+
+/** Singularity black hole: drags zombies in, then pops. */
+interface Vortex {
+  x: number;
+  y: number;
+  t: number;
+  max: number;
+  dmg: number;
+  tick: number;
+  /** Co-op guests: the host's black hole, drawn for show. */
+  remote?: boolean;
+}
+
+/** The Sludge King's lobbed globs: a landing mark first, then a splash. */
+interface Mortar {
+  x: number;
+  y: number;
+  sx: number;
+  sy: number;
+  t: number;
+  max: number;
+}
+
+/** Refinery steam vents: hiss as a warning, then blast whatever stands on them. */
+interface Vent {
+  x: number;
+  y: number;
+  phase: 'idle' | 'warn' | 'blast';
+  t: number;
+  hit: object[];
+}
+
+const VENT_R = 62;
+const MORTAR_R = 72;
+const VORTEX_R = 240;
+const WEB_TIME = 2.2;
 
 interface Barrel {
   x: number;
@@ -361,13 +423,17 @@ const WEAPON_BLURB: Record<string, string> = {
   crossbow: 'Bolts punch through 3 zombies',
   autoshotgun: 'Full-auto buckshot',
   ripper: 'Saw discs bounce off walls',
+  acid: 'Leaves pools of acid that eat zombies',
+  swarm: 'Three rockets that hunt zombies down',
+  singularity: 'A black hole drags the horde in, then pops',
 };
 
-const BOSS_COLORS: Partial<Record<ZombieKind, string>> = { boss: '#c065ff', brood: '#ffcf5a', juggernaut: '#ff6a3a', reaper: '#7affea' };
+const BOSS_COLORS: Partial<Record<ZombieKind, string>> = { boss: '#c065ff', brood: '#ffcf5a', juggernaut: '#ff6a3a', reaper: '#7affea', sludge: '#c8ff3a' };
 
 const ELITE_KINDS = Object.keys(ELITES) as EliteKind[];
 
 const NEW_KIND_WAVES: Record<number, string> = {
+  4: 'WEBBERS: THEIR WEBS SLOW YOU DOWN',
   5: 'SHIELD BRUTES SPOTTED',
   6: 'WATCH FOR LEAPERS',
   7: 'BOMBERS: POP THEM BEFORE THEY REACH YOU',
@@ -378,7 +444,9 @@ const NEW_KIND_WAVES: Record<number, string> = {
   13: 'ARMORED SOLDIERS: BREAK THEIR PLATES',
   14: 'ELECTRIC ZOMBIES',
   16: 'BURROWERS: WATCH THE GROUND MOVE',
+  17: 'MEDICS HEAL THE HORDE: KILL THEM FIRST',
   18: 'WRAITHS WALK THROUGH WALLS',
+  19: 'SLUDGERS LEAVE TOXIC TRAILS',
 };
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
@@ -451,6 +519,12 @@ export class Game {
   private grenades: Grenade[] = [];
   private spits: Spit[] = [];
   private puddles: Puddle[] = [];
+  private goos: Goo[] = [];
+  private vortexes: Vortex[] = [];
+  private mortars: Mortar[] = [];
+  private vents: Vent[] = [];
+  private ventWarned = false;
+  private webT = 0;
   private barrels: Barrel[] = [];
   private toSpawn = 0;
   private spawnT = 0;
@@ -482,7 +556,7 @@ export class Game {
   private reviveLeft = 0;
   private corpses: { x: number; y: number }[] = [];
   private nadeBlast = false;
-  private cause: '' | 'train' | 'barrel' = '';
+  private cause: '' | 'train' | 'barrel' | 'vent' = '';
   private burst = 0;
   private burstT = 0;
   private hitThisWave = false;
@@ -602,7 +676,7 @@ export class Game {
   }
 
   static emptyReport(): RunReport {
-    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, barrelKills: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0, teamRevives: 0, coop: false };
+    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, ventKills: 0, barrelKills: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0, teamRevives: 0, coop: false };
   }
 
   newRun() {
@@ -642,6 +716,9 @@ export class Game {
     if (this.has('rich')) this.stats.cash *= 2;
     this.trains = (this.map.tracks ?? []).map((y, i) => ({ y, dir: i % 2 ? -1 : 1, phase: 'idle', t: rand(9, 14) + i * 5, x: 0, hitPlayer: false, hitBoss: [] }));
     this.trainWarned = false;
+    this.vents = (this.map.vents ?? []).map((v, i) => ({ x: v.x, y: v.y, phase: 'idle', t: 4 + i * 1.7 + rand(0, 2), hit: [] }));
+    this.ventWarned = false;
+    this.webT = 0;
     this.report = Game.emptyReport();
     this.report.coop = !!this.net;
     this.corpses = [];
@@ -676,6 +753,9 @@ export class Game {
     this.grenades = [];
     this.spits = [];
     this.puddles = [];
+    this.goos = [];
+    this.vortexes = [];
+    this.mortars = [];
     this.ghosts = [];
     this.kills = 0;
     this.earned = 0;
@@ -710,8 +790,11 @@ export class Game {
     // Boss Rush jumps straight from boss wave to boss wave.
     if (this.mode === 'bossrush') this.wave = Math.ceil(this.wave / 10) * 10;
     const boss = this.wave % 10 === 0;
+    // Mini-boss waves halfway between: a smaller version of a boss you haven't met yet.
+    const miniBoss = !boss && this.wave % 10 === 5;
     this.toSpawn = 10 + this.wave * 5;
     if (boss) this.toSpawn = Math.round(this.toSpawn * (this.mode === 'bossrush' ? 0.3 : 0.5));
+    if (miniBoss) this.toSpawn = Math.round(this.toSpawn * 0.7);
     if (this.has('horde')) this.toSpawn = Math.round(this.toSpawn * 1.5);
     // More players, more zombies.
     if (this.net === 'host') this.toSpawn = Math.round(this.toSpawn * (1 + 0.6 * this.allies.length));
@@ -721,9 +804,13 @@ export class Game {
       const g = this.farthestGate();
       kind = BOSS_ORDER[(this.wave / 10 - 1) % BOSS_ORDER.length];
       this.spawnZombie(kind, g.x, g.y + (g.y < WORLD_H / 2 ? 60 : -60));
+    } else if (miniBoss) {
+      const g = this.farthestGate();
+      kind = MINI_BOSS_ORDER[((this.wave - 5) / 10) % MINI_BOSS_ORDER.length];
+      this.spawnZombie(kind, g.x, g.y + (g.y < WORLD_H / 2 ? 60 : -60), { mini: true });
     }
-    this.waveIntro(kind);
-    if (this.net === 'host') this.netSend?.(null, { t: 'wave', w: this.wave, b: kind });
+    this.waveIntro(kind, miniBoss);
+    if (this.net === 'host') this.netSend?.(null, { t: 'wave', w: this.wave, b: kind, m: miniBoss ? 1 : 0 });
     const ch = this.challenge;
     if (ch && this.wave > ch.wave && this.wave - (this.mode === 'bossrush' ? 10 : 1) <= ch.wave) {
       this.showShout('CHALLENGE BEATEN!', '#ffd23f');
@@ -736,6 +823,8 @@ export class Game {
   /** Resets the arena for a new wave (shared by the host and co-op guests). */
   private beginWave() {
     this.spawnT = 1.2;
+    this.mortars = [];
+    this.vortexes = [];
     this.clearT = -1;
     this.hitThisWave = false;
     this.state = 'playing';
@@ -750,9 +839,9 @@ export class Game {
     this.resetBarrels();
   }
 
-  private waveIntro(boss: ZombieKind | '') {
+  private waveIntro(boss: ZombieKind | '', mini = false) {
     if (boss) {
-      this.showBanner(`WAVE ${this.wave}`, `${BOSS_NAMES[boss]} IS COMING`, BOSS_COLORS[boss]!);
+      this.showBanner(`WAVE ${this.wave}`, mini ? `MINI-BOSS: ${BOSS_NAMES[boss]}` : `${BOSS_NAMES[boss]} IS COMING`, BOSS_COLORS[boss]!);
       this.sfx.play('boss');
       this.addShake(0.6);
     } else {
@@ -968,6 +1057,7 @@ export class Game {
     this.updateGrenades(dt);
     this.updateHazards(dt);
     this.updateTrains(dt);
+    this.updateVents(dt);
     this.updateOrbitals(dt);
     if (!client) this.updatePickups(dt);
     this.updateDeploys(dt);
@@ -1011,6 +1101,10 @@ export class Game {
     this.bullets = [];
     this.spits = [];
     this.puddles = [];
+    this.goos = [];
+    this.vortexes = [];
+    this.mortars = [];
+    this.webT = 0;
     this.grenades = [];
     this.combo = 0;
     this.comboT = 0;
@@ -1039,7 +1133,7 @@ export class Game {
   /** Title screen: zombies shamble around the dark lot under a sweeping searchlight. */
   private updateAttract(dt: number) {
     if (this.zombies.length < 26) {
-      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter', 'shield', 'leaper', 'screamer', 'necro', 'dog', 'soldier', 'electric', 'bomber', 'wraith'];
+      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter', 'shield', 'leaper', 'screamer', 'necro', 'dog', 'soldier', 'electric', 'bomber', 'wraith', 'webber', 'medic', 'sludger'];
       const z = this.spawnZombie(kinds[Math.floor(Math.random() * kinds.length)], rand(150, WORLD_W - 150), rand(150, WORLD_H - 150));
       z.tx = rand(150, WORLD_W - 150);
       z.ty = rand(150, WORLD_H - 150);
@@ -1149,7 +1243,8 @@ export class Game {
     }
 
     const slow = firing && w.def.moveSlow ? w.def.moveSlow : 1;
-    const speed = 230 * this.stats.speed * slow;
+    if (this.webT > 0) this.webT -= dt;
+    const speed = 230 * this.stats.speed * slow * (this.webT > 0 ? 0.5 : 1);
     if (this.dashT > 0) {
       this.dashT -= dt;
       p.vx = this.dashDir.x * 230 * this.stats.speed * 3.6;
@@ -1229,7 +1324,7 @@ export class Game {
     if (this.active.ammo <= 0) w.ammo--;
     const dmg = this.weaponDamage(w);
     const kind = w.def.kind;
-    const n = kind === 'bullet' ? w.def.pellets + this.stats.extraShots : 1 + (kind === 'rocket' || kind === 'grenade' || kind === 'tesla' ? Math.floor(this.stats.extraShots / 2) : 0);
+    const n = kind === 'bullet' ? w.def.pellets + this.stats.extraShots : (w.def.homing ? w.def.pellets : 1) + (kind === 'rocket' || kind === 'grenade' || kind === 'tesla' ? Math.floor(this.stats.extraShots / 2) : 0);
     const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
     const my = p.y + Math.sin(p.angle) * (w.def.length + 4);
     const rage = this.active.rage > 0;
@@ -1243,17 +1338,18 @@ export class Game {
     if (kind === 'grenade') {
       for (let i = 0; i < n; i++) {
         const a = p.angle + rand(-w.def.spread / 2, w.def.spread / 2) + (i - (n - 1) / 2) * 0.15;
-        this.grenades.push({ x: mx, y: my, vx: Math.cos(a) * w.def.speed, vy: Math.sin(a) * w.def.speed, z: 8, vz: 160, fuse: w.def.life, dmg, radius: 110, impact: true });
+        this.grenades.push({ x: mx, y: my, vx: Math.cos(a) * w.def.speed, vy: Math.sin(a) * w.def.speed, z: 8, vz: 160, fuse: w.def.life, dmg, radius: w.def.vortex ? 150 : 110, impact: true, vortex: w.def.vortex });
       }
-      this.addLight(mx, my, 160, 0.07, '#b0ff7a');
+      this.addLight(mx, my, 160, 0.07, w.def.vortex ? '#c08aff' : '#b0ff7a');
       this.addShake(w.def.shake * 0.5);
-      this.sfx.play('launcher');
+      this.sfx.play(w.def.vortex ? 'singularity' : 'launcher');
       if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
       return;
     }
     for (let i = 0; i < n; i++) {
       let a = p.angle + rand(-w.def.spread / 2, w.def.spread / 2);
       if (w.def.pellets === 1 && n > 1) a += (i - (n - 1) / 2) * 0.1;
+      if (w.def.homing) a = p.angle + (i - (n - 1) / 2) * 0.32 + rand(-0.08, 0.08);
       const sp = w.def.speed * rand(0.92, 1.05);
       this.bullets.push({
         kind,
@@ -1269,8 +1365,11 @@ export class Game {
         hits: [],
         color: rage ? '#ff5a4a' : w.def.color,
         width: w.def.width ?? (w.def.id === 'shotgun' ? 2.5 : w.def.id === 'minigun' ? 2.5 : w.def.id === 'sniper' ? 4 : 3),
-        canExplode: kind === 'bullet',
+        canExplode: kind === 'bullet' && !w.def.goo,
         bounce: w.def.bounce,
+        goo: w.def.goo,
+        homing: w.def.homing,
+        blast: w.def.blast,
       });
     }
     if (kind === 'flame' || kind === 'frost') {
@@ -1335,6 +1434,9 @@ export class Game {
       ['bomber', w >= 7 ? Math.min(0.06, 0.035 + (w - 7) * 0.004) : 0],
       ['burrower', w >= 16 && this.countKind('burrower') < 3 ? Math.min(0.04, 0.025 + (w - 16) * 0.003) : 0],
       ['wraith', w >= 18 && this.countKind('wraith') < 4 ? Math.min(0.05, 0.03 + (w - 18) * 0.003) : 0],
+      ['webber', w >= 4 && this.countKind('webber') < 4 ? Math.min(0.06, 0.04 + (w - 4) * 0.003) : 0],
+      ['medic', w >= 17 && this.countKind('medic') < 2 ? Math.min(0.035, 0.02 + (w - 17) * 0.003) : 0],
+      ['sludger', w >= 19 && this.countKind('sludger') < 4 ? Math.min(0.045, 0.03 + (w - 19) * 0.003) : 0],
       ['runner', w >= 2 ? Math.min(0.36, 0.12 + (w - 2) * 0.04) : 0],
     ];
     let eliteChance = w >= 15 ? Math.min(0.15, 0.04 + (w - 15) * 0.006) : 0;
@@ -1371,7 +1473,7 @@ export class Game {
     const hpScale = 1 + 0.16 * (wv - 1) + 0.006 * (wv - 1) ** 2;
     const spScale = Math.min(1.35, 1 + 0.02 * (wv - 1));
     const { elite, mini } = opts;
-    let hp = def.hp * hpScale * (kind === 'boss' || kind === 'brood' || kind === 'reaper' ? 1 + wv / 20 : 1);
+    let hp = def.hp * hpScale * (kind === 'boss' || kind === 'brood' || kind === 'reaper' || kind === 'sludge' ? 1 + wv / 20 : 1);
     if (elite) hp *= elite === 'armored' ? 3 : 1.6;
     if (mini) hp *= 0.4;
     const r = def.radius * (elite ? 1.15 : 1) * (mini ? 0.72 : 1);
@@ -1410,6 +1512,8 @@ export class Game {
     };
     if (kind === 'burrower') z.dig = { state: 'walk', t: rand(1.5, 3) };
     if (kind === 'reaper') z.reap = { sweep: 2, windup: 0, aim: 0, blink: 5, orbs: 3.5, summoned: false };
+    if (kind === 'sludge') z.sludge = { mortar: 3, drip: 0, splits: 0 };
+    if (kind === 'sludger') z.abilityCd = 0.5;
     if (kind === 'boss') z.boss = { state: 'walk', t: 3, dx: 0, dy: 0, summon: 6 };
     if (kind === 'brood') z.brood = { lay: 4, spit: 2.5 };
     if (kind === 'juggernaut') {
@@ -1539,7 +1643,8 @@ export class Game {
       let vx = (dir ? dir.x : dx / d) * sp;
       let vy = (dir ? dir.y : dy / d) * sp;
 
-      if (z.def.kind === 'spitter') {
+      if (z.def.kind === 'spitter' || z.def.kind === 'webber') {
+        const web = z.def.kind === 'webber';
         z.spitCd -= dt;
         if (d < 330) {
           // Keep a bit of distance and lob acid.
@@ -1547,13 +1652,14 @@ export class Game {
           vx = (dx / d) * sp * back;
           vy = (dy / d) * sp * back;
           if (z.spitCd <= 0) {
-            z.spitCd = rand(1.8, 2.6);
-            const lead = d / 300;
+            z.spitCd = web ? rand(2.4, 3.2) : rand(1.8, 2.6);
+            const sp2 = web ? 380 : 300;
+            const lead = d / sp2;
             const ax = p.x + p.vx * lead * 0.5 - z.x;
             const ay = p.y + p.vy * lead * 0.5 - z.y;
             const ad = Math.hypot(ax, ay) || 1;
-            this.spits.push({ x: z.x, y: z.y, vx: (ax / ad) * 300, vy: (ay / ad) * 300, life: Math.min(1.4, ad / 300) });
-            this.wsfx('spit');
+            this.spits.push({ x: z.x, y: z.y, vx: (ax / ad) * sp2, vy: (ay / ad) * sp2, life: Math.min(1.4, ad / sp2) + (web ? 0.15 : 0), web });
+            this.wsfx(web ? 'web' : 'spit');
           }
         }
       }
@@ -1575,10 +1681,10 @@ export class Game {
         }
       }
 
-      if (kind === 'screamer' || kind === 'necro') {
+      if (kind === 'screamer' || kind === 'necro' || kind === 'medic') {
         // Hang back behind the horde.
         z.abilityCd -= dt;
-        const near = kind === 'necro' ? 300 : 250;
+        const near = kind === 'necro' ? 300 : kind === 'medic' ? 230 : 250;
         if (d < near + 100) {
           const back = d < near ? -0.55 : 0;
           vx = (dx / d) * sp * back;
@@ -1586,6 +1692,7 @@ export class Game {
         }
         if (z.abilityCd <= 0 && d < 650) {
           if (kind === 'screamer') this.scream(z);
+          else if (kind === 'medic') this.healPulse(z);
           else this.raiseDead(z);
         }
       }
@@ -1745,6 +1852,56 @@ export class Game {
           }
           this.showShout('THE DEAD ANSWER HIM!', '#7affea', true);
           this.ring({ x: z.x, y: z.y, r: 0, max: 200, life: 0.6, color: 'rgba(122,255,234,' });
+        }
+      }
+
+      if (kind === 'sludger') {
+        z.abilityCd -= dt;
+        if (z.abilityCd <= 0) {
+          z.abilityCd = 0.7;
+          this.puddles.push({ x: z.x, y: z.y, r: 26, life: 3.2, max: 3.2, kind: 'sludge' });
+        }
+      }
+
+      if (z.sludge) {
+        const S = z.sludge;
+        S.drip -= dt;
+        S.mortar -= dt;
+        if (S.drip <= 0) {
+          S.drip = 0.35;
+          this.puddles.push({ x: z.x + rand(-10, 10), y: z.y + rand(-10, 10), r: z.r * 0.8, life: 3.5, max: 3.5, kind: 'sludge' });
+        }
+        if (S.mortar <= 0 && d < 900) {
+          S.mortar = rand(4.2, 5.2) * (z.mini ? 1.25 : 1);
+          // One glob at each player's feet (a little ahead of them), plus strays around them.
+          for (const t of ts) {
+            const tx = t.x + t.vx * 0.6;
+            const ty = t.y + t.vy * 0.6;
+            const spots = [{ x: tx, y: ty }, ...[0, 1].map(() => ({ x: t.x + rand(-170, 170), y: t.y + rand(-170, 170) }))];
+            for (const sp2 of spots) {
+              const x = clamp(sp2.x, BORDER + 30, WORLD_W - BORDER - 30);
+              const y = clamp(sp2.y, BORDER + 30, WORLD_H - BORDER - 30);
+              const fl = rand(1.05, 1.3);
+              this.mortars.push({ x, y, sx: z.x, sy: z.y, t: fl, max: fl });
+            }
+          }
+          this.wsfx('mortar');
+        }
+        const nextSplit = S.splits === 0 ? 2 / 3 : S.splits === 1 ? 1 / 3 : -1;
+        if (z.hp < z.maxHp * nextSplit) {
+          S.splits++;
+          for (let i = 0; i < 3; i++) {
+            const a = rand(0, Math.PI * 2);
+            const x = z.x + Math.cos(a) * z.r * 1.4;
+            const y = z.y + Math.sin(a) * z.r * 1.4;
+            if (this.pointInWall(x, y)) continue;
+            this.spawnZombie('sludger', x, y, { mini: true }).flash = 0.3;
+          }
+          this.puddles.push({ x: z.x, y: z.y, r: 110, life: 5, max: 5, kind: 'sludge' });
+          this.showShout('THE KING SPLITS!', '#c8ff3a', true);
+          this.ring({ x: z.x, y: z.y, r: 0, max: 180, life: 0.5, color: 'rgba(200,255,60,' });
+          this.wsfx('gurgle');
+          this.addShake(0.4);
         }
       }
 
@@ -2048,6 +2205,37 @@ export class Game {
   }
 
   /** Screamer: buffs every zombie around it. */
+  /** Medic: patches up every hurt zombie nearby. Bosses only get a little. */
+  private healPulse(z: Zombie) {
+    const R = 210;
+    const hurt = this.zombies.filter((o) => !o.dead && o.def.kind !== 'egg' && o.hp < o.maxHp * 0.95 && Math.hypot(o.x - z.x, o.y - z.y) < R);
+    if (!hurt.length) {
+      z.abilityCd = 0.6;
+      return;
+    }
+    z.abilityCd = rand(3.2, 4);
+    for (const o of hurt) {
+      o.hp = Math.min(o.maxHp, o.hp + o.maxHp * (isBoss(o) ? 0.02 : 0.3));
+      for (let i = 0; i < 3; i++) this.spawnParticle(o.x + rand(-o.r, o.r), o.y + rand(-o.r, o.r), 0, rand(-70, -30), 0.6, 4, '#5dff7a', 1, false, true);
+    }
+    this.ring({ x: z.x, y: z.y, r: 10, max: R, life: 0.5, color: 'rgba(93,255,122,' });
+    this.addLight(z.x, z.y, 220, 0.35, '#5dff7a');
+    this.wsfx('heal');
+  }
+
+  /** Sticks a player in a web: half speed for a couple of seconds (dashing still works). */
+  private webPlayer(who: { x: number; y: number }) {
+    if (who !== this.p) {
+      const a = who as Ally;
+      if (!a.down) this.netSend?.(a.id, { t: 'web' });
+      return;
+    }
+    if (this.dashT > 0 || this.down) return;
+    if (this.webT <= 0) this.addText(this.p.x, this.p.y - 28, 'WEBBED!', '#e0e0ff', 14);
+    this.webT = WEB_TIME;
+    this.sfx.play('web');
+  }
+
   private scream(z: Zombie) {
     z.abilityCd = rand(4.5, 6);
     const R = 300;
@@ -2195,15 +2383,30 @@ export class Game {
         b.vx *= k;
         b.vy *= k;
       }
+      if (b.homing) {
+        const t = this.nearestZombie(b.x, b.y, 520);
+        if (t) {
+          const want = Math.atan2(t.y - b.y, t.x - b.x);
+          const cur = Math.atan2(b.vy, b.vx);
+          let da = want - cur;
+          while (da > Math.PI) da -= Math.PI * 2;
+          while (da < -Math.PI) da += Math.PI * 2;
+          const turn = clamp(da, -7 * dt, 7 * dt);
+          const sp = Math.hypot(b.vx, b.vy);
+          b.vx = Math.cos(cur + turn) * sp;
+          b.vy = Math.sin(cur + turn) * sp;
+        }
+      }
       if (b.kind === 'rocket') {
-        this.spawnParticle(b.x, b.y, rand(-30, 30), rand(-30, 30), 0.7, 6, 'rgba(170,170,170,0.3)', 2, false, false, 18);
+        this.spawnParticle(b.x, b.y, rand(-30, 30), rand(-30, 30), 0.7, b.homing ? 4 : 6, 'rgba(170,170,170,0.3)', 2, false, false, b.homing ? 10 : 18);
         if (Math.random() < 0.7) this.spawnParticle(b.x, b.y, -b.vx * 0.2, -b.vy * 0.2, 0.12, 6, '#ffb347', 6, false, true);
       }
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.life -= dt;
       if (b.life <= 0) {
-        if (b.kind === 'rocket' && !b.ghost) this.explode(b.x, b.y, b.dmg, 115, 0);
+        if (b.kind === 'rocket' && !b.ghost) this.explode(b.x, b.y, b.dmg, b.blast ?? 115, 0);
+        if (b.goo) this.addGoo(b.x, b.y, b.dmg, b.ghost);
         continue;
       }
       if (this.pointInWall(b.x, b.y) && b.bounce && b.bounce > 0) {
@@ -2218,13 +2421,15 @@ export class Game {
         if (!b.ghost) this.sfx.play('clank', 0.5);
       }
       if (this.pointInWall(b.x, b.y)) {
-        if (b.kind === 'rocket' && !b.ghost) this.explode(b.x - b.vx * dt, b.y - b.vy * dt, b.dmg, 115, 0);
+        if (b.kind === 'rocket' && !b.ghost) this.explode(b.x - b.vx * dt, b.y - b.vy * dt, b.dmg, b.blast ?? 115, 0);
+        if (b.goo) this.addGoo(b.x - b.vx * dt * 2, b.y - b.vy * dt * 2, b.dmg, b.ghost);
         else if (b.kind === 'bullet') for (let i = 0; i < 3; i++) this.spawnParticle(b.x - b.vx * dt, b.y - b.vy * dt, rand(-120, 120), rand(-120, 120), 0.15, 2, '#ffd27a', 6, false, true);
         continue;
       }
       if (b.ghost) {
         // A teammate's shot: stops on the first zombie, their game does the damage.
         if (b.kind === 'flame' || b.kind === 'frost' || !this.zombies.some((z) => !z.dead && !intangible(z) && (z.x - b.x) ** 2 + (z.y - b.y) ** 2 < (z.r + 4) ** 2)) out.push(b);
+        else if (b.goo) this.addGoo(b.x, b.y, 0, true);
         continue;
       }
       // Barrels
@@ -2233,7 +2438,7 @@ export class Game {
         if (br.dead || br.fuse > 0) continue;
         if (Math.hypot(br.x - b.x, br.y - b.y) < (br.big ? 22 : 16)) {
           if (b.kind === 'rocket') {
-            this.explode(b.x, b.y, b.dmg, 115, 0);
+            this.explode(b.x, b.y, b.dmg, b.blast ?? 115, 0);
             alive = false;
             break;
           }
@@ -2256,11 +2461,17 @@ export class Game {
         const rr = z.r + (b.kind === 'flame' || b.kind === 'frost' ? 10 : 4);
         if (dx * dx + dy * dy > rr * rr) continue;
         if (b.kind === 'rocket') {
-          this.explode(b.x, b.y, b.dmg, 115, 0);
+          this.explode(b.x, b.y, b.dmg, b.blast ?? 115, 0);
           alive = false;
           break;
         }
         b.hits.push(z.id);
+        if (b.goo) {
+          this.damageZombie(z, b.dmg, Math.atan2(b.vy, b.vx), false, 60);
+          this.addGoo(b.x, b.y, b.dmg);
+          alive = false;
+          break;
+        }
         if (z.def.kind === 'shield' && b.kind === 'bullet' && Math.cos(Math.atan2(b.vy, b.vx) - z.face) < -0.35) {
           // Bullet hit the riot shield: sparks, a clank, and it stops dead.
           for (let i = 0; i < 4; i++) this.spawnParticle(b.x, b.y, rand(-160, 160), rand(-160, 160), 0.15, 2.5, '#fff2b0', 6, false, true);
@@ -2333,6 +2544,12 @@ export class Game {
       if (g.impact && !boom) for (const z of this.zombies) if (!z.dead && !intangible(z) && Math.hypot(z.x - g.x, z.y - g.y) < z.r + 6) boom = true;
       if (boom) {
         if (g.remote) continue;
+        if (g.vortex) {
+          this.vortexes.push({ x: g.x, y: g.y, t: 1.5, max: 1.5, dmg: g.dmg ?? 170, tick: 0 });
+          this.sfx.play('vortex');
+          this.addShake(0.2);
+          continue;
+        }
         this.nadeBlast = true;
         this.explode(g.x, g.y, g.dmg ?? 170 * this.stats.damage, g.radius ?? 135, g.impact ? 8 : 18);
         this.nadeBlast = false;
@@ -2353,15 +2570,20 @@ export class Game {
       s.x += s.vx * dt;
       s.y += s.vy * dt;
       s.life -= dt;
-      if (Math.random() < 0.5) this.spawnParticle(s.x, s.y, rand(-20, 20), rand(-20, 20), 0.3, 4, s.soul ? '#7affea' : '#b04aff', 4, false, true);
+      if (Math.random() < 0.5) this.spawnParticle(s.x, s.y, rand(-20, 20), rand(-20, 20), 0.3, 4, s.soul ? '#7affea' : s.web ? '#e0e0ff' : '#b04aff', 4, false, true);
       const hit = ts.find((t) => Math.hypot(s.x - t.x, s.y - t.y) < PLAYER_R + 8);
       if (hit) {
+        if (s.web) {
+          this.hurtPlayer(4 * (1 + 0.04 * this.wave), null, hit);
+          this.webPlayer(hit);
+          continue;
+        }
         this.hurtPlayer(10 * (1 + 0.04 * this.wave), s, hit);
         if (!s.soul) this.puddles.push({ x: s.x, y: s.y, r: 34, life: 2.5, max: 2.5, kind: 'acid' });
         continue;
       }
       if (s.life <= 0 || this.pointInWall(s.x, s.y)) {
-        if (!client && !s.soul) {
+        if (!client && !s.soul && !s.web) {
           this.puddles.push({ x: s.x, y: s.y, r: 40, life: 3.5, max: 3.5, kind: 'acid' });
           this.wsfx('splat', 0.4);
         }
@@ -2374,7 +2596,7 @@ export class Game {
     let dps = 0;
     this.puddles = this.puddles.filter((pd) => {
       pd.life -= dt;
-      if (Math.hypot(pd.x - p.x, pd.y - p.y) < pd.r + PLAYER_R * 0.5) dps = Math.max(dps, pd.kind === 'acid' ? 14 : 12);
+      if (Math.hypot(pd.x - p.x, pd.y - p.y) < pd.r + PLAYER_R * 0.5) dps = Math.max(dps, pd.kind === 'acid' ? 14 : pd.kind === 'sludge' ? 11 + 0.25 * this.wave : 12);
       return pd.life > 0;
     });
     if (dps > 0 && this.dashT <= 0 && this.invT <= 0 && !this.down) {
@@ -2382,7 +2604,14 @@ export class Game {
       this.hurtFlash = Math.max(this.hurtFlash, 0.08);
       if (p.hp <= 0) this.gameOver();
     }
-    if (client) return;
+    this.updateGoo(dt);
+    this.updateVortexes(dt);
+    if (client) {
+      for (const m of this.mortars) m.t -= dt;
+      this.mortars = this.mortars.filter((m) => m.t > 0);
+      return;
+    }
+    this.updateMortars(dt);
     // Barrels with a lit fuse go off (this is how chain reactions ripple).
     for (const b of this.barrels) {
       if (b.dead || b.fuse <= 0) continue;
@@ -2395,6 +2624,136 @@ export class Game {
           this.flash = { t: 0.3, color: '#ffb050', max: 0.3 };
           this.slowT = Math.max(this.slowT, 0.4);
         } else this.explode(b.x, b.y, 240 * this.stats.damage, 150, 30, true);
+      }
+    }
+  }
+
+  /** Acid Cannon pools: tick damage on every zombie standing in them. */
+  private updateGoo(dt: number) {
+    this.goos = this.goos.filter((g) => {
+      g.life -= dt;
+      if (Math.random() < dt * 8) this.spawnParticle(g.x + rand(-g.r, g.r) * 0.6, g.y + rand(-g.r, g.r) * 0.6, 0, rand(-40, -10), 0.4, 3, '#9aff3a', 1, false, true);
+      if (g.ghost) return g.life > 0;
+      g.tick -= dt;
+      if (g.tick <= 0) {
+        g.tick = 0.25;
+        for (const z of this.zombies) {
+          if (z.dead || Math.hypot(z.x - g.x, z.y - g.y) > g.r + z.r * 0.5) continue;
+          this.damageZombie(z, g.dps * 0.25, rand(0, Math.PI * 2), false, 0, true);
+        }
+      }
+      return g.life > 0;
+    });
+  }
+
+  private addGoo(x: number, y: number, dmg: number, ghost = false) {
+    if (this.pointInWall(x, y)) return;
+    if (this.goos.length > 40) this.goos.shift();
+    this.goos.push({ x, y, r: 46, life: 2.6, max: 2.6, dps: dmg * 0.9, tick: 0.1, ghost });
+    for (let i = 0; i < 6; i++) this.spawnParticle(x, y, rand(-140, 140), rand(-140, 140), 0.3, rand(3, 5), '#b6ff5a', 5, false, true);
+    if (!ghost) this.sfx.play('splat', 0.35);
+  }
+
+  /** Singularity black holes: pull everything in, chew on it, then pop. */
+  private updateVortexes(dt: number) {
+    const keep: Vortex[] = [];
+    for (const v of this.vortexes) {
+      v.t -= dt;
+      for (let i = 0; i < 3; i++) {
+        const a = rand(0, Math.PI * 2);
+        const r = rand(80, VORTEX_R);
+        this.spawnParticle(v.x + Math.cos(a) * r, v.y + Math.sin(a) * r, -Math.cos(a) * r * 2.4 + Math.cos(a + 1.57) * 120, -Math.sin(a) * r * 2.4 + Math.sin(a + 1.57) * 120, 0.35, rand(2, 4), i ? '#c08aff' : '#ffffff', 1, false, true);
+      }
+      this.addLight(v.x, v.y, 200, 0.05, '#a060ff');
+      if (v.remote) {
+        if (v.t > 0) keep.push(v);
+        continue;
+      }
+      v.tick -= dt;
+      if (v.tick <= 0) {
+        v.tick = 0.1;
+        for (const z of this.zombies) {
+          if (z.dead) continue;
+          const d = Math.hypot(z.x - v.x, z.y - v.y);
+          if (d > VORTEX_R + z.r || d < 8) continue;
+          this.damageZombie(z, v.dmg * 0.035, Math.atan2(v.y - z.y, v.x - z.x), false, 150 * (1 - (d / VORTEX_R) * 0.5), true);
+        }
+      }
+      if (v.t <= 0) {
+        this.explode(v.x, v.y, v.dmg, 150, 0);
+        this.flash = { t: 0.15, color: '#c08aff', max: 0.2 };
+        continue;
+      }
+      keep.push(v);
+    }
+    this.vortexes = keep;
+  }
+
+  /** Host: the Sludge King's globs land, hurting players and leaving sludge. */
+  private updateMortars(dt: number) {
+    const keep: Mortar[] = [];
+    for (const m of this.mortars) {
+      m.t -= dt;
+      if (m.t > 0) {
+        keep.push(m);
+        continue;
+      }
+      this.puddles.push({ x: m.x, y: m.y, r: 56, life: 4, max: 4, kind: 'sludge' });
+      this.ring({ x: m.x, y: m.y, r: 10, max: MORTAR_R, life: 0.3, color: 'rgba(200,255,60,' });
+      for (const t of this.targets()) if (Math.hypot(t.x - m.x, t.y - m.y) < MORTAR_R + PLAYER_R * 0.5) this.hurtPlayer(18 * (1 + 0.03 * this.wave), m, t);
+      this.wsfx('splat', 0.5);
+    }
+    this.mortars = keep;
+  }
+
+  /** Refinery steam vents. The host runs the timers; everyone draws the steam. */
+  private updateVents(dt: number) {
+    const host = this.net !== 'client';
+    for (const v of this.vents) {
+      if (v.phase === 'warn' && Math.random() < dt * 20) this.spawnParticle(v.x + rand(-20, 20), v.y + rand(-20, 20), rand(-20, 20), rand(-90, -40), 0.5, rand(6, 10), 'rgba(220,220,220,0.25)', 2, false, false, 16);
+      if (v.phase === 'blast') {
+        if (Math.random() < dt * 30) this.spawnParticle(v.x + rand(-30, 30), v.y + rand(-30, 30), rand(-60, 60), rand(-200, -100), rand(0.3, 0.5), rand(6, 10), 'rgba(235,240,240,0.18)', 1.5, false, false, 18);
+        this.addLight(v.x, v.y, 180, 0.05, '#e8f4ff');
+      }
+      if (!host) continue;
+      v.t -= dt;
+      if (v.phase === 'idle' && v.t <= 0) {
+        v.phase = 'warn';
+        v.t = 1.3;
+        this.wsfx('hiss', 0.6);
+        if (!this.ventWarned) {
+          this.ventWarned = true;
+          this.showShout('STEAM VENTS: GET OFF THE GRATES!', '#e8f4ff', true);
+        }
+      } else if (v.phase === 'warn' && v.t <= 0) {
+        v.phase = 'blast';
+        v.t = 0.8;
+        v.hit = [];
+        this.wsfx('vent', 0.8);
+      } else if (v.phase === 'blast') {
+        for (const z of this.zombies) {
+          if (z.dead || intangible(z) || Math.hypot(z.x - v.x, z.y - v.y) > VENT_R + z.r * 0.5) continue;
+          if (isBoss(z)) {
+            if (v.hit.includes(z)) continue;
+            v.hit.push(z);
+            this.damageZombie(z, z.maxHp * 0.04, rand(0, Math.PI * 2), false, 0);
+            continue;
+          }
+          this.cause = 'vent';
+          this.damageZombie(z, (260 + 12 * this.wave) * dt, rand(0, Math.PI * 2), false, 0, true);
+          z.burn = Math.max(z.burn, 0.5);
+          this.cause = '';
+        }
+        for (const t of this.targets()) {
+          if (v.hit.includes(t) || Math.hypot(t.x - v.x, t.y - v.y) > VENT_R + PLAYER_R * 0.5) continue;
+          v.hit.push(t);
+          const a = Math.atan2(t.y - v.y, t.x - v.x);
+          this.hurtPlayer(28 * (1 + 0.02 * this.wave), null, t, { x: Math.cos(a) * 600, y: Math.sin(a) * 600 });
+        }
+        if (v.t <= 0) {
+          v.phase = 'idle';
+          v.t = rand(5, 9);
+        }
       }
     }
   }
@@ -2593,6 +2952,10 @@ export class Game {
     if (kind === 'tank' || kind === 'shield' || boss) this.hitstop = boss ? 0.12 : 0.05;
     if (kind === 'bloater') this.explode(z.x, z.y, 60 * this.stats.damage, 95, 18, false, 'toxic');
     if (kind === 'bomber') this.explode(z.x, z.y, 90 * this.stats.damage, 125, 24 * (1 + 0.03 * this.wave));
+    if (kind === 'sludger') {
+      this.puddles.push({ x: z.x, y: z.y, r: 56, life: 4.5, max: 4.5, kind: 'sludge' });
+      this.wsfx('gurgle', 0.6);
+    }
     if (boss) {
       this.slowT = 1.8;
       this.zoomKick = Math.max(this.zoomKick, 0.25);
@@ -2618,6 +2981,7 @@ export class Game {
     rep.killsByWeapon[wid] = (rep.killsByWeapon[wid] ?? 0) + 1;
     if (this.nadeBlast) rep.grenadeKills++;
     if (this.cause === 'train') rep.trainKills++;
+    else if (this.cause === 'vent') rep.ventKills++;
     else if (this.cause === 'barrel') rep.barrelKills++;
     this.countBurst(x, y);
     if (boss) {
@@ -3272,12 +3636,15 @@ export class Game {
       pl,
       pk: this.pickups.map((k) => [r(k.x), r(k.y), r(k.vx), r(k.vy), k.kind === 'cash' ? 0 : k.kind === 'health' ? 1 : 2]),
       pw: this.powers.map((w) => [r(w.x), r(w.y), POWER_KINDS.indexOf(w.kind), r(w.life * 10)]),
-      sp: this.spits.map((q) => [r(q.x), r(q.y), r(q.vx), r(q.vy), r(q.life * 100), q.soul ? 1 : 0]),
-      pd: this.puddles.map((q) => [r(q.x), r(q.y), r(q.r), r(q.life * 100), r(q.max * 100), q.kind === 'acid' ? 0 : 1]),
+      sp: this.spits.map((q) => [r(q.x), r(q.y), r(q.vx), r(q.vy), r(q.life * 100), (q.soul ? 1 : 0) | (q.web ? 2 : 0)]),
+      pd: this.puddles.map((q) => [r(q.x), r(q.y), r(q.r), r(q.life * 100), r(q.max * 100), PUDDLE_KINDS.indexOf(q.kind)]),
+      mo: this.mortars.map((m) => [r(m.x), r(m.y), r(m.sx), r(m.sy), r(m.t * 100), r(m.max * 100)]),
+      vt: this.vents.map((v) => ['idle', 'warn', 'blast'].indexOf(v.phase)),
+      vx: this.vortexes.map((v) => [r(v.x), r(v.y), r(v.t * 100)]),
       dp: this.deploys.map((d) => [DEPLOY_KINDS.indexOf(d.kind), r(d.x), r(d.y), r(d.angle * 100), r(d.hp), r(d.maxHp), d.life === Infinity ? -1 : r(d.life * 10), d.r, d.t > 0 ? 1 : 0]),
       tr: this.trains.map((t) => [['idle', 'warn', 'go'].indexOf(t.phase), r(t.x)]),
       br: this.barrels.map((b) => (b.dead ? 1 : 0)).join(''),
-      gr: this.grenades.map((g) => [r(g.x), r(g.y), r(g.vx), r(g.vy), r(g.z), r(g.vz), r(g.fuse * 100), g.radius ?? 135]),
+      gr: this.grenades.map((g) => [r(g.x), r(g.y), r(g.vx), r(g.vy), r(g.z), r(g.vz), r(g.fuse * 100), g.radius ?? 135, g.vortex ? 1 : 0]),
       ev: this.netEv,
     };
   }
@@ -3288,6 +3655,7 @@ export class Game {
     const z: Zombie = { id, def, x, y, kx: 0, ky: 0, hp: 1, maxHp: 1, speed: 0, dmg: 0, r: def.radius, flash: 0, slow: 0, burn: 0, attackCd: 0, bladeCd: 0, phase: Math.random() * 10, face: 0, dead: false, spitCd: 0, buff: 0, abilityCd: 0, chill: 0, frozenT: 0, plates: 0, plateHp: 0, zapT: 0, ghostT: 0, fuse: 0 };
     if (kind === 'burrower') z.dig = { state: 'walk', t: 0 };
     if (kind === 'reaper') z.reap = { sweep: 0, windup: 0, aim: 0, blink: 0, orbs: 0, summoned: true };
+    if (kind === 'sludge') z.sludge = { mortar: 0, drip: 0, splits: 2 };
     if (kind === 'boss' || kind === 'juggernaut') z.boss = { state: 'walk', t: 0, dx: 0, dy: 0, summon: 0 };
     if (kind === 'juggernaut') z.jug = { slam: 0, windup: 0 };
     if (kind === 'brood') z.brood = { lay: 0, spit: 0 };
@@ -3370,8 +3738,14 @@ export class Game {
     const kinds: Pickup['kind'][] = ['cash', 'health', 'crate'];
     this.pickups = (s.pk as Row[]).map(([x, y, vx, vy, k]) => ({ x, y, vx, vy, kind: kinds[k], value: 0, pulled: true }));
     this.powers = (s.pw as Row[]).map(([x, y, k, life]) => ({ x, y, kind: POWER_KINDS[k], life: life / 10 }));
-    this.spits = (s.sp as Row[]).map(([x, y, vx, vy, life, soul]) => ({ x, y, vx, vy, life: life / 100, soul: !!soul }));
-    this.puddles = (s.pd as Row[]).map(([x, y, r, life, max, k]) => ({ x, y, r, life: life / 100, max: max / 100, kind: k ? 'toxic' : 'acid' }));
+    this.spits = (s.sp as Row[]).map(([x, y, vx, vy, life, f]) => ({ x, y, vx, vy, life: life / 100, soul: !!(f & 1), web: !!(f & 2) }));
+    this.puddles = (s.pd as Row[]).map(([x, y, r, life, max, k]) => ({ x, y, r, life: life / 100, max: max / 100, kind: PUDDLE_KINDS[k] ?? 'acid' }));
+    this.mortars = ((s.mo as Row[]) ?? []).map(([x, y, sx, sy, t, max]) => ({ x, y, sx, sy, t: t / 100, max: max / 100 }));
+    ((s.vt as number[]) ?? []).forEach((ph, i) => {
+      const v = this.vents[i];
+      if (v) v.phase = (['idle', 'warn', 'blast'] as const)[ph] ?? 'idle';
+    });
+    this.vortexes = [...this.vortexes.filter((v) => !v.remote), ...((s.vx as Row[]) ?? []).map(([x, y, t]) => ({ x, y, t: t / 100, max: 1.5, dmg: 0, tick: 0, remote: true }))];
     this.deploys = (s.dp as Row[]).map(([k, x, y, a, hp, maxHp, life, r, arming]) => ({ kind: DEPLOY_KINDS[k], x, y, angle: a / 100, hp, maxHp, life: life < 0 ? Infinity : life / 10, r, t: arming ? 1 : 0 }));
     (s.tr as Row[]).forEach(([ph, x], i) => {
       const tr = this.trains[i];
@@ -3383,7 +3757,7 @@ export class Game {
     this.barrels.forEach((b, i) => {
       if (br[i] === '1' && !b.dead) b.dead = true;
     });
-    this.grenades = [...this.grenades.filter((g) => !g.remote), ...(s.gr as Row[]).map(([x, y, vx, vy, z, vz, fuse, radius]) => ({ x, y, vx, vy, z, vz, fuse: fuse / 100, radius, remote: true }))];
+    this.grenades = [...this.grenades.filter((g) => !g.remote), ...(s.gr as Row[]).map(([x, y, vx, vy, z, vz, fuse, radius, vort]) => ({ x, y, vx, vy, z, vz, fuse: fuse / 100, radius, vortex: !!vort, remote: true }))];
     for (const e of s.ev as (string | number)[][]) this.applyEvent(e);
   }
 
@@ -3465,7 +3839,7 @@ export class Game {
       case 'wave':
         this.wave = num('w');
         this.beginWave();
-        this.waveIntro((m.b as ZombieKind) || '');
+        this.waveIntro((m.b as ZombieKind) || '', !!m.m);
         break;
       case 'clear':
         if (this.state === 'playing' || this.state === 'paused') {
@@ -3480,7 +3854,7 @@ export class Game {
         const k = String(m.k) as ZombieKind;
         if (!ZOMBIES[k]) break;
         this.nadeBlast = !!m.n;
-        this.cause = (m.c as '' | 'train' | 'barrel') || '';
+        this.cause = (m.c as '' | 'train' | 'barrel' | 'vent') || '';
         this.creditKill(k, !!m.e, num('x'), num('y'), ZOMBIES[k].radius);
         this.nadeBlast = false;
         this.cause = '';
@@ -3504,6 +3878,9 @@ export class Game {
         break;
       case 'revive':
         if (this.down) this.getUp(0.35);
+        break;
+      case 'web':
+        this.webPlayer(this.p);
         break;
       case 'saved':
         this.report.teamRevives++;
@@ -3579,12 +3956,12 @@ export class Game {
       this.sfx.play('launcher', 0.3);
       return;
     }
-    const n = kind === 'bullet' ? def.pellets : 1;
+    const n = kind === 'bullet' || def.homing ? def.pellets : 1;
     for (let i = 0; i < n; i++) {
-      const ang = a.angle + rand(-def.spread / 2, def.spread / 2);
+      const ang = def.homing ? a.angle + (i - (n - 1) / 2) * 0.32 : a.angle + rand(-def.spread / 2, def.spread / 2);
       const sp = def.speed * rand(0.92, 1.05);
       const spray = kind === 'flame' || kind === 'frost';
-      this.bullets.push({ kind, x: mx, y: my, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, dmg: 0, life: def.life * (spray ? rand(0.8, 1.1) : 1), max: def.life, pierce: 0, ricochet: 0, hits: [], color: def.color, width: def.width ?? 2.5, canExplode: false, bounce: def.bounce, ghost: true });
+      this.bullets.push({ kind, x: mx, y: my, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, dmg: 0, life: def.life * (spray ? rand(0.8, 1.1) : 1), max: def.life, pierce: 0, ricochet: 0, hits: [], color: def.color, width: def.width ?? 2.5, canExplode: false, bounce: def.bounce, goo: def.goo, homing: def.homing, blast: def.blast, ghost: true });
     }
     if (kind === 'flame' || kind === 'frost') {
       if (Math.random() < 0.3) this.addLight(mx, my, 130, 0.12, kind === 'flame' ? '#ff7a20' : '#7fd8ff');
@@ -3664,6 +4041,7 @@ export class Game {
     ctx.drawImage(this.ground, 0, 0, WORLD_W, WORLD_H);
     ctx.drawImage(this.decals, 0, 0, WORLD_W, WORLD_H);
     this.drawGates();
+    this.drawVents();
     this.drawPuddles();
     this.drawPickups();
     this.drawBarrels();
@@ -3797,6 +4175,12 @@ export class Game {
     // Colored light tints
     for (const lt of this.lights) glowDot(lt.x, lt.y, lt.r * 0.7, lt.color, 0.35 * (lt.life / lt.max));
     for (const lamp of this.map.lamps) glowDot(lamp.x, lamp.y, 120, '#ffcf7a', 0.12);
+    for (const v of this.vents) {
+      if (v.phase === 'blast') {
+        glowDot(v.x, v.y, VENT_R * 1.7, '#e8f4ff', 0.45 + 0.15 * Math.sin(this.clock * 40));
+        glowDot(v.x, v.y - 30, VENT_R * 1.2, '#ffffff', 0.3);
+      } else if (v.phase === 'warn') glowDot(v.x, v.y, VENT_R * 1.2, '#ffd23f', 0.12 + 0.1 * (Math.floor(this.clock * 8) % 2));
+    }
     ctx.globalAlpha = 1;
 
     // Zombie eyes glow in the dark
@@ -3823,6 +4207,8 @@ export class Game {
       if (z.def.kind === 'bomber') glowDot(z.x, z.y, r * (z.fuse > 0 ? 3 : 1.6), '#ff4a2a', z.fuse > 0 ? 0.35 + 0.25 * (Math.floor(this.clock * 24) % 2) : 0.15);
       if (z.def.kind === 'wraith') glowDot(z.x, z.y, r * 2.2, '#7affea', 0.16);
       if (z.def.kind === 'reaper') glowDot(z.x, z.y, r * 2.6, '#7affea', 0.14 + 0.06 * Math.sin(this.clock * 4));
+      if (z.def.kind === 'medic') glowDot(z.x, z.y, r * 2.2, '#5dff7a', 0.14 + 0.1 * Math.max(0, 1 - z.abilityCd));
+      if (z.def.kind === 'sludger' || z.def.kind === 'sludge') glowDot(z.x, z.y, r * 2, '#c8ff3a', 0.14 + 0.05 * Math.sin(this.clock * 5 + z.id));
       if (z.def.kind === 'juggernaut') glowDot(z.x - Math.cos(z.face) * r * 0.62, z.y - Math.sin(z.face) * r * 0.62, r * 0.9, '#ffa040', 0.5);
       if (z.frozenT > 0) glowDot(z.x, z.y, r * 2, '#9fe8ff', 0.25);
       if (z.def.kind === 'brood' && this.countKind('egg') > 0) glowDot(z.x, z.y, r * 1.9, '#ffcf5a', 0.2 + 0.08 * Math.sin(this.clock * 5));
@@ -3845,10 +4231,20 @@ export class Game {
         ctx.save();
         ctx.translate(b.x, b.y);
         ctx.rotate(a);
-        ctx.fillStyle = '#c8c8c8';
-        ctx.fillRect(-9, -3, 16, 6);
+        ctx.fillStyle = b.homing ? '#ffd0b0' : '#c8c8c8';
+        if (b.homing) ctx.fillRect(-6, -2, 11, 4);
+        else ctx.fillRect(-9, -3, 16, 6);
         ctx.restore();
-        glowDot(b.x - Math.cos(a) * 10, b.y - Math.sin(a) * 10, 22, '#ffb347', 0.8);
+        glowDot(b.x - Math.cos(a) * (b.homing ? 7 : 10), b.y - Math.sin(a) * (b.homing ? 7 : 10), b.homing ? 14 : 22, b.homing ? '#ff8a4a' : '#ffb347', 0.8);
+        continue;
+      }
+      if (b.goo) {
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#b6ff5a';
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        glowDot(b.x, b.y, 18, '#9aff3a', 0.7);
         continue;
       }
       if (b.bounce !== undefined) {
@@ -3913,7 +4309,16 @@ export class Game {
     ctx.globalAlpha = 1;
 
     // Spit
-    for (const s of this.spits) glowDot(s.x, s.y, s.soul ? 18 : 14, s.soul ? '#7affea' : '#c060ff', 0.9);
+    for (const s of this.spits) glowDot(s.x, s.y, s.soul ? 18 : 14, s.soul ? '#7affea' : s.web ? '#e8e8ff' : '#c060ff', 0.9);
+    for (const v of this.vortexes) {
+      const k = Math.min(1, (v.max - v.t) * 4) * (v.t < 0.2 ? 1.6 : 1);
+      glowDot(v.x, v.y, 90 * k, '#a060ff', 0.55);
+      glowDot(v.x, v.y, 40 * k, '#ffffff', 0.35);
+    }
+    for (const m of this.mortars) {
+      const q = 1 - m.t / m.max;
+      glowDot(m.sx + (m.x - m.sx) * q, m.sy + (m.y - m.sy) * q - Math.sin(q * Math.PI) * 240, 26, '#c8ff3a', 0.8);
+    }
 
     // Glowing particles (sparks, fire, muzzle flashes)
     for (const q of this.particles) {
@@ -4043,6 +4448,59 @@ export class Game {
         ctx.stroke();
       }
     }
+    for (const m of this.mortars) {
+      const q = 1 - m.t / m.max;
+      ctx.fillStyle = `rgba(200,255,60,${0.08 + 0.2 * q})`;
+      ctx.strokeStyle = `rgba(200,255,60,${0.5 + 0.3 * Math.sin(this.clock * 30)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, MORTAR_R, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, MORTAR_R * q, 0, Math.PI * 2);
+      ctx.stroke();
+      // The glob itself, arcing in from the King.
+      ctx.fillStyle = '#7a9a20';
+      ctx.beginPath();
+      ctx.arc(m.sx + (m.x - m.sx) * q, m.sy + (m.y - m.sy) * q - Math.sin(q * Math.PI) * 240, 11, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (const v of this.vortexes) {
+      const k = Math.min(1, (v.max - v.t) * 4);
+      ctx.fillStyle = '#05000a';
+      ctx.strokeStyle = '#d0a0ff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, 18 * k, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(192,138,255,0.35)';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, VORTEX_R * k * (1 - ((this.clock * 1.5 + i / 3) % 1)), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    if (this.webT > 0 && this.state === 'playing' && !this.down) {
+      // Sticky strands around you while you're webbed.
+      const p = this.p;
+      ctx.strokeStyle = `rgba(235,235,255,${Math.min(0.7, this.webT)})`;
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x + Math.cos(a) * 30, p.y + Math.sin(a) * 30);
+        ctx.stroke();
+      }
+      for (const rr of [12, 22]) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
     // Grenade danger circles
     for (const g of this.grenades) {
       if (g.fuse > 0.5) continue;
@@ -4119,15 +4577,64 @@ export class Game {
     }
   }
 
+  private drawVents() {
+    const ctx = this.ctx;
+    for (const v of this.vents) {
+      // Hazard ring and a round floor grate.
+      const warn = v.phase === 'warn' && Math.floor(this.clock * 8) % 2 === 0;
+      ctx.strokeStyle = v.phase === 'blast' ? '#ff6a3a' : warn ? '#ffd23f' : 'rgba(200,160,30,0.55)';
+      ctx.lineWidth = 6;
+      ctx.setLineDash([14, 10]);
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, VENT_R, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#17191a';
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, VENT_R - 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#4a4f52';
+      ctx.lineWidth = 4;
+      for (let i = -2; i <= 2; i++) {
+        const o = i * 16;
+        const h = Math.sqrt(Math.max(0, (VENT_R - 16) ** 2 - o * o));
+        ctx.beginPath();
+        ctx.moveTo(v.x + o, v.y - h);
+        ctx.lineTo(v.x + o, v.y + h);
+        ctx.stroke();
+      }
+      if (v.phase === 'blast') {
+        ctx.fillStyle = `rgba(240,245,245,${0.25 + 0.1 * Math.sin(this.clock * 40)})`;
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, VENT_R, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
   private drawPuddles() {
     const ctx = this.ctx;
+    for (const g of this.goos) {
+      const a = Math.min(1, g.life / 0.6) * 0.5;
+      ctx.fillStyle = `rgba(110,220,30,${a})`;
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, g.r * (0.85 + 0.15 * Math.min(1, (g.max - g.life) * 6)), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(210,255,120,${a})`;
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath();
+        ctx.arc(g.x + Math.cos(this.clock * 3 + i * 1.6) * g.r * 0.5, g.y + Math.sin(this.clock * 2.4 + i * 1.6) * g.r * 0.5, 3 + Math.sin(this.clock * 9 + i) * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     for (const pd of this.puddles) {
       const a = Math.min(1, pd.life / 0.6) * 0.55;
-      ctx.fillStyle = pd.kind === 'acid' ? `rgba(150,60,220,${a})` : `rgba(120,190,30,${a})`;
+      const sludge = pd.kind === 'sludge';
+      ctx.fillStyle = pd.kind === 'acid' ? `rgba(150,60,220,${a})` : sludge ? `rgba(90,110,20,${a * 1.2})` : `rgba(120,190,30,${a})`;
       ctx.beginPath();
       ctx.arc(pd.x, pd.y, pd.r, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = pd.kind === 'acid' ? `rgba(220,150,255,${a})` : `rgba(200,255,90,${a})`;
+      ctx.fillStyle = pd.kind === 'acid' ? `rgba(220,150,255,${a})` : sludge ? `rgba(200,220,60,${a})` : `rgba(200,255,90,${a})`;
       for (let i = 0; i < 3; i++) {
         const bx = pd.x + Math.cos(this.clock * 2 + i * 2) * pd.r * 0.5;
         const by = pd.y + Math.sin(this.clock * 2.5 + i * 2) * pd.r * 0.5;
@@ -4235,6 +4742,53 @@ export class Game {
         ctx.strokeStyle = 'rgba(0,0,0,0.35)';
         ctx.lineWidth = 2;
         for (let i = 1; i < 4; i++) ctx.strokeRect(w.x + (w.w / 4) * i - 1, w.y + 8, 2, w.h - 16);
+      } else if (w.kind === 'tank') {
+        // Storage tank seen from above: a big drum with a hatch and a hazard band.
+        const cx = w.x + w.w / 2;
+        const cy = w.y + w.h / 2;
+        const R = Math.min(w.w, w.h) / 2;
+        ctx.fillStyle = '#4a5054';
+        ctx.beginPath();
+        ctx.roundRect(w.x, w.y, w.w, w.h, 36);
+        ctx.fill();
+        ctx.fillStyle = '#5a6266';
+        ctx.beginPath();
+        ctx.arc(cx, cy, R - 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#c8a020';
+        ctx.lineWidth = 8;
+        ctx.setLineDash([18, 14]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, R - 10, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#6e777c';
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 0.72, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#3a4044';
+        ctx.beginPath();
+        ctx.arc(cx + R * 0.3, cy - R * 0.25, R * 0.16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(150,230,40,0.5)';
+        ctx.font = `bold ${Math.round(R * 0.32)}px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('☣', cx - R * 0.12, cy + R * 0.12);
+      } else if (w.kind === 'pipe') {
+        const horiz = w.w > w.h;
+        ctx.fillStyle = '#6a5a4a';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        if (horiz) ctx.fillRect(w.x, w.y + 4, w.w, 5);
+        else ctx.fillRect(w.x + 4, w.y, 5, w.h);
+        // Flanges every so often
+        ctx.fillStyle = '#4a3e34';
+        const len = horiz ? w.w : w.h;
+        for (let t = 20; t < len - 10; t += 60) {
+          if (horiz) ctx.fillRect(w.x + t, w.y - 3, 8, w.h + 6);
+          else ctx.fillRect(w.x - 3, w.y + t, w.w + 6, 8);
+        }
       } else if (w.kind === 'crate') {
         ctx.fillStyle = '#6b4a2a';
         ctx.fillRect(w.x, w.y, w.w, w.h);
@@ -4358,7 +4912,7 @@ export class Game {
       ctx.beginPath();
       ctx.arc(g.x + 2, g.y + 3, 5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#3d5a2a';
+      ctx.fillStyle = g.vortex ? '#6a3aa0' : '#3d5a2a';
       ctx.beginPath();
       ctx.arc(g.x, g.y - g.z * 0.6, 6, 0, Math.PI * 2);
       ctx.fill();
@@ -4664,6 +5218,67 @@ export class Game {
       ctx.fill();
       ctx.restore();
     }
+    if (kind === 'webber') {
+      // Spindly extra legs and a pale egg sac.
+      ctx.strokeStyle = hit ? '#fff' : '#20202a';
+      ctx.lineWidth = 2.5;
+      for (const side of [-1, 1])
+        for (let i = 0; i < 3; i++) {
+          const a = side * (0.9 + i * 0.55) + Math.sin(z.phase * 1.4 + i) * 0.15;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r * 0.6, Math.sin(a) * r * 0.6);
+          ctx.lineTo(Math.cos(a) * r * 1.5, Math.sin(a) * r * 1.5);
+          ctx.lineTo(Math.cos(a + side * 0.4) * r * 1.9, Math.sin(a + side * 0.4) * r * 1.9);
+          ctx.stroke();
+        }
+      ctx.fillStyle = hit ? '#fff' : '#d8d8e8';
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.75, 0, r * 0.55, r * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (kind === 'medic') {
+      // Lab coat with a red cross on the back.
+      ctx.fillStyle = hit ? '#fff' : '#e8e8de';
+      ctx.beginPath();
+      ctx.arc(-r * 0.15, 0, r * 0.8, Math.PI * 0.5, Math.PI * 1.5);
+      ctx.fill();
+      ctx.fillStyle = hit ? '#fff' : '#e02a2a';
+      ctx.fillRect(-r * 0.62, -r * 0.12, r * 0.5, r * 0.24);
+      ctx.fillRect(-r * 0.49, -r * 0.25, r * 0.24, r * 0.5);
+    }
+    if (kind === 'sludger' || kind === 'sludge') {
+      // Dripping blobs of sludge all over.
+      ctx.fillStyle = hit ? '#fff' : kind === 'sludge' ? '#8aae30' : '#7a9a30';
+      for (let i = 0; i < 6; i++) {
+        const a = i * 1.05 + z.id;
+        const wob = 1 + 0.12 * Math.sin(this.clock * 5 + i * 2);
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * r * 0.62, Math.sin(a) * r * 0.62, r * 0.3 * wob, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = hit ? '#fff' : '#d0ff3a';
+      for (let i = 0; i < 3; i++) {
+        const a = i * 2.1 + z.id * 0.7;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * r * 0.35, Math.sin(a) * r * 0.35, r * 0.09, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (kind === 'sludge') {
+      // A crown of rusted pipe stubs.
+      ctx.fillStyle = hit ? '#fff' : '#8a5a2a';
+      for (let i = 0; i < 5; i++) {
+        const a = Math.PI + (i - 2) * 0.42;
+        ctx.save();
+        ctx.translate(Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55);
+        ctx.rotate(a);
+        ctx.fillRect(-r * 0.12, -r * 0.1, r * 0.42, r * 0.2);
+        ctx.fillStyle = hit ? '#fff' : '#c8a020';
+        ctx.fillRect(r * 0.24, -r * 0.13, r * 0.08, r * 0.26);
+        ctx.fillStyle = hit ? '#fff' : '#8a5a2a';
+        ctx.restore();
+      }
+    }
     if (kind === 'tank') {
       ctx.fillStyle = hit ? '#fff' : '#3a4a44';
       ctx.fillRect(-r * 0.7, -r * 0.95, r * 1.1, r * 0.4);
@@ -4851,6 +5466,37 @@ export class Game {
       ctx.lineTo(10, 0);
       ctx.lineTo(gl - 4, 12);
       ctx.stroke();
+    } else if (kind === 'acid') {
+      ctx.fillStyle = '#3a5a1a';
+      ctx.fillRect(4, -7, 14, 14);
+      ctx.fillStyle = '#9aff3a';
+      ctx.fillRect(7, -5, 8, 10);
+      ctx.fillStyle = '#2a2a2a';
+      ctx.fillRect(gl - 6, -5, 8, 10);
+    } else if (kind === 'swarm') {
+      ctx.fillStyle = '#5a4a3a';
+      ctx.fillRect(6, -8, gl - 4, 16);
+      ctx.fillStyle = '#1a1a1a';
+      for (const o of [-5, 0, 5]) {
+        ctx.beginPath();
+        ctx.arc(gl + 1, o, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (kind === 'singularity') {
+      ctx.fillStyle = '#2a2040';
+      ctx.fillRect(6, -6, gl - 6, 12);
+      for (const o of [0.35, 0.6, 0.85]) {
+        ctx.strokeStyle = '#c08aff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(gl * o, -7);
+        ctx.lineTo(gl * o, 7);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#e0c8ff';
+      ctx.beginPath();
+      ctx.arc(gl, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
     } else if (kind === 'ripper') {
       ctx.fillStyle = '#5a6068';
       ctx.beginPath();
@@ -5055,7 +5701,7 @@ export class Game {
       ctx.fillRect(bx + 2, rowY - 4, (bw - 4) * Math.max(0, boss.hp / boss.maxHp), 8);
       ctx.fillStyle = '#fff';
       ctx.font = `11px ${FONT}`;
-      ctx.fillText(`${BOSS_NAMES[boss.def.kind]}${shielded ? '  (SHIELDED BY EGGS)' : ''}`, this.w / 2, rowY + 15);
+      ctx.fillText(`${BOSS_NAMES[boss.def.kind]}${boss.mini ? ' (MINI)' : ''}${shielded ? '  (SHIELDED BY EGGS)' : ''}`, this.w / 2, rowY + 15);
       rowY += 34;
     }
     // Active power-ups
