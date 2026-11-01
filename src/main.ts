@@ -41,6 +41,9 @@ const game = new Game(canvas, input, sfx, {
   onHighlight: (label) => clips.mark(label),
 });
 
+// Dev builds only: lets browser tests drive the game.
+if (import.meta.env.DEV) (window as unknown as { game: Game }).game = game;
+
 clips.onClip = (c) => {
   if (game.state === 'playing') game.toast(`🎬 Clip saved: ${c.label}`);
   if (!$('over').classList.contains('hidden')) renderClips();

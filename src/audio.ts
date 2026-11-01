@@ -41,7 +41,14 @@ export type SfxKind =
   | 'shatter'
   | 'plate'
   | 'horn'
-  | 'train';
+  | 'train'
+  | 'crossbow'
+  | 'autoshotgun'
+  | 'ripper'
+  | 'fuse'
+  | 'dig'
+  | 'blink'
+  | 'scythe';
 
 export type MusicMood = 'menu' | 'calm' | 'fight' | 'boss' | 'off';
 
@@ -399,6 +406,34 @@ export class Sfx {
       case 'train':
         this.burst(now, 1.6, 300, 0.9, 'lowpass', bus);
         this.tone(now, 1.4, 60, 45, 0.5, 'sawtooth', bus);
+        break;
+      case 'crossbow':
+        this.burst(now, 0.08, 1400, 0.35 * v, 'bandpass', bus);
+        this.tone(now, 0.1, 520, 140, 0.18 * v, 'triangle', bus);
+        break;
+      case 'autoshotgun':
+        this.burst(now, 0.18, 1300, 0.6 * v, 'lowpass', bus);
+        this.tone(now, 0.1, 130, 45, 0.3 * v, 'square', bus);
+        break;
+      case 'ripper':
+        this.tone(now, 0.18, 900, 1500, 0.1 * v, 'sawtooth', bus);
+        this.burst(now, 0.1, 3500, 0.2 * v, 'bandpass', bus);
+        break;
+      case 'fuse':
+        this.burst(now, 0.6, 6000, 0.2 * v, 'highpass', bus);
+        this.tone(now, 0.5, 1200, 1700, 0.06 * v, 'square', bus);
+        break;
+      case 'dig':
+        this.burst(now, 0.35, 350, 0.45 * v, 'lowpass', bus);
+        this.tone(now, 0.25, 80, 40, 0.25 * v, 'sine', bus);
+        break;
+      case 'blink':
+        this.tone(now, 0.35, 700, 180, 0.12 * v, 'sine', bus);
+        this.burst(now, 0.3, 2500, 0.12 * v, 'bandpass', bus);
+        break;
+      case 'scythe':
+        this.burst(now, 0.3, 2200, 0.6 * v, 'bandpass', bus);
+        this.tone(now, 0.25, 400, 90, 0.25 * v, 'sawtooth', bus);
         break;
       case 'levelup':
         [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(now + i * 0.09, 0.22, f, f, 0.16, 'triangle', bus));

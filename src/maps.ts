@@ -5,7 +5,7 @@ export const WORLD_W = 2200;
 export const WORLD_H = 1600;
 export const BORDER = 40;
 
-export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar';
+export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar' | 'grave' | 'crypt';
 
 export interface Wall {
   x: number;
@@ -240,6 +240,54 @@ function groundSubway(c: CanvasRenderingContext2D) {
   grit(c, 40);
 }
 
+function groundGraveyard(c: CanvasRenderingContext2D) {
+  c.fillStyle = '#1f261d';
+  c.fillRect(0, 0, WORLD_W, WORLD_H);
+  // Patchy dead grass
+  for (let i = 0; i < 14000; i++) {
+    c.fillStyle = Math.random() < 0.5 ? 'rgba(90,110,60,0.08)' : 'rgba(0,0,0,0.12)';
+    c.fillRect(rand(0, WORLD_W), rand(0, WORLD_H), rand(1, 3), rand(3, 7));
+  }
+  for (let i = 0; i < 30; i++) {
+    c.fillStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.14)' : 'rgba(80,90,50,0.06)';
+    c.beginPath();
+    c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(80, 240), rand(60, 180), rand(0, 3), 0, Math.PI * 2);
+    c.fill();
+  }
+  // Gravel paths in a cross, plus a ring around the statue
+  c.fillStyle = '#3a3630';
+  c.fillRect(BORDER, WORLD_H / 2 - 55, WORLD_W - BORDER * 2, 110);
+  c.fillRect(WORLD_W / 2 - 55, BORDER, 110, WORLD_H - BORDER * 2);
+  c.beginPath();
+  c.arc(WORLD_W / 2, WORLD_H / 2, 190, 0, Math.PI * 2);
+  c.fill();
+  for (let i = 0; i < 5000; i++) {
+    const x = rand(0, WORLD_W);
+    const y = rand(0, WORLD_H);
+    const onPath = Math.abs(y - WORLD_H / 2) < 55 || Math.abs(x - WORLD_W / 2) < 55 || Math.hypot(x - WORLD_W / 2, y - WORLD_H / 2) < 190;
+    if (!onPath) continue;
+    c.fillStyle = Math.random() < 0.5 ? 'rgba(160,150,130,0.18)' : 'rgba(0,0,0,0.25)';
+    c.fillRect(x, y, 3, 3);
+  }
+  // Dirt plots in front of each headstone
+  c.fillStyle = 'rgba(70,50,30,0.55)';
+  for (const g of GRAVES) c.fillRect(g.x - 6, g.y + g.h + 2, g.w + 12, 46);
+  grit(c, 20);
+}
+
+/** Headstone rows, kept a flow-field cell apart so zombies can weave between them. */
+const GRAVES: Wall[] = (() => {
+  const out: Wall[] = [];
+  for (const y of [520, 1010])
+    for (let x = 620; x <= 1600; x += 130) {
+      if (Math.abs(x + 12 - WORLD_W / 2) < 120) continue;
+      out.push({ x, y, w: 26, h: 18, kind: 'grave' });
+    }
+  for (const x of [250, 1924])
+    for (let y = 560; y <= 1000; y += 130) out.push({ x, y, w: 26, h: 18, kind: 'grave' });
+  return out;
+})();
+
 export const MAPS: MapDef[] = [
   {
     id: 'lot',
@@ -364,6 +412,50 @@ export const MAPS: MapDef[] = [
     tracks: [470, 1130],
     ground: groundSubway,
   },
+  {
+    id: 'graveyard',
+    name: 'Graveyard',
+    desc: 'Open graves inside the walls. The dead climb out right next to you.',
+    unlock: 6,
+    walls: [
+      ...BORDER_WALLS,
+      // Four crypts in the corners
+      { x: 330, y: 230, w: 170, h: 120, kind: 'crypt' },
+      { x: 1700, y: 230, w: 170, h: 120, kind: 'crypt' },
+      { x: 330, y: 1250, w: 170, h: 120, kind: 'crypt' },
+      { x: 1700, y: 1250, w: 170, h: 120, kind: 'crypt' },
+      // Angel statue in the middle
+      { x: WORLD_W / 2 - 32, y: WORLD_H / 2 - 32, w: 64, h: 64, kind: 'pillar' },
+      ...GRAVES,
+    ],
+    gates: [
+      ...GATES,
+      // Open graves (inside the walls)
+      { x: 760, y: 800 },
+      { x: 1440, y: 800 },
+      { x: 1100, y: 330 },
+      { x: 1100, y: 1270 },
+    ],
+    lamps: [
+      { x: 560, y: 290, flicker: true },
+      { x: 1640, y: 290, flicker: false },
+      { x: 560, y: 1310, flicker: false },
+      { x: 1640, y: 1310, flicker: true },
+      { x: 1100, y: 690, flicker: true },
+    ],
+    barrels: [
+      { x: 520, y: 400 },
+      { x: 1680, y: 400 },
+      { x: 520, y: 1200 },
+      { x: 1680, y: 1200 },
+      { x: 900, y: 690 },
+      { x: 1300, y: 910 },
+    ],
+    ground: groundGraveyard,
+  },
 ];
+
+/** Gates in the middle of the map (open graves) rather than gaps in the outer wall. */
+export const isInnerGate = (g: { x: number; y: number }) => g.x > BORDER * 3 && g.x < WORLD_W - BORDER * 3 && g.y > BORDER * 3 && g.y < WORLD_H - BORDER * 3;
 
 export const mapById = (id: string) => MAPS.find((m) => m.id === id) ?? MAPS[0];
