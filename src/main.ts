@@ -9,9 +9,12 @@ import { challengeCode, challengeLink, isFramed, LIVE_URL, makeShareCard, parseC
 import { BadgeDef, BADGES } from './achievements';
 import { Clip, ClipRecorder } from './clips';
 import { gearDef, gearValue, RARITIES, RARITY_COLOR, SCRAP_VALUE } from './gear';
-import { CRATE_COST, GEAR_MAX } from './meta';
+import { CRATE_COST } from './meta';
 import { boardFor, cleanName, leaderboardsOn, postScore, Score, topScores } from './leaderboard';
 import { NetMsg, Room } from './net';
+import { ads, AdPlacement, AdResult } from './monetize/ads';
+import { pay, PACKS } from './monetize/pay';
+import { AD_DIAMONDS, BADGE_DIAMONDS, BRAIN_BUNDLE, LEVEL_DIAMONDS, DIAMOND_PRICE, missionDiamonds, REVIVE_TOKEN_MAX, SKINS, STASH_BONUS, XP_BOOST_RUNS } from './diamonds';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -20,7 +23,7 @@ const input = new Input(canvas);
 input.touchMode = window.matchMedia('(pointer: coarse)').matches;
 const sfx = new Sfx();
 
-const screens = ['menu', 'modes', 'coop', 'base', 'perks', 'shop', 'pause', 'over'];
+const screens = ['menu', 'modes', 'coop', 'base', 'perks', 'shop', 'pause', 'revive', 'over'];
 function show(id: string | null) {
   for (const s of screens) $(s).classList.toggle('hidden', s !== id);
   canvas.style.cursor = id === null && !input.touchMode ? 'none' : 'default';
@@ -39,6 +42,10 @@ const game = new Game(canvas, input, sfx, {
     show('pause');
   },
   onHighlight: (label) => clips.mark(label),
+  onReviveOffer: () => {
+    clips.pause(true);
+    offerRevive();
+  },
 });
 
 // Dev builds only: lets browser tests drive the game.
@@ -106,6 +113,10 @@ function showShop() {
 }
 
 let shareCanvas: HTMLCanvasElement | null = null;
+let lastRes: RunResult | null = null;
+let lastBadges: BadgeDef[] = [];
+/** The 2x brains ad was already used on this game-over screen. */
+let doubled = false;
 let lastRun: RunSummary | null = null;
 
 function showGameOver(s: RunSummary) {
@@ -113,6 +124,9 @@ function showGameOver(s: RunSummary) {
   clips.finish('Last stand');
   const res = meta.finishRun(s.report, game.mode, game.map.id, game.challenge);
   const badges = [...runBadges, ...res.badges];
+  lastRes = res;
+  lastBadges = badges;
+  doubled = false;
   runBadges = [];
   if (res.levelsGained.length) sfx.play('levelup');
   lastRun = s;
@@ -125,6 +139,7 @@ function showGameOver(s: RunSummary) {
     `Reached <b>wave ${s.wave}</b>${res.newBest ? ' 🏆 new best!' : ` (best: wave ${meta.data.bests[game.mode] ?? 0})`}<br>` +
     `<b>${s.kills}</b> zombies killed<br>Best combo <b>x${s.bestCombo}</b><br><b>$${s.cash}</b> earned · survived <b>${m}:${sec}</b>`;
   $('over-rewards').innerHTML = rewardsHtml(res, badges);
+  renderDoubleAd();
   shareCanvas = makeShareCard(s, scene, meta.data.level, res.newBest, runLabel().toUpperCase(), badges);
   $<HTMLImageElement>('share-img').src = shareCanvas.toDataURL('image/jpeg', 0.8);
   $('share-msg').textContent = '';
@@ -145,7 +160,9 @@ function showGameOver(s: RunSummary) {
 const esc = (t: string) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
 
 function rewardsHtml(r: RunResult, badges: BadgeDef[]) {
-  const lines = [`<div class="gain"><span>+${r.xpGained} XP</span><span class="pink">+${r.brainsGained + badges.reduce((a, b) => a + b.reward, 0)} 🧠</span></div>`];
+  const dia = r.diamondsGained + badges.length * BADGE_DIAMONDS;
+  const brains = r.brainsGained * (doubled ? 2 : 1) + badges.reduce((a, b) => a + b.reward, 0);
+  const lines = [`<div class="gain"><span>+${r.xpGained} XP${r.xpBoosted ? ' (2x)' : ''}</span><span class="pink">+${brains} 🧠${doubled ? ' (2x)' : ''}</span>${dia ? `<span class="cyan">+${dia} 💎</span>` : ''}</div>`];
   for (const it of game.loot) {
     const g = gearDef(it.id)!;
     lines.push(`<div class="badge-got" style="color:${RARITY_COLOR[it.rarity]}">📦 Loot: ${g.icon} <b>${it.rarity} ${esc(g.name)}</b></div>`);
@@ -153,7 +170,7 @@ function rewardsHtml(r: RunResult, badges: BadgeDef[]) {
   for (const b of badges) lines.push(`<div class="badge-got">${b.icon} Badge: <b>${esc(b.name)}</b> <span class="pink">+${b.reward} 🧠</span></div>`);
   for (const lv of r.levelsGained) if (!r.rewards.some((x) => x.startsWith(`Level ${lv}:`))) lines.push(`<div class="lvup">LEVEL ${lv}!</div>`);
   for (const t of r.rewards) lines.push(`<div class="lvup">⬆ ${esc(t)}</div>`);
-  for (const mi of r.missionsDone) lines.push(`<div class="mission-done">✔ ${esc(mi.text)} <span class="pink">+${mi.reward} 🧠</span></div>`);
+  for (const mi of r.missionsDone) lines.push(`<div class="mission-done">✔ ${esc(mi.text)} <span class="pink">+${mi.reward} 🧠</span> <span class="cyan">+${mi.diamonds} 💎</span></div>`);
   const d = meta.data;
   lines.push(`<div class="xpline">LV ${d.level} <div class="xpbar"><div style="width:${Math.round((d.xp / xpToNext(d.level)) * 100)}%"></div></div></div>`);
   return lines.join('');
@@ -170,6 +187,8 @@ function refreshMenu() {
   $('m-xp').style.width = `${Math.round((d.xp / xpToNext(d.level)) * 100)}%`;
   $('m-brains').textContent = String(d.brains);
   $('b-brains').textContent = String(d.brains);
+  $('m-diamonds').textContent = String(d.diamonds);
+  $('b-diamonds').textContent = String(d.diamonds);
   $('best').textContent = `wave ${d.best}`;
   // A dot on the Missions button when today's missions are untouched.
   $('m-missions').classList.toggle('hidden', d.missions.some((m) => m.progress > 0));
@@ -195,9 +214,263 @@ function btn(label: string, cost: number | null, onClick: () => void, cls = '') 
   return b;
 }
 
+/** A plain button whose handler re-renders by itself (for async flows like ads and checkout). */
+function abtn(label: string, onClick: (b: HTMLButtonElement) => void, cls = '') {
+  const b = document.createElement('button');
+  b.className = `buy ${cls}`;
+  b.textContent = label;
+  b.addEventListener('click', () => onClick(b));
+  return b;
+}
+
+/** A buy button priced in diamonds. */
+function dbtn(label: string, cost: number, onClick: () => void, cls = '') {
+  const b = document.createElement('button');
+  b.className = `buy dia-buy ${cls}`;
+  b.innerHTML = `${esc(label)} <span>💎 ${cost}</span>`;
+  if (meta.data.diamonds < cost) b.disabled = true;
+  b.addEventListener('click', () => {
+    onClick();
+    refreshMenu();
+    renderBase();
+  });
+  return b;
+}
+
+let storeMsg = '';
+
+function storeCard(title: string, sub: string, cls = '') {
+  const card = document.createElement('div');
+  card.className = `meta-card store-card ${cls}`;
+  card.innerHTML = `<div class="name"></div><div class="sub"></div>`;
+  (card.children[0] as HTMLElement).innerHTML = title;
+  (card.children[1] as HTMLElement).innerHTML = sub;
+  return card;
+}
+
+function storeHead(text: string, note = '') {
+  const h = document.createElement('h3');
+  h.className = 'store-head';
+  h.innerHTML = `${esc(text)}${note ? ` <span class="test-tag">${esc(note)}</span>` : ''}`;
+  return h;
+}
+
+function renderStore(body: HTMLElement) {
+  const d = meta.data;
+  if (storeMsg) {
+    const p = document.createElement('p');
+    p.className = 'tag';
+    p.innerHTML = `<b class="gold">${esc(storeMsg)}</b>`;
+    body.appendChild(p);
+    storeMsg = '';
+  }
+  // Free diamonds first: nobody should feel they have to pay.
+  body.appendChild(storeHead('Free diamonds', ads.test ? 'TEST ADS' : ''));
+  const free = document.createElement('div');
+  free.className = 'meta-grid';
+  const left = meta.adDiamondsLeft();
+  const adCard = storeCard('📺 Watch an ad', left ? `+${AD_DIAMONDS} 💎 · ${left} left today` : 'Come back tomorrow for more');
+  const adB = abtn(left ? `Watch +${AD_DIAMONDS} 💎` : 'All watched today', async () => {
+    if (await watchAd('diamonds')) {
+      const n = meta.rewardDiamondAd();
+      storeMsg = n ? `+${n} 💎 Thanks for watching!` : '';
+      sfx.play('power');
+    }
+    refreshMenu();
+    renderBase();
+  });
+  adB.disabled = !left;
+  adCard.appendChild(adB);
+  free.appendChild(adCard);
+  free.appendChild(storeCard('📋 Daily missions', 'Every mission pays 4 to 12 💎. Three new ones every day.'));
+  free.appendChild(storeCard('⬆ Level ups & badges', `+${LEVEL_DIAMONDS} 💎 every level, +${BADGE_DIAMONDS} 💎 every badge.`));
+  body.appendChild(free);
+
+  body.appendChild(storeHead('Diamond packs', pay.test ? 'TEST MODE · NO REAL MONEY' : ''));
+  const packs = document.createElement('div');
+  packs.className = 'meta-grid packs';
+  for (const pk of PACKS) {
+    const card = storeCard(`💎 ${pk.diamonds.toLocaleString()}`, `${pk.bonus ? `<span class="green">${pk.bonus} bonus</span>` : 'Starter'}${pk.tag ? ` · <b class="gold">${pk.tag}</b>` : ''}`, 'pack');
+    const b = abtn(pk.price, async (b) => {
+      b.disabled = true;
+      const r = await pay.buy(pk, d.buyer);
+      if (r.ok) {
+        meta.addDiamonds(r.diamonds);
+        storeMsg = `+${r.diamonds.toLocaleString()} 💎 added. Thank you!`;
+        sfx.play('levelup');
+      } else if (r.redirecting) return;
+      else if (r.error) storeMsg = r.error;
+      refreshMenu();
+      renderBase();
+    }, 'price');
+    card.appendChild(b);
+    packs.appendChild(card);
+  }
+  body.appendChild(packs);
+
+  body.appendChild(storeHead('Exclusive'));
+  const ex = document.createElement('div');
+  ex.className = 'meta-grid';
+  const prism = WEAPONS.find((w) => w.id === 'prism')!;
+  const ownPrism = d.unlocked.includes('prism');
+  const pc = storeCard(`🔫 ${esc(prism.name)}`, 'Diamond-only gun. A laser that slices through 10 zombies in a line. Weaker against big crowds.', 'exclusive');
+  if (ownPrism) pc.appendChild(btn('Owned · equip in Armory', null, () => (tab = 'armory'), 'on'));
+  else pc.appendChild(dbtn('Unlock', DIAMOND_PRICE.prism, () => meta.buyPrism() && sfx.play('levelup')));
+  ex.appendChild(pc);
+  for (const sk of SKINS) {
+    const own = d.skins.includes(sk.id);
+    const on = d.skin === sk.id;
+    const c = storeCard(`<span class="swatch" style="background:${sk.colors[0]};border-color:${sk.colors[2]}"></span> ${esc(sk.name)}`, 'Skin: your soldier wears it in every run.', 'exclusive');
+    if (!own) c.appendChild(dbtn('Buy', sk.price, () => meta.buySkin(sk.id) && sfx.play('perk')));
+    else c.appendChild(btn(on ? 'Wearing · take off' : 'Wear', null, () => meta.wearSkin(on ? '' : sk.id), on ? 'on' : ''));
+    ex.appendChild(c);
+  }
+  const st = storeCard('🎒 Bigger stash', d.stash ? `Done: your stash holds ${meta.gearMax()} items.` : `+${STASH_BONUS} gear slots, forever.`);
+  if (!d.stash) st.appendChild(dbtn('Expand', DIAMOND_PRICE.stash, () => meta.buyStash() && sfx.play('buy')));
+  ex.appendChild(st);
+  body.appendChild(ex);
+
+  body.appendChild(storeHead('Boosts'));
+  const bo = document.createElement('div');
+  bo.className = 'meta-grid';
+  const crate = storeCard('📦 Elite crate', 'One piece of gear, always epic, 1 in 5 legendary.');
+  crate.appendChild(
+    dbtn('Open', DIAMOND_PRICE.eliteCrate, () => {
+      const it = meta.buyEliteCrate();
+      if (it) {
+        sfx.play('levelup');
+        storeMsg = `You got: ${gearDef(it.id)!.icon} ${it.rarity} ${gearDef(it.id)!.name}`;
+      } else if (d.gear.length >= meta.gearMax()) storeMsg = 'Your stash is full. Scrap something first.';
+    }),
+  );
+  bo.appendChild(crate);
+  const br = storeCard(`🧠 ${BRAIN_BUNDLE} brains`, 'Skip some grinding for guns and training.');
+  br.appendChild(dbtn('Buy', DIAMOND_PRICE.brains, () => meta.buyBrains() && sfx.play('buy')));
+  bo.appendChild(br);
+  const rt = storeCard('✚ Revive token', `Get back up on the death screen. You have ${d.reviveTokens}/${REVIVE_TOKEN_MAX}.`);
+  if (d.reviveTokens < REVIVE_TOKEN_MAX) rt.appendChild(dbtn('Buy', DIAMOND_PRICE.reviveToken, () => meta.buyReviveToken() && sfx.play('buy')));
+  bo.appendChild(rt);
+  const xp = storeCard('⭐ Double XP', `2x XP for your next ${XP_BOOST_RUNS} runs.${d.xpBoost ? ` ${d.xpBoost} runs left.` : ''}`);
+  xp.appendChild(dbtn('Buy', DIAMOND_PRICE.xpBoost, () => meta.buyXpBoost() && sfx.play('buy')));
+  bo.appendChild(xp);
+  body.appendChild(bo);
+  const fine = document.createElement('p');
+  fine.className = 'sub';
+  fine.textContent = 'Diamonds live in your save, like brains. Back it up with the Save tab before switching phones.';
+  body.appendChild(fine);
+}
+
+// ------------------------------------------------------------------ rewarded ads
+
+let adBusy = false;
+
+/** Shows a rewarded ad. True only if the player watched it to the end. */
+async function watchAd(place: AdPlacement): Promise<boolean> {
+  if (adBusy) return false;
+  adBusy = true;
+  sfx.duck(true);
+  let r: AdResult = 'unavailable';
+  try {
+    r = await ads.showRewarded(place);
+  } finally {
+    sfx.duck(false);
+    adBusy = false;
+  }
+  if (r === 'unavailable') notice('No ad available right now. Try again in a minute.');
+  return r === 'rewarded';
+}
+
+let noticeT = 0;
+function notice(text: string) {
+  const n = $('notice');
+  n.textContent = text;
+  n.classList.remove('hidden');
+  clearTimeout(noticeT);
+  noticeT = window.setTimeout(() => n.classList.add('hidden'), 3500);
+}
+
+/** Game-over offer: watch an ad to double the brains from this run. */
+function renderDoubleAd() {
+  const b = $<HTMLButtonElement>('over-ad');
+  const n = lastRes?.brainsGained ?? 0;
+  b.classList.toggle('hidden', doubled || n < 10);
+  b.disabled = false;
+  b.textContent = `📺 Watch an ad: double your brains (+${n} 🧠)`;
+}
+
+$('over-ad').addEventListener('click', async () => {
+  if (!lastRes || doubled) return;
+  const b = $<HTMLButtonElement>('over-ad');
+  b.disabled = true;
+  if (await watchAd('double')) {
+    doubled = true;
+    meta.addBrains(lastRes.brainsGained);
+    sfx.play('levelup');
+    $('over-rewards').innerHTML = rewardsHtml(lastRes, lastBadges);
+    refreshMenu();
+  }
+  renderDoubleAd();
+});
+
+// ------------------------------------------------------------------ revive offer
+
+const REVIVE_SECONDS = 10;
+let rvLeft = 0;
+let rvTimer = 0;
+
+function offerRevive() {
+  rvLeft = REVIVE_SECONDS;
+  $('rv-msg').textContent = ads.test ? 'Test ads: no ad network connected yet.' : '';
+  renderRevive();
+  show('revive');
+  clearInterval(rvTimer);
+  rvTimer = window.setInterval(() => {
+    if (adBusy) return; // the clock stops while an ad plays
+    rvLeft -= 0.1;
+    $('rv-bar').style.width = `${Math.max(0, (rvLeft / REVIVE_SECONDS) * 100)}%`;
+    if (rvLeft <= 0) giveUp();
+  }, 100);
+}
+
+function renderRevive() {
+  const d = meta.data;
+  const tok = $<HTMLButtonElement>('rv-token');
+  tok.textContent = `✚ Use revive token (${d.reviveTokens})`;
+  tok.disabled = d.reviveTokens <= 0;
+  const dia = $<HTMLButtonElement>('rv-dia');
+  dia.innerHTML = `Revive <span>💎 ${DIAMOND_PRICE.reviveNow}</span>`;
+  dia.disabled = d.diamonds < DIAMOND_PRICE.reviveNow;
+  $('rv-bar').style.width = `${(rvLeft / REVIVE_SECONDS) * 100}%`;
+}
+
+function revived() {
+  clearInterval(rvTimer);
+  refreshMenu();
+  show(null);
+  game.reviveNow();
+  clips.pause(false);
+}
+
+function giveUp() {
+  clearInterval(rvTimer);
+  if (!game.awaitingRevive) return;
+  show(null);
+  game.endRun();
+}
+
+$('rv-ad').addEventListener('click', async () => {
+  sfx.unlock();
+  if (await watchAd('revive')) revived();
+  else if (game.awaitingRevive) $('rv-msg').textContent = 'No reward without watching it all. You can still use a token or diamonds.';
+});
+$('rv-token').addEventListener('click', () => meta.useReviveToken() && revived());
+$('rv-dia').addEventListener('click', () => meta.spendDiamonds(DIAMOND_PRICE.reviveNow) && revived());
+$('rv-no').addEventListener('click', giveUp);
+
 function renderBase() {
   for (const b of document.querySelectorAll<HTMLButtonElement>('#base .tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
   $('b-brains').textContent = String(meta.data.brains);
+  $('b-diamonds').textContent = String(meta.data.diamonds);
   const body = $('base-body');
   body.innerHTML = '';
   const d = meta.data;
@@ -217,7 +490,8 @@ function renderBase() {
       const card = document.createElement('div');
       card.className = `meta-card${owned ? '' : ' locked'}${d.loadout.includes(w.id) && owned ? ' equipped' : ''}`;
       card.innerHTML = `<div class="name">${esc(w.name)}</div><div class="sub">Mastery ${lv}/${MASTERY_MAX}</div><div class="pips">${'■'.repeat(lv)}${'□'.repeat(MASTERY_MAX - lv)}</div>`;
-      if (!owned) card.appendChild(btn('Unlock', GUN_UNLOCK[w.id], () => meta.unlockGun(w.id) && sfx.play('buy')));
+      if (!owned && w.exclusive) card.appendChild(btn('💎 In the Shop', null, () => (tab = 'store')));
+      else if (!owned) card.appendChild(btn('Unlock', GUN_UNLOCK[w.id], () => meta.unlockGun(w.id) && sfx.play('buy')));
       else {
         const inLo = d.loadout.slice(0, meta.slots()).includes(w.id);
         card.appendChild(btn(inLo ? 'Equipped' : 'Equip', null, () => meta.equip(w.id), inLo ? 'on' : ''));
@@ -246,7 +520,8 @@ function renderBase() {
       const def = MISSIONS.find((x) => x.id === m.id)!;
       const row = document.createElement('div');
       row.className = `mission${m.done ? ' done' : ''}`;
-      row.innerHTML = `<div class="mtext">${m.done ? '✔ ' : ''}${esc(def.text)}</div><div class="xpbar"><div style="width:${Math.round((m.progress / def.goal) * 100)}%"></div></div><div class="sub">${Math.floor(m.progress)} / ${def.goal} · <span class="pink">+${def.reward} 🧠</span></div>`;
+      row.innerHTML = `<div class="mtext">${m.done ? '✔ ' : ''}${esc(def.text)}</div><div class="xpbar"><div style="width:${Math.round((m.progress / def.goal) * 100)}%"></div></div><div class="sub">${Math.floor(m.progress)} / ${def.goal} · <span class="pink">+${def.reward} 🧠</span> <span class="cyan">+${missionDiamonds(def.reward)} 💎</span></div>`;
+      if (!m.done) row.appendChild(dbtn('🎲 Swap', DIAMOND_PRICE.reroll, () => meta.rerollMission(m.id) && sfx.play('buy'), 'reroll'));
       list.appendChild(row);
     }
     body.appendChild(list);
@@ -257,6 +532,8 @@ function renderBase() {
     body.appendChild(p);
   } else if (tab === 'ranks') {
     void renderRanks(body);
+  } else if (tab === 'store') {
+    renderStore(body);
   } else if (tab === 'gear') {
     const slots = document.createElement('div');
     slots.className = 'gear-slots';
@@ -285,7 +562,7 @@ function renderBase() {
     body.appendChild(slots);
     const p = document.createElement('p');
     p.className = 'tag';
-    p.innerHTML = gearMsg ? `<b class="gold">${esc(gearMsg)}</b>` : `Stash ${d.gear.length}/${GEAR_MAX}. Tap Equip to wear it, Scrap to turn it into brains.`;
+    p.innerHTML = gearMsg ? `<b class="gold">${esc(gearMsg)}</b>` : `Stash ${d.gear.length}/${meta.gearMax()}. Tap Equip to wear it, Scrap to turn it into brains.`;
     gearMsg = '';
     body.appendChild(p);
     const grid = document.createElement('div');
@@ -950,6 +1227,28 @@ setInterval(() => {
     history.replaceState(null, '', location.pathname + location.search);
     openCoop(m[1].toUpperCase());
   }
+}
+
+// Back from Stripe Checkout (or just opening the game): add any diamonds the server says are paid for.
+async function claimPurchases() {
+  const n = await pay.claim(meta.data.buyer);
+  if (!n) return;
+  meta.addDiamonds(n);
+  refreshMenu();
+  if (!$('base').classList.contains('hidden')) renderBase();
+  notice(`+${n.toLocaleString()} 💎 from your purchase. Thank you!`);
+  sfx.play('levelup');
+}
+{
+  const q = new URLSearchParams(location.search);
+  if (q.has('paid') || q.has('canceled')) {
+    if (q.has('canceled')) notice('Purchase cancelled. No money was taken.');
+    q.delete('paid');
+    q.delete('canceled');
+    history.replaceState(null, '', location.pathname + (q.toString() ? `?${q}` : '') + location.hash);
+  }
+  void claimPurchases();
+  setTimeout(() => void claimPurchases(), 6000); // the webhook can land a few seconds after the redirect
 }
 
 refreshMenu();

@@ -29,6 +29,7 @@ export interface WeaponDef {
   homing?: boolean; // rockets steer toward the nearest zombie
   blast?: number; // rocket blast radius (default 115)
   vortex?: boolean; // grenades open a black hole that drags zombies in, then pops
+  exclusive?: boolean; // diamond shop only: never in the mid-run shop unless you own it
 }
 
 export const WEAPONS: WeaponDef[] = [
@@ -49,6 +50,7 @@ export const WEAPONS: WeaponDef[] = [
   { id: 'acid', name: 'Acid Cannon', kind: 'bullet', damage: 30, fireRate: 3, mag: 14, reload: 1.9, spread: 0.08, pellets: 1, speed: 620, life: 0.6, price: 1400, upgradeBase: 400, shake: 0.12, color: '#9aff3a', length: 30, width: 6, goo: true },
   { id: 'swarm', name: 'Swarm Launcher', kind: 'rocket', damage: 42, fireRate: 1.6, mag: 8, reload: 2.4, spread: 0.2, pellets: 3, speed: 540, life: 1.6, price: 2400, upgradeBase: 620, shake: 0.16, color: '#ff9a5a', length: 32, homing: true, blast: 72 },
   { id: 'singularity', name: 'Singularity', kind: 'grenade', damage: 170, fireRate: 0.8, mag: 3, reload: 2.6, spread: 0.02, pellets: 1, speed: 640, life: 0.5, price: 2600, upgradeBase: 680, shake: 0.3, color: '#c08aff', length: 34, vortex: true },
+  { id: 'prism', name: 'Prism Laser', kind: 'bullet', damage: 34, fireRate: 5, mag: 24, reload: 1.8, spread: 0, pellets: 1, speed: 2600, life: 0.5, price: 2000, upgradeBase: 520, shake: 0.06, color: '#7af0ff', length: 34, pierce: 10, width: 3, exclusive: true },
 ];
 
 export type ZombieKind =
