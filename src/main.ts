@@ -1,4 +1,5 @@
 import './style.css';
+import './tactical.css';
 import { Sfx } from './audio';
 import { Game, RunSummary, SUITS } from './game';
 import { Input } from './input';
@@ -198,6 +199,7 @@ function btn(label: string, cost: number | null, onClick: () => void, cls = '') 
 function renderBase() {
   for (const b of document.querySelectorAll<HTMLButtonElement>('#base .tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
   $('b-brains').textContent = String(meta.data.brains);
+  $('base-title').textContent = tab[0].toUpperCase() + tab.slice(1);
   const body = $('base-body');
   body.innerHTML = '';
   const d = meta.data;
@@ -696,7 +698,7 @@ function renderCoop() {
   $('co-pick').classList.toggle('hidden', !!r);
   $('co-room').classList.toggle('hidden', !r);
   $<HTMLInputElement>('co-name').disabled = !!r;
-  $('co-back').textContent = r ? 'Leave room' : 'Back';
+  $('co-back').querySelector('.back-label')!.textContent = r ? 'LEAVE' : 'BACK';
   if (!r) return;
   $('co-codeview').textContent = r.code;
   const list = $('co-players');
@@ -988,13 +990,42 @@ $('next-wave').addEventListener('click', () => {
   game.startWave();
   clips.pause(false);
 });
+/** Screen the pause menu was opened from between waves (perks or shop), so Resume goes back there. */
+let pausedFrom: string | null = null;
+for (const id of ['perks', 'shop'])
+  $(`${id}-back`).addEventListener('click', () => {
+    pausedFrom = id;
+    show('pause');
+  });
 $('resume').addEventListener('click', () => {
   sfx.unlock();
+  if (pausedFrom) {
+    show(pausedFrom);
+    pausedFrom = null;
+    return;
+  }
   show(null);
   game.state = 'playing';
   clips.pause(false);
 });
+$('pause-back').addEventListener('click', () => $('resume').click());
+$('over-back').addEventListener('click', () => {
+  leaveCoop();
+  game.newRun();
+  game.state = 'menu';
+  refreshMenu();
+  show('menu');
+});
+// Escape works like the on-screen back button of whichever screen is open.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const open = screens.find((s) => !$(s).classList.contains('hidden'));
+  if (!open) return;
+  $(open).querySelector<HTMLButtonElement>('.topbar .back-btn')?.click();
+  input.clearPressed(); // so the game does not also read this Escape as "pause" right after resuming
+});
 $('quit').addEventListener('click', () => {
+  pausedFrom = null;
   clips.stop();
   // Quitting still banks XP, brains and mission progress.
   if (game.wave > 0) meta.finishRun(game.summary().report, game.mode, game.map.id, game.challenge);
@@ -1055,4 +1086,4 @@ if (__PWA__ && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
-if (import.meta.env.DEV) Object.assign(window, { game, clips, coop: () => room });
+if (import.meta.env.DEV) Object.assign(window, { game, clips, coop: () => room, ui: { show, showPerks, showShop, openBase, openModes, openCoop } });
