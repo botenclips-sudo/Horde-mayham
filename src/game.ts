@@ -452,6 +452,21 @@ const NEW_KIND_WAVES: Record<number, string> = {
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 const FONT = "'Black Ops One', 'Arial Black', system-ui, sans-serif";
+const MONO = "'Share Tech Mono', ui-monospace, 'Roboto Mono', monospace";
+const HUD_AMBER = '#f0b429';
+const HUD_PLATE = 'rgba(8,10,7,0.72)';
+
+/** Tactical corner brackets around a HUD box. */
+function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, len = 7, color = HUD_AMBER) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y);
+  ctx.moveTo(x + w - len, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + len);
+  ctx.moveTo(x + w, y + h - len); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - len, y + h);
+  ctx.moveTo(x + len, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - len);
+  ctx.stroke();
+}
 
 const spriteCache = new Map<string, HTMLCanvasElement>();
 /** A soft radial blob in one color, cached so glows cost one drawImage instead of a gradient. */
@@ -5635,26 +5650,41 @@ export class Game {
     ctx.textBaseline = 'middle';
 
     // Health
-    const hw = Math.min(200, this.w * 0.35);
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(pad, pad, hw, 18);
+    const hw = Math.min(220, this.w * 0.36);
+    ctx.fillStyle = HUD_PLATE;
+    ctx.fillRect(pad, pad, hw, 20);
     const frac = clamp(this.p.hp / this.stats.maxHp, 0, 1);
-    ctx.fillStyle = frac > 0.3 ? '#4fbf4a' : '#e0483e';
-    ctx.fillRect(pad + 2, pad + 2, (hw - 4) * frac, 14);
-    ctx.fillStyle = '#fff';
-    ctx.font = '700 12px system-ui, sans-serif';
+    const barX = pad + 26;
+    const barW = hw - 92;
+    // Segmented health bar
+    const segs = 20;
+    const segW = barW / segs;
+    const lit = Math.ceil(frac * segs - 0.001);
+    for (let i = 0; i < segs; i++) {
+      ctx.fillStyle = i < lit ? (frac > 0.3 ? '#a6e05a' : '#e0483e') : 'rgba(255,255,255,0.08)';
+      ctx.fillRect(barX + i * segW, pad + 4, segW - 1.5, 12);
+    }
+    brackets(ctx, pad, pad, hw, 20, 6, frac > 0.3 ? HUD_AMBER : '#e0483e');
     ctx.textAlign = 'left';
-    ctx.fillText(`${Math.ceil(Math.max(0, this.p.hp))} / ${this.stats.maxHp}${this.armor > 0 ? `   🛡️${Math.round(this.armor * 100)}%` : ''}`, pad + 6, pad + 10);
+    ctx.fillStyle = HUD_AMBER;
+    ctx.font = `13px ${MONO}`;
+    ctx.fillText('HP', pad + 5, pad + 11);
+    ctx.fillStyle = '#fff';
+    ctx.font = `12px ${MONO}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(`${Math.ceil(Math.max(0, this.p.hp))}/${this.stats.maxHp}`, pad + hw - 5, pad + 11);
+    ctx.textAlign = 'left';
+    if (this.armor > 0) ctx.fillText(`🛡️ ${Math.round(this.armor * 100)}%`, pad + hw + 8, pad + 11);
 
     // Cash + grenades
     ctx.font = `${this.cashPulse > 0 ? 24 : 21}px ${FONT}`;
     ctx.fillStyle = '#ffd23f';
     ctx.fillText(`$${Math.floor(this.cash)}`, pad, pad + 40);
     const cashW = ctx.measureText(`$${Math.floor(this.cash)}`).width;
-    ctx.font = '15px system-ui, sans-serif';
+    ctx.font = `15px ${MONO}`;
     ctx.fillStyle = '#fff';
     ctx.fillText(`💣 ${this.grenadeCount}`, pad + cashW + 16, pad + 40);
-    ctx.font = `${this.brainsPulse > 0 ? 17 : 15}px system-ui, sans-serif`;
+    ctx.font = `${this.brainsPulse > 0 ? 17 : 15}px ${MONO}`;
     ctx.fillStyle = '#ff8ad8';
     ctx.fillText(`🧠 ${this.report.brains}${this.reviveLeft ? '  ✚' : ''}`, pad + cashW + 62, pad + 40);
 
@@ -5675,12 +5705,18 @@ export class Game {
 
     // Wave
     ctx.textAlign = 'center';
+    const waveSub = `${this.toSpawn + this.zombies.length} HOSTILES${this.modeLabel ? `  //  ${this.modeLabel.toUpperCase()}` : ''}`;
+    ctx.font = `12px ${MONO}`;
+    const plateW = Math.max(130, ctx.measureText(waveSub).width + 24);
+    ctx.fillStyle = HUD_PLATE;
+    ctx.fillRect(this.w / 2 - plateW / 2, pad - 6, plateW, 46);
+    brackets(ctx, this.w / 2 - plateW / 2, pad - 6, plateW, 46);
     ctx.fillStyle = '#fff';
     ctx.font = `22px ${FONT}`;
-    ctx.fillText(`WAVE ${this.wave}`, this.w / 2, pad + 10);
-    ctx.font = '600 12px system-ui, sans-serif';
+    ctx.fillText(`WAVE ${this.wave}`, this.w / 2, pad + 9);
+    ctx.font = `12px ${MONO}`;
     ctx.fillStyle = '#c9d1b8';
-    ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left${this.modeLabel ? `  ·  ${this.modeLabel}` : ''}`, this.w / 2, pad + 31);
+    ctx.fillText(waveSub, this.w / 2, pad + 29);
 
     let rowY = pad + 50;
     if (this.challenge) {
@@ -5721,10 +5757,15 @@ export class Game {
     // Weapon + ammo (top right, left of the pause button)
     const w = this.weapons[this.wi];
     ctx.textAlign = 'right';
+    const wName = `${w.def.name}${w.level > 1 ? ` Lv${w.level}` : ''}`.toUpperCase();
+    ctx.font = `15px ${FONT}`;
+    const wBoxW = Math.max(100, ctx.measureText(wName).width + 20);
+    ctx.fillStyle = HUD_PLATE;
+    ctx.fillRect(this.w - 52 - wBoxW, pad - 6, wBoxW, 50);
+    brackets(ctx, this.w - 52 - wBoxW, pad - 6, wBoxW, 50);
     ctx.fillStyle = '#fff';
-    ctx.font = `16px ${FONT}`;
-    ctx.fillText(`${w.def.name}${w.level > 1 ? ` Lv${w.level}` : ''}`, this.w - 62, pad + 8);
-    ctx.font = '700 13px system-ui, sans-serif';
+    ctx.fillText(wName, this.w - 62, pad + 8);
+    ctx.font = `16px ${MONO}`;
     if (w.reloadT > 0) {
       const tot = w.def.reload * this.stats.reload;
       ctx.fillStyle = '#ffb347';
@@ -5752,9 +5793,9 @@ export class Game {
       ctx.fillText(`x${this.combo}`, cx + 2, cy + 2);
       ctx.fillStyle = this.combo >= 50 ? '#ff5a4a' : this.combo >= 25 ? '#ffb347' : '#ffd23f';
       ctx.fillText(`x${this.combo}`, cx, cy);
-      ctx.font = `11px ${FONT}`;
+      ctx.font = `12px ${MONO}`;
       ctx.fillStyle = '#fff';
-      ctx.fillText(`COMBO  +${Math.min(this.combo, 100)}% cash`, cx, cy + 22);
+      ctx.fillText(`COMBO  +${Math.min(this.combo, 100)}% CASH`, cx, cy + 22);
       ctx.fillStyle = 'rgba(255,255,255,0.2)';
       ctx.fillRect(cx, cy + 32, 90, 3);
       ctx.fillStyle = '#ffd23f';
@@ -5766,12 +5807,22 @@ export class Game {
     // Buttons
     for (const b of this.input.buttons) {
       const held = this.input.heldButtons.has(b.id);
-      ctx.fillStyle = held ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.45)';
-      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-      ctx.lineWidth = 2;
+      ctx.fillStyle = held ? 'rgba(240,180,41,0.35)' : 'rgba(8,10,7,0.6)';
+      ctx.strokeStyle = held ? HUD_AMBER : 'rgba(166,180,140,0.55)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
+      // Four tick marks, like a scope ring
+      ctx.strokeStyle = HUD_AMBER;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let k = 0; k < 4; k++) {
+        const a = (k * Math.PI) / 2;
+        ctx.moveTo(b.x + Math.cos(a) * (b.r - 4), b.y + Math.sin(a) * (b.r - 4));
+        ctx.lineTo(b.x + Math.cos(a) * (b.r + 2), b.y + Math.sin(a) * (b.r + 2));
+      }
       ctx.stroke();
       if (b.id === 'dash' && this.dashCd > 0) {
         ctx.strokeStyle = '#78aaff';
@@ -5782,10 +5833,10 @@ export class Game {
       }
       ctx.fillStyle = b.id === 'nade' && this.grenadeCount === 0 ? 'rgba(255,255,255,0.3)' : '#fff';
       ctx.textAlign = 'center';
-      ctx.font = `800 ${b.label.length > 2 ? 11 : 15}px system-ui, sans-serif`;
+      ctx.font = `${b.label.length > 2 ? 12 : 16}px ${MONO}`;
       ctx.fillText(b.label, b.x, b.y + 1);
       if (b.id === 'nade') {
-        ctx.font = '800 10px system-ui, sans-serif';
+        ctx.font = `11px ${MONO}`;
         ctx.fillText(String(this.grenadeCount), b.x, b.y + 13);
       }
       if (b.id === 'deploy' && this.kit.length > 1) {
@@ -5812,7 +5863,7 @@ export class Game {
       }
       if (this.wave === 1 && this.runTime < 8) {
         ctx.fillStyle = 'rgba(255,255,255,0.55)';
-        ctx.font = '600 13px system-ui, sans-serif';
+        ctx.font = `13px ${MONO}`;
         ctx.textAlign = 'center';
         if (!inp.move) ctx.fillText('drag here to move', this.w * 0.22, this.h - 50);
         if (!inp.aim) ctx.fillText('drag here to aim + shoot', this.w * 0.68, this.h - 50);
@@ -5838,17 +5889,17 @@ export class Game {
     // Toasts (badges, clips)
     if (this.state === 'playing' || this.state === 'between') {
       ctx.textAlign = 'center';
-      ctx.font = '700 14px system-ui, sans-serif';
+      ctx.font = `14px ${MONO}`;
       this.toasts.forEach((t, i) => {
         const y = this.h - 120 - i * 34;
         const tw = ctx.measureText(t.text).width + 28;
         ctx.globalAlpha = Math.min(1, t.t * 2, (2.6 - t.t) * 6);
-        ctx.fillStyle = 'rgba(10,12,8,0.82)';
+        ctx.fillStyle = 'rgba(8,10,7,0.86)';
         ctx.fillRect(this.w / 2 - tw / 2, y - 13, tw, 26);
-        ctx.strokeStyle = '#ffd23f';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(this.w / 2 - tw / 2, y - 13, tw, 26);
-        ctx.fillStyle = '#ffd23f';
+        ctx.fillStyle = HUD_AMBER;
+        ctx.fillRect(this.w / 2 - tw / 2, y - 13, 3, 26);
+        brackets(ctx, this.w / 2 - tw / 2, y - 13, tw, 26, 6);
+        ctx.fillStyle = HUD_AMBER;
         ctx.fillText(t.text, this.w / 2, y + 1);
       });
       ctx.globalAlpha = 1;

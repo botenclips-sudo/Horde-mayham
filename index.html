@@ -11,7 +11,7 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Ops+One&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Chakra+Petch:wght@500;600;700&family=Share+Tech+Mono&display=swap" />
   </head>
   <body>
     <canvas id="game"></canvas>
@@ -42,22 +42,27 @@
     </div>
 
     <div id="modes" class="overlay hidden">
+      <header class="topbar">
+        <button id="modes-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>DEPLOY</b> // Choose your fight</div>
+        <div class="topbar-right"></div>
+      </header>
       <div class="panel wide modes">
-        <h2>Choose your fight</h2>
         <div id="mode-cards" class="mode-cards"></div>
         <div id="map-row" class="map-row"></div>
         <p id="mode-info" class="tag"></p>
         <div class="challenge-row"><input id="ch-code" placeholder="Got a challenge code? Paste it here" autocomplete="off" /><button id="ch-go" class="buy">Accept</button></div>
-        <div class="row2">
-          <button id="modes-back" class="ghost">Back</button>
-          <button id="start" class="big">START</button>
-        </div>
+        <button id="start" class="big">START</button>
       </div>
     </div>
 
     <div id="coop" class="overlay hidden">
+      <header class="topbar">
+        <button id="co-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>SQUAD</b> // Online co-op</div>
+        <div class="topbar-right"></div>
+      </header>
       <div class="panel coop">
-        <h2>Online co-op</h2>
         <p class="tag">Up to 4 players. Everyone brings their own guns, training and gear.</p>
         <input id="co-name" class="co-input" maxlength="16" placeholder="Your name" autocomplete="off" />
         <div id="co-pick">
@@ -71,11 +76,15 @@
           <button id="co-start" class="big">START</button>
         </div>
         <p id="co-msg" class="tiny"></p>
-        <button id="co-back" class="ghost">Leave</button>
       </div>
     </div>
 
     <div id="base" class="overlay hidden">
+      <header class="topbar">
+        <button id="base-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>HQ</b> // <span id="base-title">Armory</span></div>
+        <div class="topbar-right"><div class="brains big-brains">🧠 <b id="b-brains">0</b></div></div>
+      </header>
       <div class="panel wide base">
         <div class="base-head">
           <div class="tabs">
@@ -87,15 +96,18 @@
             <button data-tab="ranks">Ranks</button>
             <button data-tab="save">Save</button>
           </div>
-          <div class="brains big-brains">🧠 <b id="b-brains">0</b></div>
         </div>
         <div id="base-body"></div>
-        <button id="base-back" class="big">BACK</button>
       </div>
     </div>
 
     <div id="perks" class="overlay hidden">
-      <div class="panel wide">
+      <header class="topbar">
+        <button id="perks-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>INTEL</b> // Perk drop</div>
+        <div class="topbar-right"></div>
+      </header>
+            <div class="panel wide">
         <h2 id="perks-title">Wave cleared!</h2>
         <p class="tag">Pick a perk</p>
         <div id="perk-cards" class="cards"></div>
@@ -103,9 +115,12 @@
     </div>
 
     <div id="shop" class="overlay hidden">
-      <div class="panel wide">
-        <h2>Armory</h2>
-        <p class="tag">Cash: <b id="shop-cash">$0</b></p>
+      <header class="topbar">
+        <button id="shop-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>SUPPLY</b> // Field armory</div>
+        <div class="topbar-right"><div class="cash">CASH <b id="shop-cash">$0</b></div></div>
+      </header>
+      <div class="panel wide shop">
         <div id="shop-items" class="shop-items"></div>
         <button id="next-wave" class="big">NEXT WAVE</button>
         <p id="wait-msg" class="tiny"></p>
@@ -113,7 +128,12 @@
     </div>
 
     <div id="pause" class="overlay hidden">
-      <div class="panel">
+      <header class="topbar">
+        <button id="pause-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>HOLD</b> // Paused</div>
+        <div class="topbar-right"></div>
+      </header>
+            <div class="panel">
         <h2>Paused</h2>
         <button id="resume" class="big">RESUME</button>
         <button id="sound2" class="ghost">🔊 Sound on</button>
@@ -122,7 +142,12 @@
     </div>
 
     <div id="over" class="overlay hidden">
-      <div class="panel wide over">
+      <header class="topbar">
+        <button id="over-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>KIA</b> // After action report</div>
+        <div class="topbar-right"></div>
+      </header>
+            <div class="panel wide over">
         <h2 class="red">You got eaten</h2>
         <div class="over-cols">
           <div>
