@@ -151,6 +151,11 @@ export class Sfx {
     return this.muted;
   }
 
+  /** Silences everything while an ad plays, without touching the player's mute setting. */
+  duck(on: boolean) {
+    if (this.ctx && this.master) this.master.gain.setTargetAtTime(on || this.muted ? 0 : 0.8, this.ctx.currentTime, 0.05);
+  }
+
   setMusic(mood: MusicMood, intensity = 0) {
     this.mood = mood;
     this.intensity = intensity;

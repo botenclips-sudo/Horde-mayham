@@ -23,6 +23,7 @@
           <div class="lvl">LV <b id="m-level">1</b></div>
           <div class="xpbar"><div id="m-xp"></div></div>
           <div class="brains">🧠 <b id="m-brains">0</b></div>
+          <div class="brains dia">💎 <b id="m-diamonds">0</b></div>
         </div>
         <button id="play" class="big">PLAY</button>
         <button id="coop-btn" class="big coop-btn">👥 CO-OP</button>
@@ -31,6 +32,7 @@
           <button class="base-btn" data-tab="training">💪 Training</button>
           <button class="base-btn" data-tab="missions">📋 Missions<span id="m-missions" class="dot hidden"></span></button>
           <button class="base-btn" data-tab="gear">🎒 Gear</button>
+          <button class="base-btn shop-btn" data-tab="store">💎 Shop</button>
         </div>
         <p class="best">Best: <b id="best">wave 0</b> · <button class="link base-btn" data-tab="badges">🏅 Badges</button> · <span data-tab="ranks"><button class="link base-btn" data-tab="ranks">🏆 Ranks</button> · </span><button id="sound" class="link">🔊 Sound on</button><span id="clips-wrap"> · <button id="clips-toggle" class="link">🎬 Clips on</button></span> · <button class="link base-btn" data-tab="save">💾 Save</button></p>
         <div class="help">
@@ -83,11 +85,12 @@
             <button data-tab="training">Training</button>
             <button data-tab="missions">Missions</button>
             <button data-tab="gear">Gear</button>
+            <button data-tab="store">💎 Shop</button>
             <button data-tab="badges">Badges</button>
             <button data-tab="ranks">Ranks</button>
             <button data-tab="save">Save</button>
           </div>
-          <div class="brains big-brains">🧠 <b id="b-brains">0</b></div>
+          <div class="wallet"><div class="brains big-brains">🧠 <b id="b-brains">0</b></div><div class="brains big-brains dia">💎 <b id="b-diamonds">0</b></div></div>
         </div>
         <div id="base-body"></div>
         <button id="base-back" class="big">BACK</button>
@@ -121,6 +124,21 @@
       </div>
     </div>
 
+    <div id="revive" class="overlay hidden">
+      <div class="panel revive">
+        <h2 class="red">You're going down!</h2>
+        <p class="tag">One more chance this run</p>
+        <div class="rv-bar"><div id="rv-bar"></div></div>
+        <button id="rv-ad" class="big">📺 WATCH AD TO REVIVE</button>
+        <div class="row2">
+          <button id="rv-token" class="buy"></button>
+          <button id="rv-dia" class="buy dia-buy"></button>
+        </div>
+        <p id="rv-msg" class="tiny"></p>
+        <button id="rv-no" class="ghost">Give up</button>
+      </div>
+    </div>
+
     <div id="over" class="overlay hidden">
       <div class="panel wide over">
         <h2 class="red">You got eaten</h2>
@@ -128,6 +146,7 @@
           <div>
             <p id="over-stats" class="stats"></p>
             <div id="over-rewards" class="rewards"></div>
+            <button id="over-ad" class="ad-btn hidden"></button>
             <div id="lb-box" class="lb-box hidden"></div>
           </div>
           <div class="share">
@@ -146,6 +165,8 @@
         <button id="to-base" class="ghost">Upgrades</button>
       </div>
     </div>
+
+    <div id="notice" class="notice hidden"></div>
 
     <script type="module" src="./src/main.ts"></script>
   </body>
