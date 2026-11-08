@@ -10,7 +10,7 @@ const groundCache = new Map<string, HTMLCanvasElement>();
 const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 import type { NetMsg } from './net';
-import { ARM_FRAMES, armsSprite, bodySprite, damageSprite, eggSprite, eyeSpot, hasFeet, stamp, Tint, VARIANTS, warmZombieArt } from './zombieArt';
+import { ARM_FRAMES, armsSprite, bodySprite, eggSprite, eyeSpot, hasFeet, stamp, Tint, VARIANTS, warmZombieArt } from './zombieArt';
 
 const PLAYER_R = 16;
 const DASH_TIME = 0.18;
@@ -480,6 +480,10 @@ export class Game {
   private dpr = 1;
   private zoom = 1;
   private zoomKick = 0;
+  /** Set when the device can't hold ~45 fps in a big fight: zombies drop their animated arms and feet. */
+  liteZombies = false;
+  private frameAvg = 1 / 60;
+  private lagT = 0;
   private cam = { x: WORLD_W / 2, y: WORLD_H / 2 };
   private ground!: HTMLCanvasElement;
   map: MapDef = mapById('lot');
@@ -691,6 +695,8 @@ export class Game {
   }
 
   newRun() {
+    this.liteZombies = false;
+    this.lagT = 0;
     // Permanent training from the base screen.
     const t = (id: string) => meta.train(id);
     this.stats = baseStats();
@@ -4016,6 +4022,13 @@ export class Game {
 
   render(dt: number) {
     const ctx = this.ctx;
+    if (this.state === 'playing' && dt > 0) {
+      // Watch the frame rate; if the horde is dragging it down for a couple of
+      // seconds, switch to lighter zombies for the rest of the run.
+      this.frameAvg += (dt - this.frameAvg) * 0.05;
+      this.lagT = this.frameAvg > 1 / 45 && this.zombies.length > 25 ? this.lagT + dt : 0;
+      if (this.lagT > 2) this.liteZombies = true;
+    }
     const p = this.p;
     const playing = this.state !== 'menu';
     if (playing) {
@@ -5027,7 +5040,8 @@ export class Game {
     const variant = z.id % VARIANTS;
 
     // 1. What sits under the body: feet, legs, shrouds.
-    if (hasFeet(kind)) {
+    const lite = this.liteZombies;
+    if (!lite && hasFeet(kind)) {
       ctx.fillStyle = flat(icy ? '#3a5a6a' : '#1c1814');
       for (const side of [-1, 1]) {
         ctx.beginPath();
@@ -5116,7 +5130,7 @@ export class Game {
     // 2. Arms reaching forward, swinging as they shamble (pre-posed frames).
     // Only lasting states recolor the arms; quick flashes show on the body alone.
     const armTint = tint === Tint.Icy || tint === Tint.Burn ? tint : Tint.None;
-    const arms = armsSprite(def, Math.round((z.phase / (Math.PI * 2)) * ARM_FRAMES), armTint);
+    const arms = lite ? null : armsSprite(def, Math.round((z.phase / (Math.PI * 2)) * ARM_FRAMES), armTint);
     if (arms) stamp(ctx, arms, r, windup ? 1.08 : 1, 1);
 
     // 3. The detailed body, swaying a little, plus gore as it gets hurt.
@@ -5124,12 +5138,8 @@ export class Game {
     const pulse = (kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.1 : 1) * crouch;
     ctx.save();
     ctx.rotate(swing * (r >= 40 ? 0.02 : 0.05));
-    stamp(ctx, bodySprite(def, variant, tint), r, pulse, pulse);
-    if (tint === Tint.None && z.hp < z.maxHp * 0.85 && kind !== 'wraith') {
-      ctx.globalAlpha = alpha * Math.min(1, (1 - z.hp / z.maxHp) * 1.3);
-      stamp(ctx, damageSprite(def, variant), r, pulse, pulse);
-      ctx.globalAlpha = alpha;
-    }
+    const hurt = z.hp < z.maxHp * 0.4 ? 2 : z.hp < z.maxHp * 0.8 ? 1 : 0;
+    stamp(ctx, bodySprite(def, variant, tint, hurt), r, pulse, pulse);
     ctx.restore();
 
     // 4. Live details on top.

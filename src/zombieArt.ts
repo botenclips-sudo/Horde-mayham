@@ -1711,6 +1711,32 @@ function build(x0: number, y0: number, w: number, h: number, radius: number, pai
   return { c: out, x0, y0, w, h };
 }
 
+/** Trims fully transparent margins so each stamp touches as few pixels as possible. */
+function crop(sp: Sprite): Sprite {
+  const { c } = sp;
+  const data = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+  let minX = c.width;
+  let minY = c.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < c.height; y++)
+    for (let x = 0; x < c.width; x++)
+      if (data[(y * c.width + x) * 4 + 3] > 6) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+  if (maxX < 0) return sp;
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+  if (w * h > c.width * c.height * 0.9) return sp;
+  const out = canvas(w, h);
+  out.getContext('2d')!.drawImage(c, -minX, -minY);
+  const d = c.width / sp.w;
+  return { c: out, x0: sp.x0 + minX / d, y0: sp.y0 + minY / d, w: w / d, h: h / d };
+}
+
 /** Bakes a soft contact shadow under a sprite, so it costs nothing per frame. */
 function withShadow(sp: Sprite, rx: number, ry: number, cx = 0.1): Sprite {
   const c = sp.c;
@@ -1769,17 +1795,34 @@ const BOUNDS: Record<string, [number, number, number, number]> = {
 
 const kindKey = (def: ZombieDef) => (BODY[def.kind] ? def.kind : `x-${def.kind}-${def.body}`);
 
-export function bodySprite(def: ZombieDef, variant: number, tint: Tint): Sprite {
+/**
+ * The body sprite. `hurt` (0, 1 or 2) bakes in progressively more gore, so a
+ * wounded zombie still costs a single stamp.
+ */
+export function bodySprite(def: ZombieDef, variant: number, tint: Tint, hurt = 0): Sprite {
   const boss = def.radius >= 40;
   const v = boss ? 0 : variant % VARIANTS;
+  if (hurt > 0 && tint === Tint.None && def.kind !== 'wraith') {
+    return cached(`h|${kindKey(def)}|${v}|${hurt}`, Tint.None, () => {
+      const base = bodySprite(def, v, Tint.None);
+      const gore = damageSprite(def, v);
+      const c = canvas(base.c.width, base.c.height);
+      const x = c.getContext('2d')!;
+      x.drawImage(base.c, 0, 0);
+      x.globalAlpha = hurt === 1 ? 0.5 : 1;
+      const d = base.c.width / base.w;
+      x.drawImage(gore.c, (gore.x0 - base.x0) * d, (gore.y0 - base.y0) * d, gore.w * d, gore.h * d);
+      return { ...base, c };
+    });
+  }
   return cached(`b|${kindKey(def)}|${v}`, tint, () => {
     const [x0, y0, w, h] = BOUNDS[def.kind] ?? [-1.1, -1.1, 2.3, 2.2];
     const sp = build(x0, y0, w, h, def.radius, (ctx) => {
       const L: Look = { v, r: rng(hash(def.kind) + v * 977 + 13), def, skin: def.body, dark: def.dark };
       (BODY[def.kind] ?? humanoid)(ctx, L);
     }, boss ? 0.03 : 0.055);
-    if (def.kind === 'wraith') return sp;
-    return def.kind === 'dog' ? withShadow(sp, 1.6, 0.85, 0.3) : withShadow(sp, Math.min(1.25, -x0), Math.min(1.25, -y0));
+    if (def.kind === 'wraith') return crop(sp);
+    return crop(def.kind === 'dog' ? withShadow(sp, 1.6, 0.85, 0.3) : withShadow(sp, Math.min(1.25, -x0), Math.min(1.25, -y0)));
   });
 }
 
@@ -1823,7 +1866,7 @@ export function armsSprite(def: ZombieDef, frame: number, tint: Tint): Sprite | 
       const rot = -side * (crawl ? 0.55 + swing * side * 0.35 : big ? 0.16 : 0.26) + swing * side * 0.08;
       put(side, rot, (big ? 0.95 : 0.86) + swing * side * 0.12, big ? 0.78 : 0.66);
     }
-    return { c, x0, y0, w, h };
+    return crop({ c, x0, y0, w, h });
   });
 }
 
