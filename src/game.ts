@@ -10,6 +10,7 @@ const groundCache = new Map<string, HTMLCanvasElement>();
 const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 import type { NetMsg } from './net';
+import { ARM_FRAMES, armsSprite, bodySprite, damageSprite, eggSprite, eyeSpot, hasFeet, stamp, Tint, VARIANTS, warmZombieArt } from './zombieArt';
 
 const PLAYER_R = 16;
 const DASH_TIME = 0.18;
@@ -615,6 +616,16 @@ export class Game {
     window.addEventListener('resize', () => this.resize());
     this.newRun();
     this.state = 'menu';
+    // Paint the detailed zombie sprites a kind at a time while the title screen is up,
+    // so the first wave doesn't hitch painting them mid-fight.
+    const defs = Object.values(ZOMBIES);
+    const warm = () => {
+      const d = defs.shift();
+      if (!d) return;
+      warmZombieArt([d]);
+      setTimeout(warm, 30);
+    };
+    setTimeout(warm, 500);
   }
 
   // ---------------------------------------------------------------- setup
@@ -4046,7 +4057,6 @@ export class Game {
     this.drawPickups();
     this.drawBarrels();
     this.drawDeploys();
-    for (const z of this.zombies) this.drawZombieShadow(z);
     for (const z of this.zombies) this.drawZombie(z);
     if (this.state !== 'over' && playing) {
       this.drawAllies();
@@ -4188,16 +4198,20 @@ export class Game {
       const r = z.r;
       const c = Math.cos(z.face);
       const s = Math.sin(z.face);
-      const ex = z.x + c * r * 0.6;
-      const ey = z.y + s * r * 0.6;
-      const ox = -s * r * 0.25;
-      const oy = c * r * 0.25;
+      const [fwd, side] = eyeSpot(z.def.kind);
+      const ex = z.x + c * r * fwd;
+      const ey = z.y + s * r * fwd;
+      const ox = -s * r * side;
+      const oy = c * r * side;
       if (this.crawlerAlpha(z) < 0.6) continue;
-      ctx.fillStyle = this.active.freeze > 0 ? '#9fe8ff' : z.def.eye;
-      const es = Math.max(2, r * 0.13);
-      ctx.fillRect(ex + ox - es / 2, ey + oy - es / 2, es, es);
-      ctx.fillRect(ex - ox - es / 2, ey - oy - es / 2, es, es);
-      glowDot(ex, ey, r * 0.9, z.def.eye, 0.25);
+      if (z.def.kind !== 'egg') {
+        // Two hot pinpricks in the eye sockets
+        ctx.fillStyle = this.active.freeze > 0 ? '#9fe8ff' : z.def.eye;
+        const es = Math.max(1, r * 0.065);
+        ctx.fillRect(ex + ox - es, ey + oy - es, es * 2, es * 2);
+        ctx.fillRect(ex - ox - es, ey - oy - es, es * 2, es * 2);
+        glowDot(ex, ey, r * 0.9, z.def.eye, 0.25);
+      }
       if (z.def.kind === 'bloater') glowDot(z.x, z.y, r * 1.8, '#9aff3a', 0.18 + 0.08 * Math.sin(this.clock * 6 + z.id));
       if (z.burn > 0) glowDot(z.x, z.y, r * 2, '#ff6a1f', 0.35);
       if (z.elite) glowDot(z.x, z.y, r * 2.2, ELITES[z.elite].color, 0.22);
@@ -4971,19 +4985,12 @@ export class Game {
     return clamp((260 - Math.hypot(z.x - this.p.x, z.y - this.p.y)) / 120, 0.1, 1);
   }
 
-  private drawZombieShadow(z: Zombie) {
-    const ctx = this.ctx;
-    if (this.crawlerAlpha(z) < 1) return;
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath();
-    ctx.ellipse(z.x + 3, z.y + 5, z.r * 1.05, z.r * 0.9, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
   private drawZombie(z: Zombie) {
     const ctx = this.ctx;
     const r = z.r;
-    if (z.def.kind === 'egg') {
+    const def = z.def;
+    const kind = def.kind;
+    if (kind === 'egg') {
       this.drawEgg(z);
       return;
     }
@@ -5010,290 +5017,284 @@ export class Game {
     const hit = z.flash > 0;
     const frozen = this.active.freeze > 0;
     const windup = z.boss?.state === 'windup' || z.leap?.state === 'crouch' || (z.jug?.windup ?? 0) > 0 || z.zapT > 0;
-    ctx.globalAlpha = this.crawlerAlpha(z);
+    const alpha = this.crawlerAlpha(z);
+    ctx.globalAlpha = alpha;
     const icy = frozen || z.frozenT > 0;
-    const body = hit ? '#ffffff' : windup ? (Math.floor(this.clock * 20) % 2 ? (z.zapT > 0 ? '#c8f8ff' : '#ff4040') : z.def.body) : icy || z.slow > 0 ? '#8fc4d9' : z.burn > 0 ? '#5a3a20' : z.def.body;
-    const dark = hit ? '#ffffff' : icy ? '#4f7f99' : z.def.dark;
-    const kind = z.def.kind;
-    // Arms reaching forward, swinging as they walk.
-    const swing = Math.sin(z.phase) * r * 0.25;
+    const blink = windup && Math.floor(this.clock * 20) % 2 === 1;
+    const tint = hit ? Tint.Hit : blink ? (z.zapT > 0 ? Tint.Zap : Tint.Windup) : icy || z.slow > 0 ? Tint.Icy : z.burn > 0 ? Tint.Burn : Tint.None;
+    const flat = (c: string) => (hit ? '#ffffff' : c);
+    const swing = Math.sin(z.phase);
+    const variant = z.id % VARIANTS;
+
+    // 1. What sits under the body: feet, legs, shrouds.
+    if (hasFeet(kind)) {
+      ctx.fillStyle = flat(icy ? '#3a5a6a' : '#1c1814');
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.ellipse(swing * side * r * 0.34 - r * 0.08, side * r * 0.36, r * 0.27, r * 0.15, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (kind === 'dog') {
+      // Four jointed legs with paws, trotting.
+      const step = Math.sin(z.phase * 1.6) * r * 0.35;
+      ctx.strokeStyle = flat(def.dark);
+      ctx.lineWidth = r * 0.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (const [x, side, s] of [[0.45, -1, 1], [0.45, 1, -1], [-0.85, -1, -1], [-0.85, 1, 1]] as const) {
+        const fx = r * x + step * s;
+        ctx.moveTo(r * x, side * r * 0.35);
+        ctx.lineTo(fx + r * 0.05, side * r * 0.62);
+        ctx.lineTo(fx + r * 0.15, side * r * 0.78);
+      }
+      ctx.stroke();
+    } else if (kind === 'leaper') {
+      // Long, folded frog-like back legs.
+      const kick = z.leap?.state === 'leap' ? 0.5 : z.leap?.state === 'crouch' ? -0.2 : swing * 0.12;
+      ctx.strokeStyle = flat(def.dark);
+      ctx.lineCap = 'round';
+      for (const side of [-1, 1]) {
+        ctx.lineWidth = r * 0.26;
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.4, side * r * 0.35);
+        ctx.lineTo(-r * 0.6, side * r * (1.0 + kick * 0.3));
+        ctx.stroke();
+        ctx.lineWidth = r * 0.16;
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.6, side * r * (1.0 + kick * 0.3));
+        ctx.lineTo(-r * (1.35 + kick), side * r * 0.75);
+        ctx.lineTo(-r * (1.55 + kick), side * r * 0.85);
+        ctx.stroke();
+      }
+    } else if (kind === 'webber' || kind === 'brood') {
+      // Jointed spider / insect legs.
+      const big = kind === 'brood';
+      ctx.strokeStyle = flat(big ? '#3a2410' : '#20202a');
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = big ? r * 0.09 : 2.5;
+      for (const side of [-1, 1])
+        for (let i = 0; i < 3; i++) {
+          const a = side * (0.9 + i * 0.55) + Math.sin(z.phase * 1.4 + i + (side > 0 ? 1.5 : 0)) * 0.15;
+          const k = big ? 1.25 : 1;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r * 0.5 - (big ? r * 0.2 : 0), Math.sin(a) * r * 0.5);
+          ctx.lineTo(Math.cos(a) * r * 1.45 * k, Math.sin(a) * r * 1.45 * k);
+          ctx.lineTo(Math.cos(a + side * 0.45) * r * 1.95 * k, Math.sin(a + side * 0.45) * r * 1.95 * k);
+          ctx.stroke();
+        }
+    } else if (kind === 'wraith') {
+      // Tattered trailing shroud, fading into nothing.
+      const g = ctx.createLinearGradient(-r * 0.3, 0, -r * 2, 0);
+      g.addColorStop(0, hit ? '#fff' : 'rgba(170,195,215,0.85)');
+      g.addColorStop(1, 'rgba(120,255,234,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.3, -r * 0.9);
+      for (let i = 0; i <= 4; i++) {
+        const y = -r * 0.9 + (i / 4) * r * 1.8;
+        ctx.lineTo(-r * (1.8 + 0.35 * Math.sin(this.clock * 8 + i * 1.7 + z.id)), y);
+        if (i < 4) ctx.lineTo(-r * 1.0, y + r * 0.22);
+      }
+      ctx.lineTo(-r * 0.3, r * 0.9);
+      ctx.fill();
+    } else if (kind === 'reaper') {
+      // Ragged hem of the robe whipping behind it.
+      ctx.fillStyle = flat('#14141e');
+      for (let i = 0; i < 7; i++) {
+        const a = Math.PI * 0.62 + (i / 6) * Math.PI * 0.76;
+        const l = 1.45 + 0.12 * Math.sin(this.clock * 7 + i);
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a - 0.16) * r * 0.9, Math.sin(a - 0.16) * r * 0.9);
+        ctx.lineTo(Math.cos(a) * r * l, Math.sin(a) * r * l);
+        ctx.lineTo(Math.cos(a + 0.16) * r * 0.9, Math.sin(a + 0.16) * r * 0.9);
+        ctx.fill();
+      }
+    }
+
+    // 2. Arms reaching forward, swinging as they shamble (pre-posed frames).
+    // Only lasting states recolor the arms; quick flashes show on the body alone.
+    const armTint = tint === Tint.Icy || tint === Tint.Burn ? tint : Tint.None;
+    const arms = armsSprite(def, Math.round((z.phase / (Math.PI * 2)) * ARM_FRAMES), armTint);
+    if (arms) stamp(ctx, arms, r, windup ? 1.08 : 1, 1);
+
+    // 3. The detailed body, swaying a little, plus gore as it gets hurt.
+    const crouch = z.leap?.state === 'crouch' ? 0.85 : 1;
+    const pulse = (kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.1 : 1) * crouch;
+    ctx.save();
+    ctx.rotate(swing * (r >= 40 ? 0.02 : 0.05));
+    stamp(ctx, bodySprite(def, variant, tint), r, pulse, pulse);
+    if (tint === Tint.None && z.hp < z.maxHp * 0.85 && kind !== 'wraith') {
+      ctx.globalAlpha = alpha * Math.min(1, (1 - z.hp / z.maxHp) * 1.3);
+      stamp(ctx, damageSprite(def, variant), r, pulse, pulse);
+      ctx.globalAlpha = alpha;
+    }
+    ctx.restore();
+
+    // 4. Live details on top.
     if (kind === 'shield') {
-      // Riot shield held out front.
-      ctx.fillStyle = hit ? '#fff' : '#9aa8b4';
+      // Scuffed riot shield held out front.
+      const g = ctx.createLinearGradient(r * 0.9, -r, r * 1.5, r);
+      g.addColorStop(0, hit ? '#fff' : 'rgba(200,220,235,0.95)');
+      g.addColorStop(0.5, hit ? '#fff' : 'rgba(130,150,165,0.95)');
+      g.addColorStop(1, hit ? '#fff' : 'rgba(70,85,100,0.95)');
+      ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(r * 0.35, 0, r * 1.25, -1.05, 1.05);
       ctx.arc(r * 0.35, 0, r * 0.95, 1.05, -1.05, true);
       ctx.fill();
-      ctx.fillStyle = 'rgba(30,40,50,0.6)';
-      ctx.fillRect(r * 1.2, -r * 0.35, r * 0.18, r * 0.7);
-    } else if (kind === 'dog') {
-      // Four legs and a long body instead of reaching arms.
-      ctx.fillStyle = dark;
-      const step = Math.sin(z.phase * 1.6) * r * 0.35;
-      ctx.fillRect(r * 0.3 + step, -r * 0.85, r * 0.25, r * 0.4);
-      ctx.fillRect(r * 0.3 - step, r * 0.45, r * 0.25, r * 0.4);
-      ctx.fillRect(-r * 0.8 - step, -r * 0.85, r * 0.25, r * 0.4);
-      ctx.fillRect(-r * 0.8 + step, r * 0.45, r * 0.25, r * 0.4);
-      ctx.fillRect(-r * 1.7, -r * 0.1, r * 0.6, r * 0.2);
-    } else if (kind !== 'bloater') {
-      ctx.fillStyle = dark;
-      ctx.fillRect(r * 0.2, -r * 0.85 + swing * 0.3, r * 1.1 + swing, r * 0.36);
-      ctx.fillRect(r * 0.2, r * 0.5 - swing * 0.3, r * 1.1 - swing, r * 0.36);
-    }
-    const crouch = z.leap?.state === 'crouch' ? 0.85 : 1;
-    const pulse = (kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.12 : 1) * crouch;
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    if (kind === 'dog') ctx.ellipse(-r * 0.2, 0, r * 1.25, r * 0.7, 0, 0, Math.PI * 2);
-    else ctx.arc(0, 0, r * pulse, 0, Math.PI * 2);
-    ctx.fill();
-    if (kind === 'bloater') {
-      // Boils
-      ctx.fillStyle = hit ? '#fff' : '#b6e04a';
-      for (let i = 0; i < 5; i++) {
-        const a = i * 1.3 + z.id;
-        ctx.beginPath();
-        ctx.arc(Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55, r * 0.22, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    if (kind === 'spitter') {
-      ctx.fillStyle = hit ? '#fff' : '#b04aff';
+      ctx.strokeStyle = '#20262c';
+      ctx.lineWidth = r * 0.06;
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(20,30,40,0.7)';
+      ctx.fillRect(r * 1.18, -r * 0.35, r * 0.16, r * 0.7);
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = r * 0.04;
       ctx.beginPath();
-      ctx.arc(r * 0.75, 0, r * 0.3, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(r * 0.35, 0, r * 1.12, -0.85, -0.3);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(20,20,20,0.6)';
+      ctx.lineWidth = r * 0.025;
+      ctx.beginPath();
+      ctx.moveTo(r * 1.4, r * 0.45);
+      ctx.lineTo(r * 1.25, r * 0.6);
+      ctx.lineTo(r * 1.32, r * 0.75);
+      ctx.stroke();
     }
-    ctx.fillStyle = dark;
-    ctx.beginPath();
-    ctx.arc(r * 0.2, 0, r * 0.55, 0, Math.PI * 2);
-    ctx.fill();
     if (kind === 'soldier' && z.plates > 0) {
       // Armor plates, one per side and one on the back; they fall off as they break.
-      ctx.fillStyle = hit ? '#fff' : '#8a9298';
       const spots = [
         [0, -r * 0.62],
         [0, r * 0.62],
         [-r * 0.62, 0],
       ];
-      for (let i = 0; i < z.plates; i++) ctx.fillRect(spots[i][0] - r * 0.35, spots[i][1] - r * 0.22, r * 0.7, r * 0.44);
-      ctx.fillStyle = '#3a4048';
-      ctx.fillRect(r * 0.05, -r * 0.4, r * 0.55, r * 0.8);
+      for (let i = 0; i < z.plates; i++) {
+        const [px, py] = spots[i];
+        ctx.fillStyle = flat('#5a6268');
+        ctx.fillRect(px - r * 0.35, py - r * 0.22, r * 0.7, r * 0.44);
+        ctx.fillStyle = flat('#a8b0b8');
+        ctx.fillRect(px - r * 0.35, py - r * 0.22, r * 0.7, r * 0.1);
+        ctx.fillStyle = '#1c2024';
+        ctx.fillRect(px - r * 0.28, py - r * 0.03, r * 0.04, r * 0.06);
+        ctx.fillRect(px + r * 0.24, py - r * 0.03, r * 0.04, r * 0.06);
+      }
     }
     if (kind === 'juggernaut') {
-      // Front armor plate and a glowing weak spot on the back.
-      ctx.fillStyle = hit ? '#fff' : '#8a9098';
-      ctx.beginPath();
-      ctx.arc(0, 0, r * 1.05, -1.1, 1.1);
-      ctx.arc(0, 0, r * 0.7, 1.1, -1.1, true);
-      ctx.fill();
-      ctx.fillStyle = '#3a3e44';
-      for (let i = -2; i <= 2; i++) ctx.fillRect(r * 0.75, i * r * 0.22 - 2, r * 0.25, 4);
+      // Glowing weak spot on the back.
+      const pulseA = 0.6 + 0.4 * Math.sin(this.clock * 6);
       ctx.fillStyle = `rgba(255,${120 + Math.floor(60 * Math.sin(this.clock * 6))},40,1)`;
       ctx.beginPath();
-      ctx.arc(-r * 0.62, 0, r * 0.24, 0, Math.PI * 2);
+      ctx.arc(-r * 0.62, 0, r * 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(255,240,180,${pulseA})`;
+      ctx.beginPath();
+      ctx.arc(-r * 0.64, -r * 0.04, r * 0.08, 0, Math.PI * 2);
       ctx.fill();
     }
     if (kind === 'electric') {
-      ctx.strokeStyle = '#a0f0ff';
-      ctx.lineWidth = 2;
+      // Jagged sparks crawling over the body.
+      ctx.strokeStyle = '#d8faff';
+      ctx.lineWidth = Math.max(1.2, r * 0.08);
       ctx.beginPath();
       for (let i = 0; i < 3; i++) {
         const a = this.clock * 9 + i * 2.1 + z.id;
-        ctx.moveTo(Math.cos(a) * r * 0.4, Math.sin(a) * r * 0.4);
-        ctx.lineTo(Math.cos(a + 0.4) * r * 1.1, Math.sin(a + 0.4) * r * 1.1);
+        let x = Math.cos(a) * r * 0.35;
+        let y = Math.sin(a) * r * 0.35;
+        ctx.moveTo(x, y);
+        for (let k = 1; k <= 3; k++) {
+          const d = r * (0.35 + k * 0.28);
+          const j = Math.sin(this.clock * 40 + k * 3 + i) * 0.35;
+          x = Math.cos(a + j) * d;
+          y = Math.sin(a + j) * d;
+          ctx.lineTo(x, y);
+        }
       }
       ctx.stroke();
     }
     if (kind === 'screamer') {
-      // Gaping mouth
+      // Gaping mouth that stretches wide right before a scream.
+      const open = z.abilityCd < 0.6;
       ctx.fillStyle = '#1a0006';
       ctx.beginPath();
-      ctx.ellipse(r * 0.55, 0, r * 0.28, r * (z.abilityCd < 0.6 ? 0.34 : 0.2), 0, 0, Math.PI * 2);
+      ctx.ellipse(r * 0.66, 0, r * (open ? 0.24 : 0.14), r * (open ? 0.3 : 0.18), 0, 0, Math.PI * 2);
       ctx.fill();
-    }
-    if (kind === 'leaper') {
-      // Long back legs
-      ctx.fillStyle = dark;
-      ctx.fillRect(-r * 1.3, -r * 0.8, r * 0.9, r * 0.3);
-      ctx.fillRect(-r * 1.3, r * 0.5, r * 0.9, r * 0.3);
-    }
-    if (kind === 'necro') {
-      // Hood and a glowing staff
-      ctx.fillStyle = hit ? '#fff' : '#26263a';
-      ctx.beginPath();
-      ctx.arc(-r * 0.15, 0, r * 0.8, Math.PI * 0.5, Math.PI * 1.5);
-      ctx.fill();
-      ctx.fillStyle = '#6a5a3a';
-      ctx.fillRect(r * 0.3, r * 0.6, r * 1.4, r * 0.18);
-      ctx.fillStyle = '#5dffb0';
-      ctx.beginPath();
-      ctx.arc(r * 1.75, r * 0.69, r * 0.22, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (kind === 'brood') {
-      // Egg sacs on her back
-      ctx.fillStyle = hit ? '#fff' : '#e8d8a0';
-      for (let i = 0; i < 6; i++) {
-        const a = Math.PI * 0.65 + (i / 5) * Math.PI * 0.7;
-        const pr = r * (0.22 + 0.04 * Math.sin(this.clock * 5 + i));
-        ctx.beginPath();
-        ctx.arc(Math.cos(a) * r * 0.75, Math.sin(a) * r * 0.75, pr, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.fillStyle = '#3a2410';
-      for (const side of [-1, 1]) {
-        ctx.beginPath();
-        ctx.moveTo(r * 0.7, side * r * 0.3);
-        ctx.lineTo(r * 1.35, side * r * 0.5);
-        ctx.lineTo(r * 0.8, side * r * 0.55);
-        ctx.fill();
-      }
+      ctx.fillStyle = '#e8dcb0';
+      for (const side of [-1, 1]) ctx.fillRect(r * 0.6, side * r * (open ? 0.24 : 0.13) - r * 0.03, r * 0.14, r * 0.06);
     }
     if (kind === 'bomber') {
-      // Dynamite vest with a fuse that blinks faster once lit.
-      ctx.fillStyle = hit ? '#fff' : '#c0301a';
-      for (let i = -1; i <= 1; i++) ctx.fillRect(-r * 0.55, i * r * 0.36 - r * 0.14, r * 0.9, r * 0.28);
-      ctx.fillStyle = '#2a1a10';
-      ctx.fillRect(-r * 0.2, -r * 0.7, r * 0.14, r * 1.4);
-      const blink = z.fuse > 0 ? Math.floor(this.clock * 24) % 2 : Math.floor(this.clock * 3) % 2;
-      ctx.fillStyle = blink ? '#ff3a2a' : '#5a1a10';
+      const lit = z.fuse > 0 ? Math.floor(this.clock * 24) % 2 : Math.floor(this.clock * 3) % 2;
+      ctx.fillStyle = lit ? '#ff3a2a' : '#5a1a10';
       ctx.beginPath();
-      ctx.arc(r * 0.05, 0, r * 0.2, 0, Math.PI * 2);
+      ctx.arc(0, 0, r * 0.1, 0, Math.PI * 2);
       ctx.fill();
-    }
-    if (kind === 'burrower') {
-      // Big digging claws
-      ctx.fillStyle = hit ? '#fff' : '#c8b89a';
-      for (const side of [-1, 1]) {
-        ctx.beginPath();
-        ctx.moveTo(r * 0.8, side * r * 0.5);
-        ctx.lineTo(r * 1.65, side * r * 0.75);
-        ctx.lineTo(r * 1.4, side * r * 0.35);
-        ctx.lineTo(r * 1.7, side * r * 0.25);
-        ctx.lineTo(r * 0.9, side * r * 0.15);
-        ctx.fill();
+      if (z.fuse > 0) {
+        // Sparking fuse
+        ctx.fillStyle = '#ffe08a';
+        for (let i = 0; i < 3; i++) {
+          const a = this.clock * 30 + i * 2;
+          ctx.fillRect(-r * 0.4 + Math.cos(a) * r * 0.15, -r * 0.55 + Math.sin(a) * r * 0.15, 2, 2);
+        }
       }
-      ctx.fillStyle = hit ? '#fff' : '#5a4632';
+    }
+    if (kind === 'necro') {
+      // Gnarled staff with a glowing skull orb.
+      ctx.strokeStyle = flat('#5a4630');
+      ctx.lineWidth = r * 0.16;
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.arc(-r * 0.25, 0, r * 0.62, Math.PI * 0.5, Math.PI * 1.5);
+      ctx.moveTo(r * 0.2, r * 0.7);
+      ctx.quadraticCurveTo(r * 0.9, r * 0.6, r * 1.6, r * 0.72);
+      ctx.stroke();
+      ctx.fillStyle = '#d8d0b8';
+      ctx.beginPath();
+      ctx.arc(r * 1.75, r * 0.72, r * 0.2, 0, Math.PI * 2);
       ctx.fill();
-    }
-    if (kind === 'wraith') {
-      // Tattered trailing shroud
-      ctx.fillStyle = hit ? '#fff' : 'rgba(150,175,195,0.8)';
+      ctx.fillStyle = '#5dffb0';
       ctx.beginPath();
-      ctx.moveTo(-r * 0.3, -r * 0.9);
-      for (let i = 0; i <= 4; i++) {
-        const y = -r * 0.9 + (i / 4) * r * 1.8;
-        ctx.lineTo(-r * (1.7 + 0.35 * Math.sin(this.clock * 8 + i * 1.7 + z.id)), y);
-        if (i < 4) ctx.lineTo(-r * 1.0, y + r * 0.22);
-      }
-      ctx.lineTo(-r * 0.3, r * 0.9);
+      ctx.arc(r * 1.82, r * 0.66, r * 0.05, 0, Math.PI * 2);
+      ctx.arc(r * 1.82, r * 0.78, r * 0.05, 0, Math.PI * 2);
       ctx.fill();
     }
     if (kind === 'reaper') {
-      // Hooded robe, with a scythe that swings back during the wind-up.
-      ctx.fillStyle = hit ? '#fff' : '#1a1a24';
-      ctx.beginPath();
-      ctx.arc(-r * 0.1, 0, r * 0.95, Math.PI * 0.45, Math.PI * 1.55);
-      ctx.fill();
-      for (let i = 0; i < 7; i++) {
-        const a = Math.PI * 0.62 + (i / 6) * Math.PI * 0.76;
-        ctx.beginPath();
-        ctx.moveTo(Math.cos(a - 0.16) * r, Math.sin(a - 0.16) * r);
-        ctx.lineTo(Math.cos(a) * r * (1.45 + 0.12 * Math.sin(this.clock * 7 + i)), Math.sin(a) * r * (1.45 + 0.12 * Math.sin(this.clock * 7 + i)));
-        ctx.lineTo(Math.cos(a + 0.16) * r, Math.sin(a + 0.16) * r);
-        ctx.fill();
-      }
+      // The scythe swings back during the wind-up.
       const wind = z.reap && z.reap.windup > 0 ? -1.3 : 0.35 * Math.sin(z.phase * 0.5);
       ctx.save();
       ctx.rotate(wind);
-      ctx.fillStyle = '#5a4630';
+      ctx.fillStyle = flat('#4a3624');
       ctx.fillRect(r * 0.2, r * 0.55, r * 1.9, r * 0.14);
-      ctx.fillStyle = hit ? '#fff' : '#c8d8e0';
+      ctx.fillStyle = flat('#2a1e14');
+      for (let i = 0; i < 4; i++) ctx.fillRect(r * (0.5 + i * 0.12), r * 0.55, r * 0.05, r * 0.14);
+      const g = ctx.createLinearGradient(r * 1.0, -r * 0.9, r * 2.0, r * 0.5);
+      g.addColorStop(0, hit ? '#fff' : '#f0f8ff');
+      g.addColorStop(0.6, hit ? '#fff' : '#8a9aa8');
+      g.addColorStop(1, hit ? '#fff' : '#3a4450');
+      ctx.fillStyle = g;
       ctx.beginPath();
       ctx.moveTo(r * 2.05, r * 0.55);
       ctx.quadraticCurveTo(r * 2.0, -r * 0.6, r * 1.0, -r * 0.95);
       ctx.quadraticCurveTo(r * 1.7, -r * 0.3, r * 1.85, r * 0.55);
       ctx.fill();
+      ctx.strokeStyle = 'rgba(122,255,234,0.6)';
+      ctx.lineWidth = r * 0.03;
+      ctx.beginPath();
+      ctx.moveTo(r * 1.0, -r * 0.95);
+      ctx.quadraticCurveTo(r * 1.7, -r * 0.3, r * 1.85, r * 0.55);
+      ctx.stroke();
       ctx.restore();
     }
-    if (kind === 'webber') {
-      // Spindly extra legs and a pale egg sac.
-      ctx.strokeStyle = hit ? '#fff' : '#20202a';
-      ctx.lineWidth = 2.5;
-      for (const side of [-1, 1])
-        for (let i = 0; i < 3; i++) {
-          const a = side * (0.9 + i * 0.55) + Math.sin(z.phase * 1.4 + i) * 0.15;
-          ctx.beginPath();
-          ctx.moveTo(Math.cos(a) * r * 0.6, Math.sin(a) * r * 0.6);
-          ctx.lineTo(Math.cos(a) * r * 1.5, Math.sin(a) * r * 1.5);
-          ctx.lineTo(Math.cos(a + side * 0.4) * r * 1.9, Math.sin(a + side * 0.4) * r * 1.9);
-          ctx.stroke();
-        }
-      ctx.fillStyle = hit ? '#fff' : '#d8d8e8';
-      ctx.beginPath();
-      ctx.ellipse(-r * 0.75, 0, r * 0.55, r * 0.45, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (kind === 'medic') {
-      // Lab coat with a red cross on the back.
-      ctx.fillStyle = hit ? '#fff' : '#e8e8de';
-      ctx.beginPath();
-      ctx.arc(-r * 0.15, 0, r * 0.8, Math.PI * 0.5, Math.PI * 1.5);
-      ctx.fill();
-      ctx.fillStyle = hit ? '#fff' : '#e02a2a';
-      ctx.fillRect(-r * 0.62, -r * 0.12, r * 0.5, r * 0.24);
-      ctx.fillRect(-r * 0.49, -r * 0.25, r * 0.24, r * 0.5);
-    }
     if (kind === 'sludger' || kind === 'sludge') {
-      // Dripping blobs of sludge all over.
-      ctx.fillStyle = hit ? '#fff' : kind === 'sludge' ? '#8aae30' : '#7a9a30';
-      for (let i = 0; i < 6; i++) {
-        const a = i * 1.05 + z.id;
-        const wob = 1 + 0.12 * Math.sin(this.clock * 5 + i * 2);
-        ctx.beginPath();
-        ctx.arc(Math.cos(a) * r * 0.62, Math.sin(a) * r * 0.62, r * 0.3 * wob, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.fillStyle = hit ? '#fff' : '#d0ff3a';
+      // Fresh sludge bubbling up and dripping off.
+      ctx.fillStyle = flat('#b8e040');
       for (let i = 0; i < 3; i++) {
-        const a = i * 2.1 + z.id * 0.7;
+        const t = (this.clock * 0.8 + i / 3 + z.id * 0.37) % 1;
+        const a = i * 2.1 + z.id;
+        ctx.globalAlpha = alpha * (1 - t);
         ctx.beginPath();
-        ctx.arc(Math.cos(a) * r * 0.35, Math.sin(a) * r * 0.35, r * 0.09, 0, Math.PI * 2);
+        ctx.arc(Math.cos(a) * r * (0.4 + t * 0.6), Math.sin(a) * r * (0.4 + t * 0.6), r * 0.14 * (1 - t * 0.5), 0, Math.PI * 2);
         ctx.fill();
       }
-    }
-    if (kind === 'sludge') {
-      // A crown of rusted pipe stubs.
-      ctx.fillStyle = hit ? '#fff' : '#8a5a2a';
-      for (let i = 0; i < 5; i++) {
-        const a = Math.PI + (i - 2) * 0.42;
-        ctx.save();
-        ctx.translate(Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55);
-        ctx.rotate(a);
-        ctx.fillRect(-r * 0.12, -r * 0.1, r * 0.42, r * 0.2);
-        ctx.fillStyle = hit ? '#fff' : '#c8a020';
-        ctx.fillRect(r * 0.24, -r * 0.13, r * 0.08, r * 0.26);
-        ctx.fillStyle = hit ? '#fff' : '#8a5a2a';
-        ctx.restore();
-      }
-    }
-    if (kind === 'tank') {
-      ctx.fillStyle = hit ? '#fff' : '#3a4a44';
-      ctx.fillRect(-r * 0.7, -r * 0.95, r * 1.1, r * 0.4);
-      ctx.fillRect(-r * 0.7, r * 0.55, r * 1.1, r * 0.4);
-    }
-    if (kind === 'boss') {
-      ctx.fillStyle = '#2a1030';
-      for (let i = 0; i < 7; i++) {
-        const a = Math.PI * 0.6 + (i / 6) * Math.PI * 0.8;
-        ctx.beginPath();
-        ctx.moveTo(Math.cos(a - 0.15) * r, Math.sin(a - 0.15) * r);
-        ctx.lineTo(Math.cos(a) * r * 1.35, Math.sin(a) * r * 1.35);
-        ctx.lineTo(Math.cos(a + 0.15) * r, Math.sin(a + 0.15) * r);
-        ctx.fill();
-      }
+      ctx.globalAlpha = alpha;
     }
     ctx.restore();
     ctx.globalAlpha = 1;
@@ -5305,6 +5306,11 @@ export class Game {
       ctx.beginPath();
       ctx.roundRect(z.x - r * 1.2, z.y - r * 1.2, r * 2.4, r * 2.4, 4);
       ctx.fill();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath();
+      ctx.moveTo(z.x - r * 0.9, z.y - r * 0.5);
+      ctx.lineTo(z.x - r * 0.5, z.y - r * 0.9);
       ctx.stroke();
     }
     if (z.elite) {
@@ -5333,16 +5339,11 @@ export class Game {
     ctx.save();
     ctx.translate(z.x, z.y);
     ctx.rotate(wob);
-    ctx.fillStyle = z.flash > 0 ? '#fff' : '#d8c89a';
+    stamp(ctx, eggSprite(z.def, z.flash > 0 ? Tint.Hit : Tint.None), z.r);
+    // Whatever is inside darkens and twitches as it gets ready to hatch.
+    ctx.fillStyle = `rgba(120,30,20,${ripe * 0.45})`;
     ctx.beginPath();
-    ctx.ellipse(0, 0, z.r * 0.85, z.r * 1.1, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#8a7a4a';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = `rgba(120,30,20,${0.2 + ripe * 0.5})`;
-    ctx.beginPath();
-    ctx.ellipse(0, 2, z.r * 0.45, z.r * 0.6, 0, 0, Math.PI * 2);
+    ctx.ellipse(Math.sin(this.clock * 20 + z.id) * ripe * 2, 2, z.r * 0.45, z.r * 0.6, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
     if (z.hp < z.maxHp) {
