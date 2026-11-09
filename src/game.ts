@@ -556,6 +556,8 @@ export class Game {
   private ghosts: { x: number; y: number; a: number; life: number }[] = [];
   private flow = new Int32Array(FLOW_W * FLOW_H);
   private flowT = 0;
+  /** Seconds since the last kill; drives the straggler rescue. */
+  private quietT = 0;
   private mood: MusicMood | '' = '';
   private report: RunReport = Game.emptyReport();
   private reviveLeft = 0;
@@ -840,6 +842,7 @@ export class Game {
   /** Resets the arena for a new wave (shared by the host and co-op guests). */
   private beginWave() {
     this.spawnT = 1.2;
+    this.quietT = 0;
     this.mortars = [];
     this.vortexes = [];
     this.clearT = -1;
@@ -1068,6 +1071,7 @@ export class Game {
     if (client) this.updateMirror(dt);
     else {
       this.updateSpawning(dt);
+      this.rescueStragglers(dt);
       this.updateZombies(dt);
     }
     this.updateBullets(dt);
@@ -1413,6 +1417,38 @@ export class Game {
     if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
   }
 
+  /**
+   * Safety net for a wave that will not end: if the last few zombies have been out of
+   * reach for half a minute (wedged somewhere the pathing can't get them out of),
+   * bring them back in through the gate nearest the fight.
+   */
+  private rescueStragglers(dt: number) {
+    this.quietT += dt;
+    if (this.toSpawn > 0 || this.quietT < 30) return;
+    const live = this.zombies.filter((z) => !z.dead);
+    if (!live.length || live.length > 3) return;
+    this.quietT = 0;
+    const ts = this.targets();
+    if (!ts.length) return;
+    for (const z of live) {
+      if (isBoss(z) || z.def.kind === 'egg') continue;
+      const t = this.nearest(ts, z.x, z.y);
+      if (Math.hypot(t.x - z.x, t.y - z.y) < 500) continue;
+      let gate = this.map.gates[0];
+      let gd = Infinity;
+      for (const g of this.map.gates) {
+        const d = Math.hypot(g.x - t.x, g.y - t.y);
+        if (d > 300 && d < gd) {
+          gd = d;
+          gate = g;
+        }
+      }
+      z.x = gate.x;
+      z.y = gate.y;
+      z.kx = z.ky = 0;
+    }
+  }
+
   private farthestGate() {
     let best = this.map.gates[0];
     let bd = -1;
@@ -1576,8 +1612,12 @@ export class Game {
   private flowDir(x: number, y: number): { x: number; y: number } | null {
     const cx = Math.floor(x / CELL);
     const cy = Math.floor(y / CELL);
-    if (cx < 0 || cy < 0 || cx >= FLOW_W || cy >= FLOW_H) return null;
-    const here = this.flow[cy * FLOW_W + cx];
+    const inside = cx >= 0 && cy >= 0 && cx < FLOW_W && cy < FLOW_H;
+    const here = inside ? this.flow[cy * FLOW_W + cx] : -1;
+    // Shoved into a wall's padding (or off the map) there is no path from here, and
+    // walking straight at the player can pin a zombie against cover forever, so the
+    // wave never ends. Step back to the closest open cell instead.
+    if (here < 0) return this.escapeDir(x, y, cx, cy);
     if (here <= 1) return null;
     let best = here;
     let bx = 0;
@@ -1599,6 +1639,38 @@ export class Game {
     const ty = (cy + by + 0.5) * CELL - y;
     const d = Math.hypot(tx, ty) || 1;
     return { x: tx / d, y: ty / d };
+  }
+
+  /** From a cell with no path, the way to the nearest cell that has one (null if none close by). */
+  private escapeDir(x: number, y: number, cx: number, cy: number): { x: number; y: number } | null {
+    for (let r = 1; r <= 3; r++) {
+      let best = Infinity;
+      let bx = 0;
+      let by = 0;
+      for (let oy = -r; oy <= r; oy++)
+        for (let ox = -r; ox <= r; ox++) {
+          if (Math.max(Math.abs(ox), Math.abs(oy)) !== r) continue;
+          const nx = cx + ox;
+          const ny = cy + oy;
+          if (nx < 0 || ny < 0 || nx >= FLOW_W || ny >= FLOW_H) continue;
+          const v = this.flow[ny * FLOW_W + nx];
+          if (v < 0) continue;
+          // Prefer close cells, then cells nearer the player.
+          const score = v + Math.hypot(ox, oy) * 2;
+          if (score < best) {
+            best = score;
+            bx = nx;
+            by = ny;
+          }
+        }
+      if (best < Infinity) {
+        const tx = (bx + 0.5) * CELL - x;
+        const ty = (by + 0.5) * CELL - y;
+        const d = Math.hypot(tx, ty) || 1;
+        return { x: tx / d, y: ty / d };
+      }
+    }
+    return null;
   }
 
   /** Everyone the horde can go for: the host and any co-op guests still on their feet. */
@@ -2026,6 +2098,12 @@ export class Game {
           this.wsfx('explode', 0.6);
           this.ring({ x: z.x, y: z.y, r: 0, max: 90, life: 0.4, color: 'rgba(200,180,160,' });
         }
+      }
+      // A big shove can tunnel a zombie through the outer wall, where it could never be
+      // reached again; keep everyone inside the arena.
+      if (!phasing) {
+        z.x = clamp(z.x, BORDER + z.r, WORLD_W - BORDER - z.r);
+        z.y = clamp(z.y, BORDER + z.r, WORLD_H - BORDER - z.r);
       }
       if (z.attackCd > 0) z.attackCd -= dt;
       for (const dp of this.deploys) {
@@ -2935,6 +3013,7 @@ export class Game {
   private killZombie(z: Zombie, angle: number) {
     if (z.dead) return;
     z.dead = true;
+    this.quietT = 0;
     const kind = z.def.kind;
     const boss = isBoss(z);
     // A guest's kill: their game keeps score, combos and brains for it.
