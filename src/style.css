@@ -385,7 +385,8 @@ button.ghost {
   background: var(--red);
 }
 
-button.link {
+button.link,
+a.link {
   background: none;
   color: var(--muted);
   padding: 0;
