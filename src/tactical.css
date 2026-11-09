@@ -27,7 +27,7 @@
   --body: 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: 'Share Tech Mono', ui-monospace, 'Roboto Mono', monospace;
   --cut: 10px;
-  --topbar-h: 44px;
+  --topbar-h: 54px;
 }
 
 html,
@@ -486,10 +486,7 @@ textarea:focus {
 
 @media (max-height: 500px) {
   :root {
-    --topbar-h: 40px;
-  }
-  .back-btn {
-    height: 30px;
+    --topbar-h: 50px;
   }
   .overlay {
     padding-top: calc(var(--topbar-h) + 8px + env(safe-area-inset-top));
@@ -514,4 +511,281 @@ textarea:focus {
   right: 3px;
   width: 7px;
   height: 7px;
+}
+
+/* ================================================================ comfort pass: thumb-sized targets */
+/* Everything you tap is at least 44px tall (Android recommends 48dp); primary actions are bigger. */
+
+.back-btn {
+  height: 44px;
+  min-width: 104px;
+  font-size: 16px;
+}
+
+button.big {
+  min-height: 52px;
+}
+
+button.ghost,
+button.buy,
+.tabs button,
+.chip,
+.challenge-row button.buy,
+.lb-row button.buy,
+.co-codeline button.buy,
+.share-btn {
+  min-height: 44px;
+}
+
+button.buy {
+  align-items: center;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.tabs button {
+  padding: 10px 14px;
+}
+
+input,
+.co-input,
+.challenge-row input,
+.lb-row input,
+#challenge-out input {
+  min-height: 46px;
+  font-size: 16px !important; /* 16px stops Android/iOS zooming into the field */
+}
+
+.shop-item {
+  min-height: 64px;
+  padding: 10px 14px;
+}
+
+.mode-card,
+.map-chip {
+  min-height: 56px;
+}
+
+/* Every button gets a clear pressed state. */
+button:not(:disabled) {
+  transition: transform 0.06s, filter 0.06s;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.97);
+  filter: brightness(1.25);
+}
+
+/* ---------------------------------------------------------------- title screen (landscape command deck) */
+
+.title-wrap {
+  max-width: 460px;
+}
+
+.title-right {
+  display: flex;
+  flex-direction: column;
+}
+
+.base-row .base-btn {
+  min-height: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.base-btn .bi {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.util-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.util-wrap {
+  display: contents;
+}
+
+#clips-wrap.hidden,
+.util.hidden {
+  display: none;
+}
+
+button.util {
+  flex: 1;
+  min-height: 44px;
+  padding: 4px 6px;
+  background: rgba(8, 10, 7, 0.82);
+  border: 1px solid var(--edge);
+  border-bottom: 2px solid var(--edge-hi);
+  color: var(--text);
+  font: 12px var(--mono);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dossier {
+  display: flex;
+  gap: 1px;
+  margin: 8px auto 0;
+  max-width: 340px;
+  background: var(--edge);
+  border: 1px solid var(--edge);
+}
+
+.dossier > div {
+  flex: 1;
+  padding: 5px 8px;
+  background: rgba(8, 10, 7, 0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.dossier .t-label {
+  font-size: 10px;
+}
+
+.dossier b {
+  font: 15px var(--mono);
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.dossier b.ok {
+  color: var(--hud);
+}
+
+.dossier b.warn {
+  color: var(--red);
+}
+
+/* Phone landscape: title on the left, controls on the right, nothing to scroll. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .title-wrap {
+    max-width: 780px;
+    display: grid;
+    grid-template-columns: 1fr 1.15fr;
+    gap: 22px;
+    align-items: center;
+  }
+  .title-left h1 {
+    font-size: clamp(40px, 7.5vw, 64px);
+  }
+  .title-right button.big {
+    margin-top: 0;
+    margin-bottom: 8px;
+  }
+  .title-right .base-row {
+    margin-top: 0;
+  }
+  .dossier,
+  .title-wrap .profile {
+    max-width: none;
+  }
+}
+
+/* ---------------------------------------------------------------- detail: panel serial tags */
+
+.panel[data-code]::after {
+  content: attr(data-code) '  \25AE\25AE\25AF';
+  position: absolute;
+  top: -8px;
+  right: 22px;
+  padding: 0 6px;
+  background: var(--bg);
+  font: 10px/16px var(--mono);
+  letter-spacing: 2px;
+  color: var(--accent);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Hazard stripe along the bottom of the main call-to-action. */
+#start,
+#next-wave,
+#play,
+#again {
+  background:
+    repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.55) 0 8px, transparent 8px 16px) bottom / 100% 5px no-repeat,
+    linear-gradient(180deg, #f6c445, #e0a21c);
+}
+
+/* Card detail: a small notch tag in the corner of every option card. */
+.meta-card,
+.shop-item,
+.mode-card {
+  position: relative;
+}
+
+.meta-card::after,
+.mode-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 10px 10px 0;
+  border-color: transparent var(--edge-hi) transparent transparent;
+}
+
+.meta-card.equipped::after,
+.mode-card.on::after {
+  border-right-color: var(--accent);
+}
+
+/* Weapon stat bars (armory + shop). */
+.wstats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 6px;
+  align-items: center;
+  margin: 3px 0 2px;
+  width: 100%;
+}
+
+.wstats span {
+  font: 9px/1 var(--mono);
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.wstats i {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wstats b {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.shop-item > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.shop-item .wstats {
+  max-width: 170px;
+}
+
+.meta-card.locked .wstats b {
+  background: var(--steel);
+}
+
+/* The main action stays on screen even when the list above it scrolls. */
+#start,
+#next-wave,
+#again {
+  position: sticky;
+  bottom: 4px;
+  z-index: 3;
+  filter: drop-shadow(0 -6px 10px rgba(0, 0, 0, 0.8));
 }

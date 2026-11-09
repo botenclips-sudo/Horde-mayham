@@ -1195,14 +1195,15 @@ export class Game {
 
   private updateButtons() {
     const inp = this.input;
-    const btns = [{ id: 'pause', x: this.w - 30, y: 30, r: 20, label: 'II' }];
+    const btns = [{ id: 'pause', x: this.w - 32, y: 32, r: 24, label: 'II' }];
     if (inp.touchMode && this.state === 'playing') {
       const cy = clamp(this.h * 0.5, 150, this.h - 120);
-      btns.push({ id: 'dash', x: this.w - 54, y: cy + 10, r: 32, label: 'DASH' });
-      btns.push({ id: 'nade', x: this.w - 132, y: cy + 22, r: 27, label: 'NADE' });
-      btns.push({ id: 'swap', x: this.w - 54, y: cy - 74, r: 25, label: 'SWAP' });
-      btns.push({ id: 'reload', x: this.w - 124, y: cy - 58, r: 23, label: 'R' });
-      if (this.kit.length) btns.push({ id: 'deploy', x: this.w - 200, y: cy + 34, r: 24, label: DEPLOYS[this.kit[0]].icon });
+      // Sized for thumbs: every button is at least 56px across, with clear gaps between them.
+      btns.push({ id: 'dash', x: this.w - 58, y: cy + 18, r: 36, label: 'DASH' });
+      btns.push({ id: 'nade', x: this.w - 142, y: cy + 34, r: 31, label: 'NADE' });
+      btns.push({ id: 'swap', x: this.w - 58, y: cy - 70, r: 30, label: 'SWAP' });
+      btns.push({ id: 'reload', x: this.w - 140, y: cy - 50, r: 29, label: 'R' });
+      if (this.kit.length) btns.push({ id: 'deploy', x: this.w - 218, y: cy + 52, r: 28, label: DEPLOYS[this.kit[0]].icon });
     }
     if (this.state === 'menu') btns.length = 0;
     inp.buttons = btns;
@@ -5772,25 +5773,25 @@ export class Game {
     ctx.font = `15px ${FONT}`;
     const wBoxW = Math.max(100, ctx.measureText(wName).width + 20);
     ctx.fillStyle = HUD_PLATE;
-    ctx.fillRect(this.w - 52 - wBoxW, pad - 6, wBoxW, 50);
-    brackets(ctx, this.w - 52 - wBoxW, pad - 6, wBoxW, 50);
+    ctx.fillRect(this.w - 64 - wBoxW, pad - 6, wBoxW, 50);
+    brackets(ctx, this.w - 64 - wBoxW, pad - 6, wBoxW, 50);
     ctx.fillStyle = '#fff';
-    ctx.fillText(wName, this.w - 62, pad + 8);
+    ctx.fillText(wName, this.w - 74, pad + 8);
     ctx.font = `16px ${MONO}`;
     if (w.reloadT > 0) {
       const tot = w.def.reload * this.stats.reload;
       ctx.fillStyle = '#ffb347';
-      ctx.fillText('RELOADING', this.w - 62, pad + 28);
+      ctx.fillText('RELOADING', this.w - 74, pad + 28);
       ctx.fillStyle = 'rgba(255,255,255,0.2)';
-      ctx.fillRect(this.w - 142, pad + 38, 80, 4);
+      ctx.fillRect(this.w - 154, pad + 38, 80, 4);
       ctx.fillStyle = '#ffb347';
-      ctx.fillRect(this.w - 142, pad + 38, 80 * (1 - w.reloadT / tot), 4);
+      ctx.fillRect(this.w - 154, pad + 38, 80 * (1 - w.reloadT / tot), 4);
     } else if (this.active.ammo > 0) {
       ctx.fillStyle = '#ffd23f';
-      ctx.fillText('∞ BOTTOMLESS', this.w - 62, pad + 28);
+      ctx.fillText('∞ BOTTOMLESS', this.w - 74, pad + 28);
     } else {
       ctx.fillStyle = w.ammo === 0 ? '#e0483e' : '#c9d1b8';
-      ctx.fillText(`${w.ammo} / ${this.weaponMag(w)}`, this.w - 62, pad + 28);
+      ctx.fillText(`${w.ammo} / ${this.weaponMag(w)}`, this.w - 74, pad + 28);
     }
 
     // Combo meter (left side, clear of the touch buttons)

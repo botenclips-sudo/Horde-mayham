@@ -98,6 +98,8 @@ function showShop() {
     b.querySelector('.label')!.textContent = item.label;
     b.querySelector('.sub')!.textContent = item.sub;
     b.querySelector('.price')!.textContent = `$${item.price}`;
+    const gun = /^(buy|up):/.test(item.id) ? WEAPONS.find((w) => w.id === item.id.split(':')[1]) : undefined;
+    if (gun) b.firstElementChild!.insertAdjacentHTML('beforeend', gunStats(gun));
     b.addEventListener('click', () => {
       if (game.buy(item.id)) showShop();
     });
@@ -141,6 +143,24 @@ function showGameOver(s: RunSummary) {
   $('challenge-btn').classList.toggle('hidden', !!game.net);
   coopOverButtons();
   show('over');
+}
+
+/** Bar chart of a gun's damage, fire rate, magazine and range, scaled against the whole arsenal. */
+type Gun = (typeof WEAPONS)[number];
+const GUN_STATS: [string, (w: Gun) => number][] = [
+  ['DMG', (w) => w.damage * w.pellets],
+  ['RATE', (w) => w.fireRate],
+  ['MAG', (w) => w.mag],
+  ['RNG', (w) => w.speed * w.life],
+];
+const GUN_MAX = GUN_STATS.map(([, f]) => Math.max(...WEAPONS.map(f)));
+function gunStats(w: Gun) {
+  const rows = GUN_STATS.map(([label, f], i) => {
+    // Square root so one extreme gun (minigun rate, rocket damage) doesn't flatten everything else.
+    const pct = Math.max(6, Math.round(Math.sqrt(f(w) / GUN_MAX[i]) * 100));
+    return `<span>${label}</span><i><b style="width:${pct}%"></b></i>`;
+  });
+  return `<div class="wstats">${rows.join('')}</div>`;
 }
 
 const esc = (t: string) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
@@ -218,7 +238,7 @@ function renderBase() {
       const lv = meta.mastery(w.id);
       const card = document.createElement('div');
       card.className = `meta-card${owned ? '' : ' locked'}${d.loadout.includes(w.id) && owned ? ' equipped' : ''}`;
-      card.innerHTML = `<div class="name">${esc(w.name)}</div><div class="sub">Mastery ${lv}/${MASTERY_MAX}</div><div class="pips">${'■'.repeat(lv)}${'□'.repeat(MASTERY_MAX - lv)}</div>`;
+      card.innerHTML = `<div class="name">${esc(w.name)}</div><div class="sub">Mastery ${lv}/${MASTERY_MAX}</div><div class="pips">${'■'.repeat(lv)}${'□'.repeat(MASTERY_MAX - lv)}</div>${gunStats(w)}`;
       if (!owned) card.appendChild(btn('Unlock', GUN_UNLOCK[w.id], () => meta.unlockGun(w.id) && sfx.play('buy')));
       else {
         const inLo = d.loadout.slice(0, meta.slots()).includes(w.id);
@@ -1068,6 +1088,12 @@ $('clips-toggle').addEventListener('click', () => {
   syncClipLabel();
 });
 syncClipLabel();
+// A tiny buzz on every menu button press so taps feel solid on phones.
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') return;
+  const b = (e.target as HTMLElement).closest('button');
+  if (b && !b.disabled) navigator.vibrate?.(8);
+});
 // Any first touch anywhere unlocks audio on mobile browsers.
 window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
 
