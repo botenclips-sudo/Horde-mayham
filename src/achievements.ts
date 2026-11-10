@@ -55,7 +55,12 @@ export const BADGES: BadgeDef[] = [
   { id: 'daily', icon: '📅', name: 'Daily Grind', desc: 'Play a Daily Challenge', reward: 15, check: (c) => c.mode === 'daily' && c.r.wave >= 1 },
   { id: 'challenge', icon: '⚔️', name: 'Called Out', desc: "Beat a friend's challenge", reward: 50, check: (c) => c.challengeBeaten },
   { id: 'squad', icon: '👥', name: 'Squad Goals', desc: 'Reach wave 10 in online co-op', reward: 40, check: (c) => c.r.coop && c.r.wave >= 10 },
-  { id: 'medic', icon: '🚑', name: 'No Zombie Left Behind', desc: 'Revive 3 teammates in one co-op run', reward: 40, check: (c) => c.r.teamRevives >= 3 },
+  { id: 'revive3', icon: '🚑', name: 'No Zombie Left Behind', desc: 'Revive 3 teammates in one co-op run', reward: 40, check: (c) => c.r.teamRevives >= 3 },
+  { id: 'zero', icon: '🧬', name: 'Cure Found', desc: 'Kill Patient Zero', reward: 100, check: (c) => (c.r.killsByKind.zero ?? 0) >= 1 },
+  { id: 'laser', icon: '🔴', name: 'Grid Lock', desc: 'Kill 15 zombies with lab lasers in one run', reward: 40, check: (c) => (c.r.laserKills ?? 0) >= 15 },
+  { id: 'turned', icon: '🌀', name: 'Mind Over Matter', desc: 'Turn 20 zombies with the Mind Ray in one run', reward: 45, check: (c) => (c.r.turned ?? 0) >= 20 },
+  { id: 'shaken', icon: '🪳', name: 'Get It Off!', desc: 'Shake off 10 parasites with a dash in one run', reward: 35, check: (c) => (c.r.shaken ?? 0) >= 10 },
+  { id: 'blobs', icon: '🫧', name: 'Cell Division', desc: 'Pop 40 Mitosis blobs in one run', reward: 40, check: (c) => (c.r.killsByKind.blob ?? 0) >= 40 },
   { id: 'runs25', icon: '🔁', name: 'Glutton for Punishment', desc: 'Play 25 runs', reward: 50, check: (c) => c.totals.runs >= 25 },
   { id: 'k10k', icon: '🧮', name: 'Zombie Accountant', desc: 'Kill 10,000 zombies in total', reward: 150, check: (c) => c.totals.kills >= 10000 },
 ];

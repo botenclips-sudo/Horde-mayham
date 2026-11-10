@@ -10,6 +10,7 @@ const groundCache = new Map<string, HTMLCanvasElement>();
 const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 import type { NetMsg } from './net';
+import { type OpDef, OKAFOR } from './campaign';
 import { ARM_FRAMES, armsSprite, bodySprite, eggSprite, eyeSpot, hasFeet, stamp, Tint, VARIANTS, warmZombieArt } from './zombieArt';
 
 const PLAYER_R = 16;
@@ -44,6 +45,27 @@ interface Bullet {
   blast?: number;
   /** A teammate's shot drawn for show; their own game does the damage. */
   ghost?: boolean;
+  /** Mind Ray: hits soak a zombie's will until it turns. */
+  charm?: boolean;
+}
+
+/** Patient Zero's three forms and the attack timers for each. */
+interface ZeroState {
+  phase: 1 | 2 | 3;
+  /** Seconds left in a transformation (it can't be hurt meanwhile). */
+  trans: number;
+  tendril: number;
+  summon: number;
+  yank: number;
+  /** Psychic pull wind-up. */
+  yankT: number;
+  laser: number;
+  /** Eye laser: aiming (warn) then sweeping. */
+  laserW: number;
+  laserT: number;
+  laserA: number;
+  laserDir: number;
+  laserHit: object[];
 }
 
 interface Zombie {
@@ -87,6 +109,16 @@ interface Zombie {
   fuse: number; // bomber: seconds until the vest goes off (0 = not lit)
   reap?: { sweep: number; windup: number; aim: number; blink: number; orbs: number; summoned: boolean };
   sludge?: { mortar: number; drip: number; splits: number }; // The Sludge King
+  gen?: number; // Mitosis blob: 0 = full size, splits twice
+  latch?: number; // parasite: seconds left clinging to you
+  latchA?: number;
+  psi: number; // Mind Ray hits soaked up
+  charm: number; // seconds left fighting for you
+  prey?: number; // who a turned zombie is going for
+  regenT: number; // mutant: seconds since it last got hurt
+  healing?: boolean;
+  yank?: { cd: number; windup: number; tx: number; ty: number }; // psyker
+  zero?: ZeroState;
   /** Co-op guests: where the host last saw this zombie (we glide toward it). */
   nx?: number;
   ny?: number;
@@ -117,6 +149,73 @@ interface Bolt {
 const isBoss = (z: Zombie) => BOSS_KINDS.has(z.def.kind);
 /** Burrowed or ghostly: bullets, blasts and blades pass right through. */
 const intangible = (z: Zombie) => z.ghostT > 0 || z.dig?.state === 'under';
+/** Not something your guns should hit: intangible, or turned to your side. */
+const offLimits = (z: Zombie) => intangible(z) || z.charm > 0;
+
+/** Patient Zero's tendrils: a red line on the floor, then spikes burst out along it. */
+interface Spike {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** Warning time left; below zero it's erupting. */
+  t: number;
+  hit: object[];
+}
+const SPIKE_WARN = 0.85;
+const SPIKE_LIFE = 0.45;
+const SPIKE_W = 26;
+
+/** Hive Lab consoles: stand on one to arm a laser sweep across the whole map. */
+interface Console {
+  x: number;
+  y: number;
+  axis: 'x' | 'y';
+  hold: number;
+  cd: number;
+  phase: 'idle' | 'warn' | 'sweep';
+  t: number;
+  pos: number;
+  dir: number;
+  hit: object[];
+}
+const CONSOLE_R = 48;
+const CONSOLE_CD = 32;
+const SWEEP_TIME = 2.6;
+
+/** Railgun and Plasma Cutter beams. */
+interface Beam {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  life: number;
+  max: number;
+  color: string;
+  width: number;
+}
+
+/** Story mode: where an op stands. */
+interface OpState {
+  t: number;
+  n: number;
+  hits: number;
+  done: boolean;
+  end: number;
+  radio: number;
+  drives: { x: number; y: number }[];
+  gen: { x: number; y: number; vx: number; vy: number; hp: number; max: number; hurt: number } | null;
+  zone: { x: number; y: number; r: number; hold: number } | null;
+}
+
+export interface OpResult {
+  op: OpDef;
+  won: boolean;
+  time: number;
+  hits: number;
+  hpFrac: number;
+  summary: RunSummary;
+}
 const SWEEP_R = 215;
 const SWEEP_ARC = 1.05;
 
@@ -371,6 +470,8 @@ export interface Hooks {
   onPause: () => void;
   /** A moment worth clipping just happened (boss kill, massacre, big combo). */
   onHighlight?: (label: string) => void;
+  /** Story mode: an op was won or lost. */
+  onOpEnd?: (r: OpResult) => void;
 }
 
 export type State = 'menu' | 'playing' | 'between' | 'paused' | 'over';
@@ -424,12 +525,15 @@ const WEAPON_BLURB: Record<string, string> = {
   crossbow: 'Bolts punch through 3 zombies',
   autoshotgun: 'Full-auto buckshot',
   ripper: 'Saw discs bounce off walls',
+  railgun: 'Hold to charge, pierces everything in a line',
+  plasma: 'A beam that heats up the longer it stays on target',
+  mindray: 'Turns zombies to fight for you',
   acid: 'Leaves pools of acid that eat zombies',
   swarm: 'Three rockets that hunt zombies down',
   singularity: 'A black hole drags the horde in, then pops',
 };
 
-const BOSS_COLORS: Partial<Record<ZombieKind, string>> = { boss: '#c065ff', brood: '#ffcf5a', juggernaut: '#ff6a3a', reaper: '#7affea', sludge: '#c8ff3a' };
+const BOSS_COLORS: Partial<Record<ZombieKind, string>> = { boss: '#c065ff', brood: '#ffcf5a', juggernaut: '#ff6a3a', reaper: '#7affea', sludge: '#c8ff3a', zero: '#ff5adc' };
 
 const ELITE_KINDS = Object.keys(ELITES) as EliteKind[];
 
@@ -450,8 +554,24 @@ const NEW_KIND_WAVES: Record<number, string> = {
   19: 'SLUDGERS LEAVE TOXIC TRAILS',
 };
 
+/** The lab's own zombies: when they turn up outside the lab, and what the banner says. */
+const LAB_KINDS: [ZombieKind, number, string][] = [
+  ['parasite', 21, 'PARASITES: DASH TO SHAKE THEM OFF'],
+  ['mutant', 22, 'MUTANTS REGENERATE: BURN OR FREEZE THEM'],
+  ['blob', 23, 'MITOSIS BLOBS SPLIT WHEN THEY POP'],
+  ['psyker', 24, 'PSYKERS PULL YOU IN: DASH SIDEWAYS'],
+];
+
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+/** Distance from a point to a line segment. */
+function segDist(px: number, py: number, x1: number, y1: number, x2: number, y2: number) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const l2 = dx * dx + dy * dy || 1;
+  const t = clamp(((px - x1) * dx + (py - y1) * dy) / l2, 0, 1);
+  return Math.hypot(px - (x1 + dx * t), py - (y1 + dy * t));
+}
 const FONT = "'Black Ops One', 'Arial Black', system-ui, sans-serif";
 
 const spriteCache = new Map<string, HTMLCanvasElement>();
@@ -530,6 +650,21 @@ export class Game {
   private vents: Vent[] = [];
   private ventWarned = false;
   private webT = 0;
+  private spikes: Spike[] = [];
+  private consoles: Console[] = [];
+  private consoleWarned = false;
+  /** Lab power: seconds until the next cut, and seconds left in a cut. */
+  private power = { t: 45, out: 0 };
+  private charge = 0;
+  private beams: Beam[] = [];
+  private heat = { id: -1, n: 0 };
+  /** Psyker / Patient Zero pull: you're dragged toward (x, y) for t seconds. */
+  private pull = { x: 0, y: 0, t: 0 };
+  private latchWarned = false;
+  private subtitle = { who: '', text: '', t: 0 };
+  /** Story mode op being played (null in every other mode). */
+  op: OpDef | null = null;
+  private opS: OpState = Game.emptyOp();
   private barrels: Barrel[] = [];
   private toSpawn = 0;
   private spawnT = 0;
@@ -561,7 +696,7 @@ export class Game {
   private reviveLeft = 0;
   private corpses: { x: number; y: number }[] = [];
   private nadeBlast = false;
-  private cause: '' | 'train' | 'barrel' | 'vent' = '';
+  private cause: '' | 'train' | 'barrel' | 'vent' | 'laser' = '';
   private burst = 0;
   private burstT = 0;
   private hitThisWave = false;
@@ -665,6 +800,7 @@ export class Game {
   configure(mode: string, challenge: Challenge | null = null) {
     this.mode = mode;
     this.challenge = challenge;
+    this.op = null;
     if (challenge) {
       this.mutators = new Set(challenge.muts);
       this.setMap(challenge.map);
@@ -682,6 +818,19 @@ export class Game {
     return this.mutators.has(m);
   }
 
+  /** Story mode: set up an op (its map, guns and perks apply on the next newRun). */
+  configureOp(op: OpDef) {
+    this.mode = 'campaign';
+    this.challenge = null;
+    this.mutators = new Set();
+    this.op = op;
+    this.setMap(op.map);
+  }
+
+  static emptyOp(): OpState {
+    return { t: 0, n: 0, hits: 0, done: false, end: 0, radio: 0, drives: [], gen: null, zone: null };
+  }
+
   /** Switches the arena; takes effect for the next run and the title screen. */
   setMap(id: string) {
     this.map = mapById(id);
@@ -691,7 +840,7 @@ export class Game {
   }
 
   static emptyReport(): RunReport {
-    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, ventKills: 0, barrelKills: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0, teamRevives: 0, coop: false };
+    return { wave: 0, kills: 0, killsByKind: {}, killsByWeapon: {}, bosses: 0, elites: 0, bestCombo: 0, grenadeKills: 0, brains: 0, trainKills: 0, ventKills: 0, barrelKills: 0, laserKills: 0, turned: 0, shaken: 0, hitsTaken: 0, revives: 0, bestBurst: 0, flawlessWaves: 0, time: 0, teamRevives: 0, coop: false };
   }
 
   newRun() {
@@ -716,7 +865,8 @@ export class Game {
     this.loot = [];
     this.kit = [];
     this.deploys = [];
-    const loadout = meta.data.loadout.slice(0, meta.slots());
+    // Story ops hand out their own field kit.
+    const loadout = this.op ? this.op.guns : meta.data.loadout.slice(0, meta.slots());
     this.weapons = loadout.map((id) => this.makeWeapon(WEAPONS.find((w) => w.id === id) ?? WEAPONS[0]));
     for (const w of this.weapons) w.ammo = this.weaponMag(w);
     this.wi = 0;
@@ -731,6 +881,27 @@ export class Game {
       this.stats.maxHp = Math.round(this.stats.maxHp * 0.5);
     }
     if (this.has('rich')) this.stats.cash *= 2;
+    if (this.op) {
+      for (const id of this.op.perks ?? []) {
+        const perk = PERKS.find((x) => x.id === id);
+        if (!perk) continue;
+        perk.apply(this.stats);
+        this.perkCounts.set(id, (this.perkCounts.get(id) ?? 0) + 1);
+      }
+      for (const w of this.weapons) w.ammo = this.weaponMag(w);
+      this.cash = 0;
+    }
+    this.opS = Game.emptyOp();
+    this.consoles = (this.map.consoles ?? []).map((c) => ({ x: c.x, y: c.y, axis: c.axis, hold: 0, cd: 6, phase: 'idle', t: 0, pos: 0, dir: 1, hit: [] }));
+    this.consoleWarned = false;
+    this.power = { t: rand(40, 55), out: 0 };
+    this.spikes = [];
+    this.beams = [];
+    this.charge = 0;
+    this.heat = { id: -1, n: 0 };
+    this.pull.t = 0;
+    this.latchWarned = false;
+    this.subtitle.t = 0;
     this.trains = (this.map.tracks ?? []).map((y, i) => ({ y, dir: i % 2 ? -1 : 1, phase: 'idle', t: rand(9, 14) + i * 5, x: 0, hitPlayer: false, hitBoss: [] }));
     this.trainWarned = false;
     this.vents = (this.map.vents ?? []).map((v, i) => ({ x: v.x, y: v.y, phase: 'idle', t: 4 + i * 1.7 + rand(0, 2), hit: [] }));
@@ -819,7 +990,8 @@ export class Game {
     let kind: ZombieKind | '' = '';
     if (boss) {
       const g = this.farthestGate();
-      kind = BOSS_ORDER[(this.wave / 10 - 1) % BOSS_ORDER.length];
+      const order = this.map.boss ? [this.map.boss, ...BOSS_ORDER.filter((k) => k !== this.map.boss)] : BOSS_ORDER;
+      kind = order[(this.wave / 10 - 1) % order.length];
       this.spawnZombie(kind, g.x, g.y + (g.y < WORLD_H / 2 ? 60 : -60));
     } else if (miniBoss) {
       const g = this.farthestGate();
@@ -841,6 +1013,7 @@ export class Game {
   private beginWave() {
     this.spawnT = 1.2;
     this.mortars = [];
+    this.spikes = [];
     this.vortexes = [];
     this.clearT = -1;
     this.hitThisWave = false;
@@ -862,10 +1035,179 @@ export class Game {
       this.sfx.play('boss');
       this.addShake(0.6);
     } else {
-      const sub = this.wave === 1 ? (this.net ? 'STICK TOGETHER' : 'SURVIVE THE NIGHT') : this.wave === 15 ? 'ELITE ZOMBIES INCOMING' : (NEW_KIND_WAVES[this.wave] ?? '');
+      const sub = this.wave === 1 ? (this.net ? 'STICK TOGETHER' : 'SURVIVE THE NIGHT') : this.wave === 15 ? 'ELITE ZOMBIES INCOMING' : this.kindIntro(this.wave);
       this.showBanner(`WAVE ${this.wave}`, sub, '#ffffff');
       this.sfx.play('wave');
     }
+  }
+
+  /** Wave banner hint for a zombie kind showing up for the first time (the lab's kinds come early in the lab). */
+  private kindIntro(wave: number) {
+    for (const [k, start, text] of LAB_KINDS) if ((this.map.natives?.[k] ?? start) === wave) return text;
+    // A lab kind arriving early can bump the usual hint; otherwise show it.
+    return NEW_KIND_WAVES[wave] ?? '';
+  }
+
+  /** First wave a kind spawns on this map. */
+  private kindStart(k: ZombieKind, normal: number) {
+    return this.map.natives?.[k] ?? normal;
+  }
+
+  // ---------------------------------------------------------------- story ops
+
+  /** Starts the configured op (instead of startWave). */
+  startOp() {
+    const op = this.op;
+    if (!op) return;
+    this.wave = op.level;
+    this.toSpawn = 1e6;
+    this.beginWave();
+    this.spawnT = 2;
+    const S = (this.opS = Game.emptyOp());
+    const g = op.goal;
+    if (g.type === 'collect') S.drives = this.openSpots(g.n, 260);
+    if (g.type === 'defend') S.gen = { x: WORLD_W / 2, y: WORLD_H / 2 - 110, vx: 0, vy: 0, hp: g.hp, max: g.hp, hurt: 0 };
+    if (g.type === 'boss') {
+      const gate = this.farthestGate();
+      this.spawnZombie(g.kind, gate.x, gate.y + (gate.y < WORLD_H / 2 ? 60 : -60));
+      this.sfx.play('boss');
+    }
+    if (this.map.powercut) this.power.t = 46;
+    this.showBanner(op.name.toUpperCase(), this.opGoalLine(), '#ffd23f');
+    this.sfx.play('wave');
+  }
+
+  /** Spread-out open floor spots, away from the player and each other. */
+  private openSpots(n: number, gap: number): { x: number; y: number }[] {
+    const out: { x: number; y: number }[] = [];
+    for (let tries = 0; out.length < n && tries < 4000; tries++) {
+      const x = rand(BORDER + 90, WORLD_W - BORDER - 90);
+      const y = rand(BORDER + 90, WORLD_H - BORDER - 90);
+      if (Math.hypot(x - this.p.x, y - this.p.y) < 300) continue;
+      if (this.pointInWall(x, y) || this.map.walls.some((w) => x > w.x - 40 && x < w.x + w.w + 40 && y > w.y - 40 && y < w.y + w.h + 40)) continue;
+      if (out.some((o) => Math.hypot(o.x - x, o.y - y) < (tries < 2000 ? gap : gap / 2))) continue;
+      out.push({ x, y });
+    }
+    return out;
+  }
+
+  private opGoalLine() {
+    const g = this.op!.goal;
+    switch (g.type) {
+      case 'survive':
+        return `SURVIVE ${g.time} SECONDS`;
+      case 'kill':
+        return `KILL ${g.n} ${(g.kind ?? 'zombie').toUpperCase()}S`;
+      case 'collect':
+        return `FIND ${g.n} DATA DRIVES`;
+      case 'defend':
+        return `DEFEND THE GENERATOR FOR ${g.time}s`;
+      case 'evac':
+        return 'GET TO THE LANDING ZONE';
+      case 'boss':
+        return `KILL ${BOSS_NAMES[g.kind] ?? 'THE BOSS'}`;
+    }
+  }
+
+  /** Story mode: objective timers, pickups, radio chatter, and winning. */
+  private updateOp(dt: number) {
+    const op = this.op!;
+    const S = this.opS;
+    const g = op.goal;
+    if (S.done) {
+      S.end -= dt;
+      if (S.end <= 0 && this.state === 'playing') this.finishOp(true);
+      return;
+    }
+    S.t += dt;
+    // Radio
+    while (S.radio < op.radio.length && op.radio[S.radio][0] <= S.t) {
+      const [, who, text] = op.radio[S.radio++];
+      this.subtitle = { who, text, t: 5.5 };
+      this.sfx.play('radio');
+    }
+    if (g.type === 'survive' && S.t >= g.time) this.winOp();
+    else if (g.type === 'defend') {
+      const G = S.gen!;
+      if (G.hurt > 0) G.hurt -= dt;
+      if (G.hp <= 0) {
+        this.explode(G.x, G.y, 0, 160, 0);
+        this.showBanner('GENERATOR DESTROYED', '', '#ff5a4a');
+        this.finishOp(false);
+        return;
+      }
+      if (S.t >= g.time) this.winOp();
+    } else if (g.type === 'collect') {
+      for (let i = S.drives.length - 1; i >= 0; i--) {
+        const dv = S.drives[i];
+        if (Math.hypot(dv.x - this.p.x, dv.y - this.p.y) > PLAYER_R + 22) continue;
+        S.drives.splice(i, 1);
+        S.n++;
+        this.addText(dv.x, dv.y - 20, `DATA DRIVE ${S.n}/${g.n}`, '#5dff7a', 15);
+        this.ring({ x: dv.x, y: dv.y, r: 0, max: 70, life: 0.4, color: 'rgba(93,255,122,' });
+        this.sfx.play('pickup');
+        this.buzz(30);
+      }
+      if (S.n >= g.n) this.winOp();
+    } else if (g.type === 'evac') {
+      if (!S.zone && S.t >= g.after) {
+        // The landing zone is the far corner from wherever you are.
+        const spots = [
+          { x: 330, y: 300 },
+          { x: WORLD_W - 330, y: 300 },
+          { x: 330, y: WORLD_H - 300 },
+          { x: WORLD_W - 330, y: WORLD_H - 300 },
+        ].filter((s) => !this.pointInWall(s.x, s.y));
+        spots.sort((a, b) => Math.hypot(b.x - this.p.x, b.y - this.p.y) - Math.hypot(a.x - this.p.x, a.y - this.p.y));
+        const s = spots[0] ?? { x: 330, y: 300 };
+        S.zone = { x: s.x, y: s.y, r: 110, hold: 0 };
+        this.showShout('LANDING ZONE MARKED!', '#5dff7a');
+        this.sfx.play('alarm');
+      }
+      const Z = S.zone;
+      if (Z && !this.down && Math.hypot(this.p.x - Z.x, this.p.y - Z.y) < Z.r) {
+        Z.hold += dt;
+        if (Z.hold >= g.hold) this.winOp();
+      }
+    } else if (g.type === 'kill' && S.n >= g.n) this.winOp();
+    // Boss ops are won in killZombie.
+  }
+
+  private winOp() {
+    const S = this.opS;
+    if (S.done) return;
+    S.done = true;
+    S.end = 2.4;
+    this.toSpawn = 0;
+    // Area secured: the rest of the horde drops where it stands.
+    for (const z of this.zombies) {
+      if (z.dead) continue;
+      z.dead = true;
+      this.deathFx(z, rand(0, Math.PI * 2));
+    }
+    this.spits = [];
+    this.spikes = [];
+    this.mortars = [];
+    this.flash = { t: 0.5, color: '#ffffff', max: 0.5 };
+    this.slowT = 1;
+    this.showBanner('MISSION COMPLETE', this.op!.goal.type === 'evac' ? 'THE CHOPPER IS HERE' : 'AREA SECURED', '#5dff7a');
+    this.sfx.play('levelup');
+    this.buzz([60, 40, 120]);
+    this.hooks.onHighlight?.(`${this.op!.name} complete`);
+  }
+
+  /** Hands the op's result to the menus. Losing by death goes through endRun instead. */
+  private finishOp(won: boolean) {
+    if (this.state === 'over') return;
+    this.state = 'over';
+    this.input.reset();
+    const r: OpResult = { op: this.op!, won, time: this.opS.t, hits: this.report.hitsTaken, hpFrac: clamp(this.p.hp / this.stats.maxHp, 0, 1), summary: this.summary() };
+    this.hooks.onOpEnd?.(r);
+  }
+
+  /** Story mode: the op's live numbers, for the result screen if you die. */
+  opProgress() {
+    return { t: this.opS.t, n: this.opS.n };
   }
 
   /** A short line at the top of the screen (badges, clips). */
@@ -1075,6 +1417,9 @@ export class Game {
     this.updateHazards(dt);
     this.updateTrains(dt);
     this.updateVents(dt);
+    this.updateConsoles(dt);
+    this.updatePower(dt);
+    this.updateSpikes(dt);
     this.updateOrbitals(dt);
     if (!client) this.updatePickups(dt);
     this.updateDeploys(dt);
@@ -1085,6 +1430,10 @@ export class Game {
     if (!client) this.zombies = this.zombies.filter((z) => !z.dead);
     inp.clearPressed();
     if (client || this.state !== 'playing') return;
+    if (this.op) {
+      this.updateOp(dt);
+      return;
+    }
 
     if (this.clearT < 0 && this.toSpawn <= 0 && this.zombies.length === 0) {
       this.clearT = 1.6;
@@ -1121,6 +1470,8 @@ export class Game {
     this.goos = [];
     this.vortexes = [];
     this.mortars = [];
+    this.spikes = [];
+    this.pull.t = 0;
     this.webT = 0;
     this.grenades = [];
     this.combo = 0;
@@ -1150,7 +1501,7 @@ export class Game {
   /** Title screen: zombies shamble around the dark lot under a sweeping searchlight. */
   private updateAttract(dt: number) {
     if (this.zombies.length < 26) {
-      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter', 'shield', 'leaper', 'screamer', 'necro', 'dog', 'soldier', 'electric', 'bomber', 'wraith', 'webber', 'medic', 'sludger'];
+      const kinds: ZombieKind[] = ['walker', 'walker', 'walker', 'runner', 'bloater', 'tank', 'spitter', 'shield', 'leaper', 'screamer', 'necro', 'dog', 'soldier', 'electric', 'bomber', 'wraith', 'webber', 'medic', 'sludger', 'mutant', 'blob', 'psyker', 'parasite'];
       const z = this.spawnZombie(kinds[Math.floor(Math.random() * kinds.length)], rand(150, WORLD_W - 150), rand(150, WORLD_H - 150));
       z.tx = rand(150, WORLD_W - 150);
       z.ty = rand(150, WORLD_H - 150);
@@ -1202,6 +1553,7 @@ export class Game {
     if (i === this.wi) return;
     this.wi = i;
     this.spin = 0;
+    this.charge = 0;
     this.fireCd = Math.max(this.fireCd, 0.15);
     this.sfx.play('reload');
   }
@@ -1257,12 +1609,25 @@ export class Game {
       this.dashT = DASH_TIME;
       this.dashCd = DASH_COOLDOWN;
       this.sfx.play('dash');
+      this.pull.t = 0;
+      this.shakeOff();
     }
 
     const slow = firing && w.def.moveSlow ? w.def.moveSlow : 1;
     if (this.webT > 0) this.webT -= dt;
-    const speed = 230 * this.stats.speed * slow * (this.webT > 0 ? 0.5 : 1);
-    if (this.dashT > 0) {
+    const riders = this.net === 'client' ? 0 : this.latchedCount();
+    const speed = 230 * this.stats.speed * slow * (this.webT > 0 ? 0.5 : 1) * (riders ? Math.max(0.55, 1 - 0.15 * riders) : 1);
+    if (this.pull.t > 0) {
+      // Dragged by a psychic: you slide toward it unless you dash.
+      this.pull.t -= dt;
+      const dx = this.pull.x - p.x;
+      const dy = this.pull.y - p.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const sp = d > 70 ? 720 : 0;
+      p.vx = (dx / d) * sp + mv.x * speed * 0.25;
+      p.vy = (dy / d) * sp + mv.y * speed * 0.25;
+      if (Math.random() < 0.6) this.spawnParticle(p.x + rand(-10, 10), p.y + rand(-10, 10), 0, 0, 0.25, 4, '#e08aff', 2, false, true);
+    } else if (this.dashT > 0) {
       this.dashT -= dt;
       p.vx = this.dashDir.x * 230 * this.stats.speed * 3.6;
       p.vy = this.dashDir.y * 230 * this.stats.speed * 3.6;
@@ -1295,7 +1660,8 @@ export class Game {
     if (w.reloadT > 0) {
       w.reloadT -= dt;
       if (w.reloadT <= 0) w.ammo = this.weaponMag(w);
-    } else if (firing && this.fireCd <= 0) {
+    } else if (w.def.charge) this.chargeRail(w, firing, dt);
+    else if (firing && this.fireCd <= 0) {
       if (w.ammo > 0 || this.active.ammo > 0) this.fire(w);
       else this.startReload();
     }
@@ -1309,6 +1675,68 @@ export class Game {
         this.sfx.play('heart');
       }
     }
+  }
+
+  /** Railgun: holding the trigger charges it; it fires itself at full charge. */
+  private chargeRail(w: OwnedWeapon, firing: boolean, dt: number) {
+    if (!firing || this.fireCd > 0) {
+      this.charge = Math.max(0, this.charge - dt * 2.5);
+      return;
+    }
+    if (w.ammo <= 0 && this.active.ammo <= 0) {
+      this.startReload();
+      return;
+    }
+    if (this.charge === 0) this.sfx.play('charge');
+    this.charge = Math.min(1, this.charge + (dt / w.def.charge!) * (this.active.rage > 0 ? 1.5 : 1) * Math.sqrt(this.stats.fireRate));
+    const p = this.p;
+    const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
+    const my = p.y + Math.sin(p.angle) * (w.def.length + 4);
+    // Sparks get sucked into the muzzle while it charges.
+    if (Math.random() < 0.7) {
+      const a = rand(0, Math.PI * 2);
+      const r = rand(20, 46);
+      this.spawnParticle(mx + Math.cos(a) * r, my + Math.sin(a) * r, -Math.cos(a) * r * 6, -Math.sin(a) * r * 6, 0.14, 2.5, this.charge > 0.9 ? '#ffffff' : '#7ae8ff', 1, false, true);
+    }
+    this.addLight(mx, my, 60 + this.charge * 120, 0.05, '#7ae8ff');
+    if (this.charge >= 1) {
+      this.fire(w);
+      this.charge = 0;
+    }
+  }
+
+  /** Dashing tears off every parasite riding you. */
+  private shakeOff() {
+    let n = 0;
+    for (const z of this.zombies) {
+      if (z.dead || !z.latch) continue;
+      z.latch = 0;
+      n++;
+      this.killZombie(z, Math.atan2(z.y - this.p.y, z.x - this.p.x));
+    }
+    if (!n) return;
+    this.report.shaken += n;
+    this.addText(this.p.x, this.p.y - 30, n > 1 ? `SHOOK OFF ${n}!` : 'SHAKEN OFF!', '#ffd23f', 15);
+  }
+
+  private latchedCount() {
+    let n = 0;
+    for (const z of this.zombies) if (z.latch && !z.dead) n++;
+    return n;
+  }
+
+  /** Psyker yank: drags a player toward (x, y). */
+  private pullPlayer(who: { x: number; y: number }, x: number, y: number) {
+    if (who !== this.p) {
+      const a = who as Ally;
+      if (this.allies.includes(a) && !a.down) this.netSend?.(a.id, { t: 'yank', x: Math.round(x), y: Math.round(y) });
+      return;
+    }
+    if (this.dashT > 0 || this.down || this.invT > 0) return;
+    this.pull = { x, y, t: 0.38 };
+    this.addText(this.p.x, this.p.y - 28, 'YANKED!', '#e08aff', 14);
+    this.sfx.play('yank');
+    this.buzz(40);
   }
 
   /** Knocked down in co-op: you lie there until a teammate stands next to you long enough. */
@@ -1345,6 +1773,18 @@ export class Game {
     const mx = p.x + Math.cos(p.angle) * (w.def.length + 4);
     const my = p.y + Math.sin(p.angle) * (w.def.length + 4);
     const rage = this.active.rage > 0;
+    if (w.def.charge) {
+      this.railShot(mx, my, p.angle, dmg * (1 + 0.5 * Math.floor(this.stats.extraShots / 2)));
+      p.vx -= Math.cos(p.angle) * 260;
+      p.vy -= Math.sin(p.angle) * 260;
+      if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
+      return;
+    }
+    if (w.def.beam) {
+      this.plasmaBeam(mx, my, p.angle + rand(-0.015, 0.015), dmg, w.def.beam, false);
+      if (w.ammo <= 0 && this.active.ammo <= 0) this.startReload();
+      return;
+    }
     if (kind === 'tesla') {
       for (let i = 0; i < n; i++) this.teslaArc(mx, my, p.angle + (i - (n - 1) / 2) * 0.35, dmg);
       this.addLight(mx, my, 200, 0.08, '#8ad8ff');
@@ -1382,7 +1822,8 @@ export class Game {
         hits: [],
         color: rage ? '#ff5a4a' : w.def.color,
         width: w.def.width ?? (w.def.id === 'shotgun' ? 2.5 : w.def.id === 'minigun' ? 2.5 : w.def.id === 'sniper' ? 4 : 3),
-        canExplode: kind === 'bullet' && !w.def.goo,
+        canExplode: kind === 'bullet' && !w.def.goo && !w.def.charm,
+        charm: w.def.charm,
         bounce: w.def.bounce,
         goo: w.def.goo,
         homing: w.def.homing,
@@ -1429,9 +1870,11 @@ export class Game {
   private updateSpawning(dt: number) {
     if (this.toSpawn <= 0) return;
     this.spawnT -= dt;
-    const cap = Math.min(30 + this.wave * 4, 100) + (this.has('horde') ? 30 : 0);
+    // Story ops keep the crowd smaller (a boss fight smaller still) so the objective stays readable.
+    const opCap = this.op ? (this.op.goal.type === 'boss' ? 26 : this.op.goal.type === 'defend' ? 40 : 55) : Infinity;
+    const cap = Math.min(30 + this.wave * 4, 100, opCap) + (this.has('horde') ? 30 : 0);
     if (this.spawnT > 0 || this.zombies.length >= cap) return;
-    this.spawnT = Math.max(0.22, 0.85 - this.wave * 0.05);
+    this.spawnT = Math.max(0.22, 0.85 - this.wave * 0.05) * (this.op?.goal.type === 'boss' ? 2.4 : this.op?.goal.type === 'defend' ? 1.5 : this.op ? 1.15 : 1);
     const far = this.map.gates.filter((g) => Math.hypot(g.x - this.p.x, g.y - this.p.y) > 520);
     const gate = far.length ? far[Math.floor(Math.random() * far.length)] : this.farthestGate();
     const group = Math.min(this.toSpawn, 1 + Math.floor(Math.random() * (2 + this.wave / 3)));
@@ -1454,6 +1897,8 @@ export class Game {
       ['webber', w >= 4 && this.countKind('webber') < 4 ? Math.min(0.06, 0.04 + (w - 4) * 0.003) : 0],
       ['medic', w >= 17 && this.countKind('medic') < 2 ? Math.min(0.035, 0.02 + (w - 17) * 0.003) : 0],
       ['sludger', w >= 19 && this.countKind('sludger') < 4 ? Math.min(0.045, 0.03 + (w - 19) * 0.003) : 0],
+      ...this.labChances(w),
+      ...(this.op?.mix ?? []),
       ['runner', w >= 2 ? Math.min(0.36, 0.12 + (w - 2) * 0.04) : 0],
     ];
     let eliteChance = w >= 15 ? Math.min(0.15, 0.04 + (w - 15) * 0.006) : 0;
@@ -1471,11 +1916,26 @@ export class Game {
       const inward = { x: WORLD_W / 2 - gate.x, y: WORLD_H / 2 - gate.y };
       const d = Math.hypot(inward.x, inward.y);
       const elite = Math.random() < eliteChance ? ELITE_KINDS[Math.floor(Math.random() * ELITE_KINDS.length)] : undefined;
-      // Dogs always arrive as a pack.
-      const pack = kind === 'dog' ? 4 + Math.floor(Math.random() * 3) : 1;
+      // Dogs always arrive as a pack, parasites as a swarm.
+      const pack = kind === 'dog' ? 4 + Math.floor(Math.random() * 3) : kind === 'parasite' ? 3 + Math.floor(Math.random() * 2) : 1;
       for (let k = 0; k < pack; k++) this.spawnZombie(kind, gate.x + (inward.x / d) * 30 + rand(-50, 50), gate.y + (inward.y / d) * 30 + rand(-50, 50), { elite: k === 0 ? elite : undefined });
       this.toSpawn = Math.max(0, this.toSpawn - pack);
     }
+  }
+
+  /** Spawn chances for the lab's zombies (early on the lab map, late everywhere else). */
+  private labChances(w: number): [ZombieKind, number][] {
+    const at = (k: ZombieKind, normal: number) => w - this.kindStart(k, normal);
+    const out: [ZombieKind, number][] = [];
+    const p = at('parasite', 21);
+    if (p >= 0) out.push(['parasite', Math.min(0.06, 0.035 + p * 0.004)]);
+    const m = at('mutant', 22);
+    if (m >= 0 && this.countKind('mutant') < 4) out.push(['mutant', Math.min(0.05, 0.03 + m * 0.003)]);
+    const b = at('blob', 23);
+    if (b >= 0) out.push(['blob', Math.min(0.05, 0.03 + b * 0.003)]);
+    const y = at('psyker', 24);
+    if (y >= 0 && this.countKind('psyker') < 2) out.push(['psyker', Math.min(0.035, 0.02 + y * 0.003)]);
+    return out;
   }
 
   private countKind(kind: ZombieKind) {
@@ -1484,16 +1944,19 @@ export class Game {
     return n;
   }
 
-  private spawnZombie(kind: ZombieKind, x: number, y: number, opts: { elite?: EliteKind; mini?: boolean } = {}): Zombie {
+  private spawnZombie(kind: ZombieKind, x: number, y: number, opts: { elite?: EliteKind; mini?: boolean; gen?: number } = {}): Zombie {
     const def = ZOMBIES[kind];
     const wv = Math.max(1, this.wave);
     const hpScale = 1 + 0.16 * (wv - 1) + 0.006 * (wv - 1) ** 2;
     const spScale = Math.min(1.35, 1 + 0.02 * (wv - 1));
     const { elite, mini } = opts;
-    let hp = def.hp * hpScale * (kind === 'boss' || kind === 'brood' || kind === 'reaper' || kind === 'sludge' ? 1 + wv / 20 : 1);
+    let hp = def.hp * hpScale * (kind === 'boss' || kind === 'brood' || kind === 'reaper' || kind === 'sludge' || kind === 'zero' ? 1 + wv / 20 : 1);
     if (elite) hp *= elite === 'armored' ? 3 : 1.6;
     if (mini) hp *= 0.4;
-    const r = def.radius * (elite ? 1.15 : 1) * (mini ? 0.72 : 1);
+    // Mitosis blobs: each split is smaller, weaker and quicker.
+    const gen = opts.gen ?? 0;
+    if (gen) hp *= [1, 0.45, 0.22][gen];
+    const r = def.radius * (elite ? 1.15 : 1) * (mini ? 0.72 : 1) * [1, 0.72, 0.52][gen];
     const z: Zombie = {
       id: this.nextId++,
       def,
@@ -1503,7 +1966,7 @@ export class Game {
       ky: 0,
       hp,
       maxHp: hp,
-      speed: def.speed * spScale * rand(0.9, 1.1) * (elite === 'fast' ? 1.55 : 1) * (mini ? 1.15 : 1) * (this.has('fast') ? 1.25 : 1),
+      speed: def.speed * spScale * rand(0.9, 1.1) * (elite === 'fast' ? 1.55 : 1) * (mini ? 1.15 : 1) * (this.has('fast') ? 1.25 : 1) * [1, 1.2, 1.45][gen],
       dmg: def.damage * (1 + 0.05 * (wv - 1)) * (elite ? 1.25 : 1),
       r,
       flash: 0,
@@ -1524,9 +1987,15 @@ export class Game {
       zapT: 0,
       ghostT: 0,
       fuse: 0,
+      psi: 0,
+      charm: 0,
+      regenT: 0,
       elite,
       mini,
     };
+    if (kind === 'blob') z.gen = gen;
+    if (kind === 'psyker') z.yank = { cd: rand(2.5, 4), windup: 0, tx: 0, ty: 0 };
+    if (kind === 'zero') z.zero = { phase: 1, trans: 0, tendril: 2.5, summon: 6, yank: 4, yankT: 0, laser: 3, laserW: 0, laserT: 0, laserA: 0, laserDir: 1, laserHit: [] };
     if (kind === 'burrower') z.dig = { state: 'walk', t: rand(1.5, 3) };
     if (kind === 'reaper') z.reap = { sweep: 2, windup: 0, aim: 0, blink: 5, orbs: 3.5, summoned: false };
     if (kind === 'sludge') z.sludge = { mortar: 3, drip: 0, splits: 0 };
@@ -1607,6 +2076,8 @@ export class Game {
     if (!this.down) ts.push(this.p);
     for (const a of this.allies) if (!a.down) ts.push(a);
     if (!ts.length) ts.push(this.p);
+    // Story mode: the horde goes for the generator too.
+    if (this.opS.gen && this.opS.gen.hp > 0) ts.push(this.opS.gen);
     return ts;
   }
 
@@ -1651,6 +2122,14 @@ export class Game {
         continue;
       }
       if (z.chill > 0) z.chill = Math.max(0, z.chill - dt * 3);
+      if (z.charm > 0) {
+        this.updateTurned(z, dt);
+        continue;
+      }
+      if (z.latch) {
+        this.updateLatched(z, dt);
+        continue;
+      }
       const p = ts.length > 1 ? this.nearest(ts, z.x, z.y) : ts[0];
       const dx = p.x - z.x;
       const dy = p.y - z.y;
@@ -1880,6 +2359,68 @@ export class Game {
         }
       }
 
+      if (kind === 'parasite' && p === this.p && d < 64 && z.attackCd <= 0 && this.dashT <= 0 && !this.down && this.invT <= 0 && this.state === 'playing') {
+        // Jumps on and clings.
+        z.latch = 6;
+        z.latchA = Math.atan2(z.y - p.y, z.x - p.x);
+        this.sfx.play('latch');
+        if (!this.latchWarned) {
+          this.latchWarned = true;
+          this.showShout('PARASITE! DASH TO SHAKE IT OFF', '#ff4a6a');
+        }
+        continue;
+      }
+
+      if (kind === 'mutant') {
+        z.regenT += dt;
+        z.healing = z.regenT > 1.4 && z.hp < z.maxHp && z.burn <= 0 && z.slow <= 0 && !this.inGoo(z);
+        if (z.healing) {
+          z.hp = Math.min(z.maxHp, z.hp + z.maxHp * 0.08 * dt);
+          if (Math.random() < dt * 12) this.spawnParticle(z.x + rand(-z.r, z.r) * 0.7, z.y + rand(-z.r, z.r) * 0.7, 0, rand(-60, -25), 0.5, 3.5, '#7aff5a', 1, false, true);
+        }
+        // Badly hurt mutants go berserk.
+        if (z.hp < z.maxHp * 0.35) {
+          vx *= 1.35;
+          vy *= 1.35;
+        }
+      }
+
+      if (z.yank) {
+        // Psyker: hangs back, then locks on and yanks you into the horde.
+        const Y = z.yank;
+        Y.cd -= dt;
+        if (d < 330) {
+          const back = d < 250 ? -0.6 : 0;
+          vx = (dx / d) * sp * back;
+          vy = (dy / d) * sp * back;
+        }
+        if (Y.windup > 0) {
+          vx = vy = 0;
+          Y.windup -= dt;
+          Y.tx = p.x;
+          Y.ty = p.y;
+          if (Math.random() < 0.6) this.spawnParticle(z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), 0, rand(-50, -20), 0.3, 3, '#e08aff', 1, false, true);
+          if (Y.windup <= 0 && d < 520) {
+            this.pullPlayer(p, z.x, z.y);
+            this.bolt({ x1: z.x, y1: z.y, x2: p.x, y2: p.y, life: 0.25, color: '#e08aff' });
+          }
+        } else if (Y.cd <= 0 && d < 440 && d > 140) {
+          Y.windup = 0.9;
+          Y.cd = rand(5, 6.5);
+          Y.tx = p.x;
+          Y.ty = p.y;
+          this.wsfx('psy');
+        }
+      }
+
+      if (z.zero) {
+        const v = this.updateZero(z, dt, d, dx, dy, ts);
+        if (v) {
+          vx = v.x;
+          vy = v.y;
+        }
+      }
+
       if (z.sludge) {
         const S = z.sludge;
         S.drip -= dt;
@@ -1971,6 +2512,7 @@ export class Game {
           this.ring({ x: z.x, y: z.y, r: 0, max: 130, life: 0.5, color: 'rgba(190,90,255,' });
         }
         if (z.jug && z.jug.windup > 0) b.t = Math.max(b.t, 0.5);
+        if (z.zero && (z.zero.laserW > 0 || z.zero.laserT > 0 || z.zero.yankT > 0 || z.zero.trans > 0)) b.t = Math.max(b.t, 0.5);
         if (b.state === 'walk' && b.t <= 0) {
           b.state = 'windup';
           b.t = 0.8;
@@ -1997,6 +2539,7 @@ export class Game {
       let face = Math.atan2(z.boss?.state === 'charge' ? z.boss.dy : dy, z.boss?.state === 'charge' ? z.boss.dx : dx);
       if (z.leap && z.leap.state !== 'walk') face = Math.atan2(z.leap.dy, z.leap.dx);
       if (z.reap && z.reap.windup > 0) face = z.reap.aim;
+      if (z.zero && (z.zero.laserW > 0 || z.zero.laserT > 0)) face = z.zero.laserA;
       if (kind === 'shield') {
         // Brutes turn slowly behind their shield, so you can flank them.
         let da = face - z.face;
@@ -2064,8 +2607,10 @@ export class Game {
     // Keep zombies from stacking on top of each other.
     for (let i = 0; i < zs.length; i++) {
       const a = zs[i];
+      if (a.latch) continue;
       for (let j = i + 1; j < zs.length; j++) {
         const b = zs[j];
+        if (b.latch) continue;
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const min = a.r + b.r;
@@ -2165,6 +2710,494 @@ export class Game {
     }
   }
 
+  // ---------------------------------------------------------------- lab zombies
+
+  /** A zombie turned by the Mind Ray: hunts its old friends until its brain fries. */
+  private updateTurned(z: Zombie, dt: number) {
+    z.charm -= dt;
+    if (z.charm <= 0) {
+      z.charm = 0;
+      for (let i = 0; i < 10; i++) this.spawnParticle(z.x, z.y, rand(-90, 90), rand(-90, 90), 0.4, 4, '#c77dff', 3, false, true);
+      this.killZombie(z, z.face + Math.PI);
+      return;
+    }
+    if (z.attackCd > 0) z.attackCd -= dt;
+    z.abilityCd -= dt;
+    let prey = z.prey ? this.zombies.find((o) => o.id === z.prey && !o.dead && o.charm <= 0 && !intangible(o)) : undefined;
+    if (!prey || z.abilityCd <= 0) {
+      z.abilityCd = 0.5;
+      let bd = 700;
+      prey = undefined;
+      for (const o of this.zombies) {
+        if (o === z || o.dead || o.charm > 0 || intangible(o) || o.latch) continue;
+        const dd = Math.hypot(o.x - z.x, o.y - z.y);
+        if (dd < bd) {
+          bd = dd;
+          prey = o;
+        }
+      }
+      z.prey = prey?.id;
+    }
+    // No one to fight: tag along with you.
+    const tx = prey ? prey.x : this.p.x;
+    const ty = prey ? prey.y : this.p.y;
+    const dx = tx - z.x;
+    const dy = ty - z.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const reach = prey ? z.r + prey.r + 4 : 90;
+    const sp = d > reach ? z.speed * 1.25 : 0;
+    const ox = z.x;
+    const oy = z.y;
+    z.face = Math.atan2(dy, dx);
+    z.kx *= Math.exp(-dt * 9);
+    z.ky *= Math.exp(-dt * 9);
+    z.x += ((dx / d) * sp + z.kx) * dt;
+    z.y += ((dy / d) * sp + z.ky) * dt;
+    this.collideWalls(z, z.r);
+    z.phase += Math.hypot(z.x - ox, z.y - oy) * 0.08;
+    if (prey && d <= reach + 2 && z.attackCd <= 0) {
+      z.attackCd = 0.6;
+      this.damageZombie(prey, z.dmg * 3 + 12 * this.stats.damage, z.face, false, 160);
+      this.spawnBlood(prey.x, prey.y, z.face, '#7a1010');
+    }
+    if (Math.random() < dt * 6) this.spawnParticle(z.x + rand(-6, 6), z.y - z.r, 0, -40, 0.4, 3, '#c77dff', 1, false, true);
+  }
+
+  /** A parasite riding the player: chews until it's shaken off or gives up. */
+  private updateLatched(z: Zombie, dt: number) {
+    const p = this.p;
+    z.latch! -= dt;
+    z.latchA! += dt * 0.6;
+    z.x = p.x + Math.cos(z.latchA!) * PLAYER_R * 0.75;
+    z.y = p.y + Math.sin(z.latchA!) * PLAYER_R * 0.75;
+    z.face = z.latchA! + Math.PI;
+    z.phase += dt * 6;
+    if (this.down || this.state !== 'playing' || z.latch! <= 0) {
+      // Falls off, dazed.
+      z.latch = 0;
+      z.attackCd = 1.2;
+      z.x = p.x + Math.cos(z.latchA!) * 40;
+      z.y = p.y + Math.sin(z.latchA!) * 40;
+      this.collideWalls(z, z.r);
+      return;
+    }
+    if (this.invT > 0) return;
+    const dps = 6 * (1 + 0.04 * this.wave) * (1 - this.armor);
+    p.hp -= dps * dt;
+    this.hurtFlash = Math.max(this.hurtFlash, 0.1);
+    if (Math.random() < dt * 8) this.spawnBlood(p.x, p.y, rand(0, Math.PI * 2), '#b0201a');
+    if (p.hp <= 0) this.gameOver();
+  }
+
+  /** Standing in your own Acid Cannon goo (stops mutants healing). */
+  private inGoo(z: Zombie) {
+    for (const g of this.goos) if (!g.ghost && Math.hypot(z.x - g.x, z.y - g.y) < g.r + z.r * 0.5) return true;
+    return false;
+  }
+
+  /** Mind Ray hit: enough of them and the zombie fights for you. */
+  private addPsi(z: Zombie) {
+    if (z.dead || z.charm > 0 || z.def.kind === 'egg') return;
+    if (isBoss(z)) {
+      if (Math.random() < 0.15) this.addText(z.x, z.y - z.r - 10, 'TOO STRONG', '#c77dff', 12);
+      return;
+    }
+    z.psi++;
+    const need = clamp(Math.round(z.def.hp / 40), 2, 7) + (z.elite ? 1 : 0);
+    if (z.psi < need) return;
+    z.psi = 0;
+    z.charm = 7;
+    z.latch = 0;
+    z.fuse = 0;
+    z.zapT = 0;
+    z.prey = undefined;
+    z.abilityCd = 0;
+    if (z.leap) z.leap.state = 'walk';
+    if (z.yank) z.yank.windup = 0;
+    if (z.dig) z.dig.state = 'walk';
+    z.ghostT = 0;
+    this.report.turned++;
+    this.ring({ x: z.x, y: z.y, r: 0, max: z.r * 3, life: 0.4, color: 'rgba(199,125,255,' });
+    this.addText(z.x, z.y - z.r - 10, 'TURNED!', '#c77dff', 14);
+    this.sfx.play('charm');
+  }
+
+  // ---------------------------------------------------------------- Patient Zero
+
+  /** Runs Patient Zero's three forms. Returns a velocity override, or null to walk normally. */
+  private updateZero(z: Zombie, dt: number, d: number, dx: number, dy: number, ts: { x: number; y: number }[]): { x: number; y: number } | null {
+    const Z = z.zero!;
+    if (Z.trans > 0) {
+      // Transforming: roars, can't be hurt, flesh bursts off it.
+      Z.trans -= dt;
+      if (Math.random() < 0.5) this.spawnBlood(z.x, z.y, rand(0, Math.PI * 2), Math.random() < 0.5 ? '#8a1414' : '#ff5adc', 1.6);
+      if (Math.random() < dt * 6) this.addShake(0.3);
+      return { x: 0, y: 0 };
+    }
+    const ph = z.hp < z.maxHp / 3 ? 3 : z.hp < (z.maxHp * 2) / 3 ? 2 : 1;
+    if (ph > Z.phase) {
+      Z.phase = ph as 2 | 3;
+      Z.trans = 1.5;
+      Z.laserW = Z.laserT = Z.yankT = 0;
+      Z.tendril = 1.8;
+      Z.summon = 1.6;
+      z.speed *= ph === 2 ? 1.2 : 1.15;
+      if (ph === 3) z.boss = { state: 'walk', t: 4, dx: 0, dy: 0, summon: 0 };
+      this.showBanner(ph === 2 ? 'IT EVOLVES' : 'FINAL FORM', ph === 2 ? 'PATIENT ZERO TEARS OFF ITS RESTRAINTS' : 'ITS EYE OPENS', '#ff5adc', true);
+      this.wsfx('roar');
+      this.slowT = Math.max(this.slowT, 0.6);
+      this.flash = { t: 0.3, color: '#ff5adc', max: 0.3 };
+      this.ring({ x: z.x, y: z.y, r: 0, max: 320, life: 0.6, color: 'rgba(255,90,220,' });
+      this.ring({ x: z.x, y: z.y, r: 0, max: 200, life: 0.45, color: 'rgba(255,255,255,' });
+      this.addShake(0.9);
+      this.zoomKick = Math.max(this.zoomKick, 0.08);
+      for (const t of this.targets()) {
+        const td = Math.hypot(t.x - z.x, t.y - z.y);
+        if (td < 300) {
+          const a = Math.atan2(t.y - z.y, t.x - z.x);
+          this.hurtPlayer(10, null, t, { x: Math.cos(a) * 700, y: Math.sin(a) * 700 });
+        }
+      }
+      // The lights die when it changes.
+      if (this.map.powercut && this.power.out <= 0) this.cutPower(6);
+      return { x: 0, y: 0 };
+    }
+    Z.tendril -= dt;
+    Z.summon -= dt;
+    Z.yank -= dt;
+    Z.laser -= dt;
+    const mini = z.mini ? 1.3 : 1;
+    if (Z.laserW > 0 || Z.laserT > 0) {
+      this.zeroLaser(z, dt);
+      return { x: 0, y: 0 };
+    }
+    if (Z.yankT > 0) {
+      Z.yankT -= dt;
+      if (Z.yankT <= 0) {
+        for (const t of ts) {
+          if (Math.hypot(t.x - z.x, t.y - z.y) > 650) continue;
+          this.pullPlayer(t, z.x, z.y);
+          this.bolt({ x1: z.x, y1: z.y, x2: t.x, y2: t.y, life: 0.3, color: '#ff5adc' });
+        }
+      }
+      return { x: 0, y: 0 };
+    }
+    if (Z.summon <= 0) {
+      Z.summon = (Z.phase === 1 ? 9 : 10) * mini;
+      const kinds: ZombieKind[] = Z.phase === 1 ? ['parasite', 'parasite', 'parasite'] : Z.phase === 2 ? ['blob', 'blob', 'parasite', 'parasite'] : ['mutant', 'parasite', 'parasite', 'parasite'];
+      if (this.wave >= 30) kinds.push('parasite', 'parasite');
+      kinds.forEach((k, i) => {
+        const a = (i / kinds.length) * Math.PI * 2 + rand(-0.3, 0.3);
+        const x = z.x + Math.cos(a) * (z.r + 30);
+        const y = z.y + Math.sin(a) * (z.r + 30);
+        if (!this.pointInWall(x, y)) this.spawnZombie(k, x, y).flash = 0.3;
+      });
+      this.ring({ x: z.x, y: z.y, r: 0, max: 140, life: 0.45, color: 'rgba(255,90,220,' });
+      this.wsfx('gurgle');
+    }
+    if (Z.tendril <= 0 && d < 720) {
+      Z.tendril = (Z.phase === 1 ? 3.4 : Z.phase === 2 ? 3.0 : 3.6) * mini;
+      this.tendrils(z, ts);
+      return null;
+    }
+    if (Z.phase >= 2 && Z.yank <= 0 && d > 220 && d < 600) {
+      Z.yank = rand(7, 9) * mini;
+      Z.yankT = 1.0;
+      this.wsfx('psy');
+      return { x: 0, y: 0 };
+    }
+    if (Z.phase === 3 && Z.laser <= 0 && d < 700) {
+      Z.laser = rand(6.5, 8) * mini;
+      Z.laserW = 0.9;
+      Z.laserDir = Math.random() < 0.5 ? 1 : -1;
+      // Starts off to one side of you and sweeps across.
+      Z.laserA = Math.atan2(dy, dx) - Z.laserDir * 0.95;
+      Z.laserHit = [];
+      this.wsfx('charge');
+      return { x: 0, y: 0 };
+    }
+    return null;
+  }
+
+  /** Red lines toward each player; spikes burst out along them a moment later. */
+  private tendrils(z: Zombie, ts: { x: number; y: number }[]) {
+    const Z = z.zero!;
+    const n = 2 + Z.phase;
+    for (const t of ts.slice(0, 2)) {
+      const base = Math.atan2(t.y - z.y, t.x - z.x);
+      for (let i = 0; i < n; i++) {
+        const a = base + (i - (n - 1) / 2) * (0.5 / Z.phase + 0.18);
+        const x1 = z.x + Math.cos(a) * z.r * 0.8;
+        const y1 = z.y + Math.sin(a) * z.r * 0.8;
+        const len = this.rayWall(x1, y1, a, 560);
+        this.spikes.push({ x1, y1, x2: x1 + Math.cos(a) * len, y2: y1 + Math.sin(a) * len, t: SPIKE_WARN, hit: [] });
+      }
+    }
+    this.wsfx('dig', 0.7);
+  }
+
+  private updateSpikes(dt: number) {
+    if (!this.spikes.length) return;
+    const host = this.net !== 'client';
+    const keep: Spike[] = [];
+    for (const s of this.spikes) {
+      const was = s.t;
+      s.t -= dt;
+      if (was > 0 && s.t <= 0) {
+        // Erupt!
+        this.sfx.play('tendril', 0.7);
+        this.addShake(0.15);
+        const len = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+        for (let k = 0; k < len; k += 40) this.dirt(s.x1 + ((s.x2 - s.x1) * k) / len, s.y1 + ((s.y2 - s.y1) * k) / len, 2);
+      }
+      if (host && s.t <= 0 && s.t > -0.2) {
+        for (const t of this.targets()) {
+          if (s.hit.includes(t) || segDist(t.x, t.y, s.x1, s.y1, s.x2, s.y2) > SPIKE_W + PLAYER_R * 0.6) continue;
+          s.hit.push(t);
+          this.hurtPlayer(26 * (1 + 0.03 * this.wave), { x: s.x1, y: s.y1 }, t);
+        }
+      }
+      if (s.t > -SPIKE_LIFE) keep.push(s);
+    }
+    this.spikes = keep;
+  }
+
+  /** Patient Zero's final form: aims an eye beam, then sweeps it across the floor. */
+  private zeroLaser(z: Zombie, dt: number) {
+    const Z = z.zero!;
+    if (Z.laserW > 0) {
+      Z.laserW -= dt;
+      if (Z.laserW <= 0) {
+        Z.laserT = 1.5;
+        this.wsfx('laser');
+      }
+      return;
+    }
+    Z.laserT -= dt;
+    Z.laserA += Z.laserDir * dt * 1.3;
+    const ex = z.x + Math.cos(Z.laserA) * z.r * 0.6;
+    const ey = z.y + Math.sin(Z.laserA) * z.r * 0.6;
+    const len = this.rayWall(ex, ey, Z.laserA, 760);
+    const x2 = ex + Math.cos(Z.laserA) * len;
+    const y2 = ey + Math.sin(Z.laserA) * len;
+    this.addLight(x2, y2, 160, 0.05, '#ff5adc');
+    if (Math.random() < 0.7) this.spawnParticle(x2, y2, rand(-160, 160), rand(-160, 160), 0.25, 3, '#ffd0f4', 5, false, true);
+    if (Math.random() < 0.3) {
+      // Scorch marks where it burns the floor.
+      this.dctx.fillStyle = 'rgba(30,10,20,0.4)';
+      this.dctx.fillRect(x2 / 2 - 2, y2 / 2 - 2, 4, 4);
+    }
+    for (const t of this.targets()) {
+      if (Z.laserHit.includes(t) || segDist(t.x, t.y, ex, ey, x2, y2) > 14 + PLAYER_R * 0.6) continue;
+      Z.laserHit.push(t);
+      this.hurtPlayer(34 * (1 + 0.03 * this.wave), null, t);
+    }
+    // It doesn't care what else is in the way.
+    for (const o of this.zombies) {
+      if (o === z || o.dead || isBoss(o) || intangible(o)) continue;
+      if (segDist(o.x, o.y, ex, ey, x2, y2) < o.r + 8) this.damageZombie(o, 400 * dt, Z.laserA + Math.PI / 2, false, 0, true);
+    }
+  }
+
+  /** How far a ray gets before it hits a wall (up to `max`). */
+  private rayWall(x: number, y: number, a: number, max: number) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    for (let d = 0; d < max; d += 10) if (this.pointInWall(x + c * d, y + s * d)) return Math.max(0, d - 6);
+    return max;
+  }
+
+  // ---------------------------------------------------------------- beam guns
+
+  /** Railgun: a slug that goes through every zombie in a line, stopping at the first wall. */
+  private railShot(x: number, y: number, a: number, dmg: number) {
+    const len = this.rayWall(x, y, a, 1500);
+    const x2 = x + Math.cos(a) * len;
+    const y2 = y + Math.sin(a) * len;
+    const bx = x - Math.cos(a) * 44;
+    const by = y - Math.sin(a) * 44;
+    const hits = this.zombies.filter((z) => !z.dead && !offLimits(z) && segDist(z.x, z.y, bx, by, x2, y2) < z.r + 7);
+    hits.sort((p, q) => Math.hypot(p.x - x, p.y - y) - Math.hypot(q.x - x, q.y - y));
+    hits.forEach((z, i) => {
+      const crit = Math.random() < this.stats.crit;
+      this.damageZombie(z, dmg * Math.pow(0.92, i) * (crit ? 2.5 : 1), a, crit, 260);
+    });
+    for (const b of this.barrels) if (!b.dead && b.fuse <= 0 && segDist(b.x, b.y, x, y, x2, y2) < 20) b.fuse = 0.05;
+    this.beams.push({ x1: x, y1: y, x2, y2, life: 0.35, max: 0.35, color: '#7ae8ff', width: 9 });
+    for (let k = 0; k < len; k += 26) this.spawnParticle(x + Math.cos(a) * k + rand(-6, 6), y + Math.sin(a) * k + rand(-6, 6), rand(-30, 30), rand(-30, 30), rand(0.2, 0.45), rand(2, 4), k % 52 ? '#bff6ff' : '#ffffff', 3, false, true);
+    this.addLight(x, y, 260, 0.12, '#7ae8ff');
+    this.addLight(x2, y2, 200, 0.12, '#7ae8ff');
+    this.addShake(0.45);
+    this.zoomKick = Math.max(this.zoomKick, 0.02);
+    this.sfx.play('railgun');
+    if (hits.length >= 5) this.addText(x2, y2 - 20, `x${hits.length} PIERCE`, '#7ae8ff', 16);
+  }
+
+  /** Plasma Cutter: one tick of the beam. Staying on the same zombie heats it up. */
+  private plasmaBeam(x: number, y: number, a: number, dmg: number, range: number, ghost: boolean) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    let len = this.rayWall(x, y, a, range);
+    let hit: Zombie | null = null;
+    for (const z of this.zombies) {
+      if (z.dead || offLimits(z)) continue;
+      const t = (z.x - x) * c + (z.y - y) * s;
+      // Reaches back to the shooter's body, so zombies in your face still get cut.
+      if (t < -44 || t > len + z.r) continue;
+      const off = Math.abs((z.y - y) * c - (z.x - x) * s);
+      if (off > z.r + 5) continue;
+      const at = Math.max(0, t - Math.sqrt(Math.max(0, (z.r + 5) ** 2 - off * off)));
+      if (at < len) {
+        len = at;
+        hit = z;
+      }
+    }
+    let barrel: Barrel | null = null;
+    for (const b of this.barrels) {
+      if (b.dead || b.fuse > 0) continue;
+      const t = (b.x - x) * c + (b.y - y) * s;
+      if (t < 0 || t > len) continue;
+      if (Math.abs((b.y - y) * c - (b.x - x) * s) > 16) continue;
+      len = t;
+      hit = null;
+      barrel = b;
+    }
+    const x2 = x + c * len;
+    const y2 = y + s * len;
+    const heat = hit && hit.id === this.heat.id ? this.heat.n : 0;
+    this.beams.push({ x1: x, y1: y, x2, y2, life: 0.075, max: 0.075, color: heat > 20 ? '#fff0ff' : heat > 10 ? '#ff9aee' : '#ff5adc', width: 4 + heat * 0.12 });
+    if (Math.random() < 0.8) this.spawnParticle(x2, y2, rand(-150, 150) - c * 60, rand(-150, 150) - s * 60, 0.2, rand(2, 3.5), heat > 15 ? '#ffffff' : '#ff9aee', 6, false, true);
+    if (Math.random() < 0.3) this.addLight(x2, y2, 120, 0.08, '#ff5adc');
+    if (ghost) return;
+    this.sfx.play('plasma', 0.6);
+    if (barrel) {
+      barrel.hp -= dmg;
+      if (barrel.hp <= 0) barrel.fuse = 0.05;
+      return;
+    }
+    if (!hit) {
+      this.heat = { id: -1, n: 0 };
+      return;
+    }
+    if (hit.def.kind === 'shield' && Math.cos(a - hit.face) < -0.35) {
+      // The riot shield soaks the beam (and glows for it).
+      if (Math.random() < 0.4) this.sfx.play('clank', 0.4);
+      return;
+    }
+    this.heat = { id: hit.id, n: Math.min(30, heat + 1) };
+    const crit = Math.random() < this.stats.crit;
+    this.damageZombie(hit, dmg * (1 + heat / 20) * (crit ? 2.5 : 1), a, crit, 30, !crit && heat % 4 !== 0, 0);
+    if (heat === 29) this.addText(hit.x, hit.y - hit.r - 12, 'MELTDOWN', '#ffd0f4', 13);
+  }
+
+  // ---------------------------------------------------------------- Hive Lab
+
+  /** Lab consoles: stand on one to arm a laser sweep. The host runs them; everyone draws them. */
+  private updateConsoles(dt: number) {
+    if (!this.consoles.length) return;
+    const host = this.net !== 'client';
+    const span = (c: Console) => (c.axis === 'x' ? WORLD_W : WORLD_H);
+    for (const c of this.consoles) {
+      if (c.phase === 'sweep') {
+        // Guests roll it along between snapshots too.
+        c.pos += c.dir * ((span(c) - BORDER * 2) / SWEEP_TIME) * dt;
+        if (Math.random() < dt * 40) {
+          const o = rand(BORDER, (c.axis === 'x' ? WORLD_H : WORLD_W) - BORDER);
+          this.spawnParticle(c.axis === 'x' ? c.pos : o, c.axis === 'x' ? o : c.pos, rand(-80, 80), rand(-80, 80), 0.25, 3, '#ff3a5a', 4, false, true);
+        }
+      }
+      if (!host) continue;
+      if (c.phase === 'idle') {
+        if (c.cd > 0) c.cd -= dt;
+        const on = this.power.out <= 0 && c.cd <= 0 && this.state === 'playing';
+        const standing = on && this.targets().some((t) => !(t as Ally).down && Math.hypot(t.x - c.x, t.y - c.y) < CONSOLE_R);
+        c.hold = standing ? c.hold + dt : Math.max(0, c.hold - dt * 2);
+        if (c.hold >= 1) {
+          c.hold = 0;
+          c.phase = 'warn';
+          c.t = 1.3;
+          // The beam starts at the far side from the console and comes toward it.
+          const far = c.axis === 'x' ? (c.x < WORLD_W / 2 ? WORLD_W - BORDER : BORDER) : c.y <= WORLD_H / 2 ? BORDER : WORLD_H - BORDER;
+          c.pos = far;
+          c.dir = far === BORDER ? 1 : -1;
+          this.wsfx('alarm');
+          if (!this.consoleWarned) {
+            this.consoleWarned = true;
+            this.showShout('LASER GRID! DASH THROUGH THE BEAM', '#ff3a5a', true);
+          }
+        }
+      } else if (c.phase === 'warn') {
+        c.t -= dt;
+        if (c.t <= 0) {
+          c.phase = 'sweep';
+          c.hit = [];
+          this.wsfx('laser');
+        }
+      } else if (c.phase === 'sweep') {
+        const end = c.dir > 0 ? span(c) - BORDER : BORDER;
+        if ((c.dir > 0 && c.pos >= end) || (c.dir < 0 && c.pos <= end)) {
+          c.phase = 'idle';
+          c.cd = CONSOLE_CD;
+          continue;
+        }
+        const at = (o: { x: number; y: number }) => (c.axis === 'x' ? o.x : o.y);
+        for (const z of this.zombies) {
+          if (z.dead || offLimits(z) || z.latch || Math.abs(at(z) - c.pos) > 10 + z.r * 0.5) continue;
+          if (isBoss(z)) {
+            if (c.hit.includes(z)) continue;
+            c.hit.push(z);
+            this.damageZombie(z, z.maxHp * 0.06, c.axis === 'x' ? (c.dir > 0 ? 0 : Math.PI) : c.dir > 0 ? Math.PI / 2 : -Math.PI / 2, false, 0);
+            continue;
+          }
+          this.cause = 'laser';
+          this.killZombie(z, c.axis === 'x' ? (c.dir > 0 ? 0 : Math.PI) : c.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+          this.cause = '';
+        }
+        for (const t of this.targets()) {
+          if (c.hit.includes(t) || Math.abs(at(t) - c.pos) > 10 + PLAYER_R) continue;
+          c.hit.push(t);
+          this.hurtPlayer(30, null, t);
+        }
+      }
+    }
+  }
+
+  /** Lab power cuts: lamps die, consoles go offline, red emergency lights spin. */
+  private updatePower(dt: number) {
+    if (!this.map.powercut || this.net === 'client') {
+      if (this.power.out > 0) this.power.out -= dt;
+      return;
+    }
+    if (this.power.out > 0) {
+      this.power.out -= dt;
+      if (this.power.out <= 0) {
+        this.power.t = rand(45, 65);
+        this.wsfx('powerup');
+        this.toast('💡 Power restored');
+      }
+      return;
+    }
+    this.power.t -= dt;
+    if (this.power.t <= 0) this.cutPower(9);
+  }
+
+  private cutPower(secs: number) {
+    this.power.out = secs;
+    for (const c of this.consoles) c.hold = 0;
+    this.wsfx('powerdown');
+    this.showShout('POWER FAILURE!', '#ff3a3a', true);
+  }
+
+  /** Story mode: zombies chewing on the generator. */
+  private hurtGen(amount: number) {
+    const G = this.opS.gen;
+    if (!G || amount <= 0) return;
+    G.hp -= amount * 0.45; // armored casing
+    G.hurt = 0.2;
+    if (Math.random() < 0.5) this.spawnParticle(G.x + rand(-30, 30), G.y + rand(-20, 20), rand(-140, 140), rand(-200, -60), 0.35, 3, '#ffd23f', 4, false, true);
+    if (G.hp < G.max * 0.3 && Math.random() < 0.05) this.showShout('THE GENERATOR IS FAILING!', '#ff5a4a');
+  }
+
   private dirt(x: number, y: number, n: number) {
     for (let i = 0; i < n; i++) {
       const a = rand(0, Math.PI * 2);
@@ -2177,7 +3210,7 @@ export class Game {
     let best: Zombie | null = null;
     let bd = 360;
     for (const z of this.zombies) {
-      if (z.dead || intangible(z)) continue;
+      if (z.dead || offLimits(z)) continue;
       const d = Math.hypot(z.x - x, z.y - y);
       if (d > bd) continue;
       let da = Math.atan2(z.y - y, z.x - x) - angle;
@@ -2242,6 +3275,7 @@ export class Game {
 
   /** Sticks a player in a web: half speed for a couple of seconds (dashing still works). */
   private webPlayer(who: { x: number; y: number }) {
+    if (who === this.opS.gen) return;
     if (who !== this.p) {
       const a = who as Ally;
       if (!a.down) this.netSend?.(a.id, { t: 'web' });
@@ -2288,6 +3322,10 @@ export class Game {
 
   /** Hurts the local player, or (on the co-op host) tells a guest it got hurt. */
   private hurtPlayer(amount: number, from: { x: number; y: number } | null, who: { x: number; y: number } = this.p, knock?: { x: number; y: number }) {
+    if (who === this.opS.gen) {
+      this.hurtGen(amount);
+      return;
+    }
     if (who !== this.p) {
       const a = who as Ally;
       if (a.down || amount <= 0) return;
@@ -2445,7 +3483,7 @@ export class Game {
       }
       if (b.ghost) {
         // A teammate's shot: stops on the first zombie, their game does the damage.
-        if (b.kind === 'flame' || b.kind === 'frost' || !this.zombies.some((z) => !z.dead && !intangible(z) && (z.x - b.x) ** 2 + (z.y - b.y) ** 2 < (z.r + 4) ** 2)) out.push(b);
+        if (b.kind === 'flame' || b.kind === 'frost' || !this.zombies.some((z) => !z.dead && !offLimits(z) && (z.x - b.x) ** 2 + (z.y - b.y) ** 2 < (z.r + 4) ** 2)) out.push(b);
         else if (b.goo) this.addGoo(b.x, b.y, 0, true);
         continue;
       }
@@ -2472,7 +3510,7 @@ export class Game {
       }
       if (!alive) continue;
       for (const z of this.zombies) {
-        if (z.dead || b.hits.includes(z.id) || intangible(z)) continue;
+        if (z.dead || b.hits.includes(z.id) || offLimits(z) || z.latch) continue;
         const dx = z.x - b.x;
         const dy = z.y - b.y;
         const rr = z.r + (b.kind === 'flame' || b.kind === 'frost' ? 10 : 4);
@@ -2483,6 +3521,13 @@ export class Game {
           break;
         }
         b.hits.push(z.id);
+        if (b.charm) {
+          if (this.net !== 'client') this.addPsi(z);
+          this.damageZombie(z, b.dmg, Math.atan2(b.vy, b.vx), false, 30, false, 16);
+          for (let i = 0; i < 5; i++) this.spawnParticle(b.x, b.y, rand(-120, 120), rand(-120, 120), 0.25, 3, '#e0b0ff', 5, false, true);
+          alive = false;
+          break;
+        }
         if (b.goo) {
           this.damageZombie(z, b.dmg, Math.atan2(b.vy, b.vx), false, 60);
           this.addGoo(b.x, b.y, b.dmg);
@@ -2558,7 +3603,7 @@ export class Game {
         g.vy *= -0.5;
         if (g.impact) boom = true;
       }
-      if (g.impact && !boom) for (const z of this.zombies) if (!z.dead && !intangible(z) && Math.hypot(z.x - g.x, z.y - g.y) < z.r + 6) boom = true;
+      if (g.impact && !boom) for (const z of this.zombies) if (!z.dead && !offLimits(z) && Math.hypot(z.x - g.x, z.y - g.y) < z.r + 6) boom = true;
       if (boom) {
         if (g.remote) continue;
         if (g.vortex) {
@@ -2880,7 +3925,7 @@ export class Game {
     let best: Zombie | null = null;
     let bd = range;
     for (const z of this.zombies) {
-      if (z.dead || exclude.includes(z.id) || intangible(z)) continue;
+      if (z.dead || exclude.includes(z.id) || offLimits(z)) continue;
       const d = Math.hypot(z.x - x, z.y - y);
       if (d < bd) {
         bd = d;
@@ -2891,7 +3936,12 @@ export class Game {
   }
 
   private damageZombie(z: Zombie, dmg: number, angle: number, crit: boolean, knock: number, quiet = false, fx = 0) {
-    if (z.dead || intangible(z)) return;
+    if (z.dead || intangible(z) || z.charm > 0) return;
+    if (z.zero && z.zero.trans > 0) {
+      if (!quiet && Math.random() < 0.1) this.addText(z.x, z.y - z.r - 10, 'IMMUNE', '#ff9aee', 12);
+      return;
+    }
+    z.regenT = 0;
     if (this.net === 'client') {
       this.netHit(z, dmg, angle, crit, knock, quiet, fx);
       return;
@@ -2944,6 +3994,18 @@ export class Game {
       this.corpses.push({ x: z.x, y: z.y });
       if (this.corpses.length > 40) this.corpses.shift();
     }
+    if (kind === 'blob' && (z.gen ?? 0) < 2) {
+      // Mitosis: two smaller blobs wobble out of the burst one.
+      for (let i = 0; i < 2; i++) {
+        const a = angle + (i ? 1.3 : -1.3) + rand(-0.3, 0.3);
+        const c = this.spawnZombie('blob', z.x + Math.cos(a) * z.r * 0.6, z.y + Math.sin(a) * z.r * 0.6, { gen: (z.gen ?? 0) + 1, elite: z.elite === 'splitting' ? undefined : z.elite });
+        c.kx = Math.cos(a) * 260;
+        c.ky = Math.sin(a) * 260;
+        c.flash = 0.15;
+        c.attackCd = 0.5;
+      }
+      this.wsfx('splat', 0.7);
+    }
     if (z.elite === 'splitting' && kind !== 'egg')
       for (let i = 0; i < 2; i++) this.spawnZombie(kind, z.x + rand(-z.r, z.r), z.y + rand(-z.r, z.r), { mini: true }).flash = 0.2;
     if (this.has('boom') && !boss && kind !== 'egg' && z.elite !== 'explosive') this.explode(z.x, z.y, 45 * this.stats.damage, 80, 10);
@@ -2952,7 +4014,7 @@ export class Game {
 
     const mult = (1 + Math.min(this.combo, 100) * 0.01) * (this.active.cash > 0 ? 2 : 1);
     const value = z.def.cash * this.stats.cash * (1 + 0.06 * (this.wave - 1)) * mult;
-    const coins = boss ? 20 : kind === 'tank' || kind === 'shield' || z.elite ? 4 : 1;
+    const coins = boss ? 20 : kind === 'tank' || kind === 'shield' || kind === 'mutant' || z.elite ? 4 : 1;
     for (let i = 0; i < coins; i++) {
       const a = rand(0, Math.PI * 2);
       const s = coins > 1 ? rand(60, 220) : rand(20, 60);
@@ -2985,6 +4047,8 @@ export class Game {
       this.flash = { t: 0.4, color: '#ffffff', max: 0.4 };
       // Her unhatched eggs die with her.
       if (kind === 'brood') for (const e of this.zombies) if (e.def.kind === 'egg') this.killZombie(e, rand(0, Math.PI * 2));
+      if (kind === 'zero') this.spikes = [];
+      if (this.op?.goal.type === 'boss' && this.op.goal.kind === kind && !z.mini) this.winOp();
     }
   }
 
@@ -3000,6 +4064,9 @@ export class Game {
     if (this.cause === 'train') rep.trainKills++;
     else if (this.cause === 'vent') rep.ventKills++;
     else if (this.cause === 'barrel') rep.barrelKills++;
+    else if (this.cause === 'laser') rep.laserKills++;
+    const g = this.op?.goal;
+    if (g?.type === 'kill' && (!g.kind || g.kind === kind) && !this.opS.done) this.opS.n++;
     this.countBurst(x, y);
     if (boss) {
       rep.bosses++;
@@ -3039,7 +4106,7 @@ export class Game {
     }
     const big = boss || kind === 'tank' || kind === 'shield';
     const n = boss ? 60 : big ? 22 : 12;
-    for (let i = 0; i < n; i++) this.spawnBlood(z.x, z.y, angle + rand(-1.2, 1.2), i % 3 ? '#8a1414' : z.def.dark, rand(1, boss ? 3 : 1.8));
+    for (let i = 0; i < n; i++) this.spawnBlood(z.x, z.y, angle + rand(-1.2, 1.2), kind === 'blob' ? (i % 2 ? '#7ad8b0' : '#2a6a5a') : i % 3 ? '#8a1414' : z.def.dark, rand(1, boss ? 3 : 1.8) * (kind === 'parasite' ? 0.5 : 1));
     // Gibs
     for (let i = 0; i < (boss ? 16 : big ? 8 : 4); i++) {
       const a = angle + rand(-1.4, 1.4);
@@ -3047,7 +4114,7 @@ export class Game {
       this.spawnParticle(z.x, z.y, Math.cos(a) * s, Math.sin(a) * s, rand(0.3, 0.6), rand(4, big ? 11 : 8), i % 2 ? z.def.body : z.def.dark, 5, true, false);
     }
     // A big splat on the floor.
-    this.dctx.fillStyle = kind === 'bloater' ? 'rgba(80,110,10,0.5)' : 'rgba(90,10,10,0.55)';
+    this.dctx.fillStyle = kind === 'bloater' ? 'rgba(80,110,10,0.5)' : kind === 'blob' ? 'rgba(60,170,130,0.45)' : 'rgba(90,10,10,0.55)';
     for (let i = 0; i < (boss ? 14 : 5); i++) {
       this.dctx.beginPath();
       this.dctx.arc((z.x + rand(-z.r, z.r)) / 2, (z.y + rand(-z.r, z.r)) / 2, rand(2, z.r / 2.5), 0, Math.PI * 2);
@@ -3488,6 +4555,8 @@ export class Game {
     this.lights = this.lights.filter((l) => (l.life -= dt) > 0);
     this.ghosts = this.ghosts.filter((g) => (g.life -= dt) > 0);
     this.bolts = this.bolts.filter((b) => (b.life -= dt) > 0);
+    this.beams = this.beams.filter((b) => (b.life -= dt) > 0);
+    if (this.subtitle.t > 0) this.subtitle.t -= rawDt;
     this.trauma = Math.max(0, this.trauma - rawDt * 1.8);
     this.zoomKick = Math.max(0, this.zoomKick - rawDt * 0.4);
     if (this.banner.t > 0) this.banner.t -= rawDt;
@@ -3636,11 +4705,16 @@ export class Game {
         r(z.hp),
         r(z.maxHp),
         r(z.r),
-        (z.elite ? ELITE_KINDS.indexOf(z.elite) + 1 : 0) | (z.mini ? 8 : 0) | (z.frozenT > 0 ? 16 : 0) | (z.burn > 0 ? 32 : 0) | (z.buff > 0 ? 64 : 0) | (z.zapT > 0 ? 128 : 0) | (z.slow > 0 ? 256 : 0) | (z.dig?.state === 'under' ? 512 : 0) | (z.dig?.state === 'rise' ? 1024 : 0) | (z.ghostT > 0 ? 2048 : 0) | (z.fuse > 0 ? 4096 : 0) | ((z.reap?.windup ?? 0) > 0 ? 8192 : 0),
+        (z.elite ? ELITE_KINDS.indexOf(z.elite) + 1 : 0) | (z.mini ? 8 : 0) | (z.frozenT > 0 ? 16 : 0) | (z.burn > 0 ? 32 : 0) | (z.buff > 0 ? 64 : 0) | (z.zapT > 0 ? 128 : 0) | (z.slow > 0 ? 256 : 0) | (z.dig?.state === 'under' ? 512 : 0) | (z.dig?.state === 'rise' ? 1024 : 0) | (z.ghostT > 0 ? 2048 : 0) | (z.fuse > 0 ? 4096 : 0) | ((z.reap?.windup ?? 0) > 0 ? 8192 : 0) | (z.charm > 0 ? 16384 : 0) | (z.healing ? 32768 : 0) | ((z.yank?.windup ?? 0) > 0 ? 65536 : 0) | (z.latch ? 131072 : 0),
         z.boss ? ['walk', 'windup', 'charge'].indexOf(z.boss.state) : 0,
         z.leap ? ['walk', 'crouch', 'leap'].indexOf(z.leap.state) : 0,
         z.jug ? r(z.jug.windup * 100) : 0,
         z.plates,
+        // Patient Zero: form + mutating, eye-beam angle, beam state (1 aim, 2 sweep), pull wind-up
+        z.zero ? z.zero.phase * 2 + (z.zero.trans > 0 ? 1 : 0) : 0,
+        z.zero ? r(z.zero.laserA * 100) : 0,
+        z.zero ? (z.zero.laserW > 0 ? 1 : z.zero.laserT > 0 ? 2 : 0) : 0,
+        z.zero ? r(z.zero.yankT * 100) : 0,
       ]);
     const me = [this.myId, r(p.x), r(p.y), r(p.angle * 100), r(p.hp), r(this.stats.maxHp), this.down ? 1 : 0, this.weapons[this.wi].def.id, this.firing && this.state === 'playing' ? 1 : 0, r(this.reviveProg * 100), this.dashT > 0 ? 1 : 0];
     const pl = [me, ...this.allies.map((a) => [a.id, r(a.x), r(a.y), r(a.angle * 100), r(a.hp), r(a.maxHp), a.down ? 1 : 0, a.weapon, a.firing ? 1 : 0, r(a.revive * 100), a.dashing ? 1 : 0])];
@@ -3662,6 +4736,9 @@ export class Game {
       tr: this.trains.map((t) => [['idle', 'warn', 'go'].indexOf(t.phase), r(t.x)]),
       br: this.barrels.map((b) => (b.dead ? 1 : 0)).join(''),
       gr: this.grenades.map((g) => [r(g.x), r(g.y), r(g.vx), r(g.vy), r(g.z), r(g.vz), r(g.fuse * 100), g.radius ?? 135, g.vortex ? 1 : 0]),
+      sk: this.spikes.map((q) => [r(q.x1), r(q.y1), r(q.x2), r(q.y2), r(q.t * 100)]),
+      cs: this.consoles.map((c) => [['idle', 'warn', 'sweep'].indexOf(c.phase), r(c.pos), c.dir, r(c.cd * 10), r(c.hold * 100), r(c.t * 100)]),
+      pc: r(this.power.out * 10),
       ev: this.netEv,
     };
   }
@@ -3669,7 +4746,9 @@ export class Game {
   /** A zombie the host told us about, built just well enough to draw and to shoot at. */
   private mirrorZombie(id: number, kind: ZombieKind, x: number, y: number): Zombie {
     const def = ZOMBIES[kind];
-    const z: Zombie = { id, def, x, y, kx: 0, ky: 0, hp: 1, maxHp: 1, speed: 0, dmg: 0, r: def.radius, flash: 0, slow: 0, burn: 0, attackCd: 0, bladeCd: 0, phase: Math.random() * 10, face: 0, dead: false, spitCd: 0, buff: 0, abilityCd: 0, chill: 0, frozenT: 0, plates: 0, plateHp: 0, zapT: 0, ghostT: 0, fuse: 0 };
+    const z: Zombie = { id, def, x, y, kx: 0, ky: 0, hp: 1, maxHp: 1, speed: 0, dmg: 0, r: def.radius, flash: 0, slow: 0, burn: 0, attackCd: 0, bladeCd: 0, phase: Math.random() * 10, face: 0, dead: false, spitCd: 0, buff: 0, abilityCd: 0, chill: 0, frozenT: 0, plates: 0, plateHp: 0, zapT: 0, ghostT: 0, fuse: 0, psi: 0, charm: 0, regenT: 0 };
+    if (kind === 'psyker') z.yank = { cd: 0, windup: 0, tx: 0, ty: 0 };
+    if (kind === 'zero') z.zero = { phase: 1, trans: 0, tendril: 0, summon: 0, yank: 0, yankT: 0, laser: 0, laserW: 0, laserT: 0, laserA: 0, laserDir: 1, laserHit: [] };
     if (kind === 'burrower') z.dig = { state: 'walk', t: 0 };
     if (kind === 'reaper') z.reap = { sweep: 0, windup: 0, aim: 0, blink: 0, orbs: 0, summoned: true };
     if (kind === 'sludge') z.sludge = { mortar: 0, drip: 0, splits: 2 };
@@ -3686,7 +4765,7 @@ export class Game {
     const old = new Map(this.zombies.map((z) => [z.id, z]));
     const next: Zombie[] = [];
     for (const e of s.z as Row[]) {
-      const [id, ki, x, y, face, hp, maxHp, rad, fl, bs, ls, jw, plates] = e;
+      const [id, ki, x, y, face, hp, maxHp, rad, fl, bs, ls, jw, plates, zf, za, zl, zy] = e;
       let z = old.get(id);
       if (z) old.delete(id);
       else z = this.mirrorZombie(id, KINDS[ki], x, y);
@@ -3722,6 +4801,19 @@ export class Game {
       }
       if (z.jug) z.jug.windup = jw / 100;
       z.plates = plates;
+      z.charm = fl & 16384 ? 1 : 0;
+      z.healing = !!(fl & 32768);
+      z.latch = fl & 131072 ? 1 : 0;
+      if (z.yank) z.yank.windup = fl & 65536 ? 0.5 : 0;
+      if (z.zero && zf) {
+        const Z = z.zero;
+        Z.phase = Math.max(1, Math.min(3, zf >> 1)) as 1 | 2 | 3;
+        Z.trans = zf & 1 ? 0.5 : 0;
+        Z.laserA = (za ?? 0) / 100;
+        Z.laserW = zl === 1 ? 0.5 : 0;
+        Z.laserT = zl === 2 ? 0.5 : 0;
+        Z.yankT = (zy ?? 0) / 100;
+      }
       next.push(z);
     }
     // Whatever the host no longer has just died.
@@ -3775,6 +4867,23 @@ export class Game {
       if (br[i] === '1' && !b.dead) b.dead = true;
     });
     this.grenades = [...this.grenades.filter((g) => !g.remote), ...(s.gr as Row[]).map(([x, y, vx, vy, z, vz, fuse, radius, vort]) => ({ x, y, vx, vy, z, vz, fuse: fuse / 100, radius, vortex: !!vort, remote: true }))];
+    if (s.sk) {
+      // Keep the local hit lists so a spike can't hurt the same guest twice.
+      this.spikes = (s.sk as Row[]).map(([x1, y1, x2, y2, t]) => ({ x1, y1, x2, y2, t: t / 100, hit: [] }));
+    }
+    ((s.cs as Row[]) ?? []).forEach(([ph, pos, dir, cd, hold, t], i) => {
+      const c = this.consoles[i];
+      if (!c) return;
+      const phase = (['idle', 'warn', 'sweep'] as const)[ph] ?? 'idle';
+      if (phase === 'sweep' && c.phase !== 'sweep') c.hit = [];
+      c.phase = phase;
+      if (phase !== 'sweep' || Math.abs(c.pos - pos) > 60) c.pos = pos;
+      c.dir = dir;
+      c.cd = cd / 10;
+      c.hold = hold / 100;
+      c.t = t / 100;
+    });
+    if (s.pc !== undefined) this.power.out = Number(s.pc) / 10;
     for (const e of s.ev as (string | number)[][]) this.applyEvent(e);
   }
 
@@ -3828,6 +4937,7 @@ export class Game {
           if (!z || z.dead) continue;
           if (f & 4) z.burn = 2.5;
           if (f & 8) this.chill(z);
+          if (f & 16) this.addPsi(z);
           this.damageZombie(z, dmg, ang, !!(f & 1), knock, !!(f & 2));
         }
         this.killer = '';
@@ -3899,6 +5009,9 @@ export class Game {
       case 'web':
         this.webPlayer(this.p);
         break;
+      case 'yank':
+        this.pullPlayer(this.p, num('x'), num('y'));
+        break;
       case 'saved':
         this.report.teamRevives++;
         this.toast('🚑 You revived a teammate');
@@ -3968,6 +5081,21 @@ export class Game {
       this.sfx.play('tesla', 0.3);
       return;
     }
+    if (def.beam || def.charge) {
+      // Beam guns are drawn, not simulated: a line to the first wall (or zombie, for the plasma).
+      let len = this.rayWall(mx, my, a.angle, def.beam ?? 1500);
+      if (def.beam) {
+        const ex = mx + Math.cos(a.angle) * len;
+        const ey = my + Math.sin(a.angle) * len;
+        for (const z of this.zombies) if (!z.dead && segDist(z.x, z.y, mx, my, ex, ey) < z.r) len = Math.min(len, Math.hypot(z.x - mx, z.y - my));
+      }
+      const x2 = mx + Math.cos(a.angle) * len;
+      const y2 = my + Math.sin(a.angle) * len;
+      this.beams.push(def.beam ? { x1: mx, y1: my, x2, y2, life: 0.075, max: 0.075, color: def.color, width: 5 } : { x1: mx, y1: my, x2, y2, life: 0.35, max: 0.35, color: def.color, width: 9 });
+      this.addLight(mx, my, def.beam ? 120 : 220, 0.08, def.color);
+      this.sfx.play(def.id as SfxKind, 0.3);
+      return;
+    }
     if (kind === 'grenade') {
       this.addLight(mx, my, 140, 0.07, '#b0ff7a');
       this.sfx.play('launcher', 0.3);
@@ -3978,7 +5106,7 @@ export class Game {
       const ang = def.homing ? a.angle + (i - (n - 1) / 2) * 0.32 : a.angle + rand(-def.spread / 2, def.spread / 2);
       const sp = def.speed * rand(0.92, 1.05);
       const spray = kind === 'flame' || kind === 'frost';
-      this.bullets.push({ kind, x: mx, y: my, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, dmg: 0, life: def.life * (spray ? rand(0.8, 1.1) : 1), max: def.life, pierce: 0, ricochet: 0, hits: [], color: def.color, width: def.width ?? 2.5, canExplode: false, bounce: def.bounce, goo: def.goo, homing: def.homing, blast: def.blast, ghost: true });
+      this.bullets.push({ kind, x: mx, y: my, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, dmg: 0, life: def.life * (spray ? rand(0.8, 1.1) : 1), max: def.life, pierce: 0, ricochet: 0, hits: [], color: def.color, width: def.width ?? 2.5, canExplode: false, bounce: def.bounce, goo: def.goo, homing: def.homing, blast: def.blast, charm: def.charm, ghost: true });
     }
     if (kind === 'flame' || kind === 'frost') {
       if (Math.random() < 0.3) this.addLight(mx, my, 130, 0.12, kind === 'flame' ? '#ff7a20' : '#7fd8ff');
@@ -4066,15 +5194,18 @@ export class Game {
     ctx.drawImage(this.decals, 0, 0, WORLD_W, WORLD_H);
     this.drawGates();
     this.drawVents();
+    this.drawLabFloor();
     this.drawPuddles();
     this.drawPickups();
     this.drawBarrels();
     this.drawDeploys();
-    for (const z of this.zombies) this.drawZombie(z);
+    for (const z of this.zombies) if (!z.latch) this.drawZombie(z);
     if (this.state !== 'over' && playing) {
       this.drawAllies();
       this.drawPlayer();
     }
+    // Parasites riding you sit on top of you.
+    for (const z of this.zombies) if (z.latch) this.drawZombie(z);
     this.drawTrains();
     this.drawGrenades();
     for (const q of this.particles) {
@@ -4136,7 +5267,7 @@ export class Game {
     l.setTransform(1, 0, 0, 1, 0, 0);
     l.globalCompositeOperation = 'source-over';
     l.clearRect(0, 0, this.light.width, this.light.height);
-    const tint = this.active.freeze > 0 ? '6,14,26' : this.active.rage > 0 ? '22,4,4' : '3,5,10';
+    const tint = this.active.freeze > 0 ? '6,14,26' : this.active.rage > 0 ? '22,4,4' : this.power.out > 0 ? '14,2,4' : '3,5,10';
     l.fillStyle = `rgba(${tint},${DARKNESS})`;
     l.fillRect(0, 0, this.light.width, this.light.height);
     l.globalCompositeOperation = 'destination-out';
@@ -4146,7 +5277,13 @@ export class Game {
       l.drawImage(glowSprite('#000000'), x - r, y - r, r * 2, r * 2);
       l.globalAlpha = 1;
     };
+    const powerOut = this.power.out > 0;
     for (const lamp of this.map.lamps) {
+      if (powerOut) {
+        // Emergency lights only: a dim red pool that rotates.
+        hole(lamp.x + Math.cos(this.clock * 3 + lamp.x) * 40, lamp.y + Math.sin(this.clock * 3 + lamp.x) * 40, 150, 0.35);
+        continue;
+      }
       let a = 0.9;
       if (lamp.flicker) {
         const f = Math.sin(this.clock * 23 + lamp.x) + Math.sin(this.clock * 7.3 + lamp.y);
@@ -4156,6 +5293,22 @@ export class Game {
     }
     for (const lt of this.lights) hole(lt.x, lt.y, lt.r * (0.6 + 0.4 * (lt.life / lt.max)), Math.min(1, (lt.life / lt.max) * 1.4));
     for (const pw of this.powers) hole(pw.x, pw.y, 90, 0.7);
+    for (const c of this.consoles) {
+      if (!powerOut) hole(c.x, c.y, 90, 0.5);
+      if (c.phase === 'sweep') {
+        // The laser lights up a band across the map.
+        l.globalAlpha = 0.7;
+        if (c.axis === 'x') l.drawImage(glowSprite('#000000'), c.pos - 90, 0, 180, WORLD_H);
+        else l.drawImage(glowSprite('#000000'), 0, c.pos - 90, WORLD_W, 180);
+        l.globalAlpha = 1;
+      }
+    }
+    for (const dv of this.opS.drives) hole(dv.x, dv.y, 80, 0.6);
+    if (this.opS.gen) hole(this.opS.gen.x, this.opS.gen.y, 170, 0.7);
+    if (this.opS.zone) hole(this.opS.zone.x, this.opS.zone.y, this.opS.zone.r * 1.5, 0.6);
+    for (const z of this.zombies) {
+      if (z.zero && z.zero.laserT > 0) hole(z.x + Math.cos(z.zero.laserA) * 300, z.y + Math.sin(z.zero.laserA) * 300, 260, 0.6);
+    }
     const cone = (x: number, y: number, ang: number, len: number, half: number, a: number) => {
       const g = l.createRadialGradient(x, y, 10, x, y, len);
       g.addColorStop(0, `rgba(0,0,0,${a})`);
@@ -4197,7 +5350,12 @@ export class Game {
     };
     // Colored light tints
     for (const lt of this.lights) glowDot(lt.x, lt.y, lt.r * 0.7, lt.color, 0.35 * (lt.life / lt.max));
-    for (const lamp of this.map.lamps) glowDot(lamp.x, lamp.y, 120, '#ffcf7a', 0.12);
+    for (const lamp of this.map.lamps) {
+      if (this.power.out > 0) glowDot(lamp.x + Math.cos(this.clock * 3 + lamp.x) * 40, lamp.y + Math.sin(this.clock * 3 + lamp.x) * 40, 140, '#ff2020', 0.2);
+      else glowDot(lamp.x, lamp.y, 120, '#ffcf7a', 0.12);
+    }
+    for (const c of this.consoles) if (c.phase === 'idle' && c.cd <= 0 && this.power.out <= 0) glowDot(c.x, c.y, 70, '#ff3a5a', 0.2 + 0.1 * Math.sin(this.clock * 5));
+    for (const dv of this.opS.drives) glowDot(dv.x, dv.y, 40, '#5dff7a', 0.3 + 0.2 * (Math.floor(this.clock * 4) % 2));
     for (const v of this.vents) {
       if (v.phase === 'blast') {
         glowDot(v.x, v.y, VENT_R * 1.7, '#e8f4ff', 0.45 + 0.15 * Math.sin(this.clock * 40));
@@ -4238,6 +5396,15 @@ export class Game {
       if (z.def.kind === 'sludger' || z.def.kind === 'sludge') glowDot(z.x, z.y, r * 2, '#c8ff3a', 0.14 + 0.05 * Math.sin(this.clock * 5 + z.id));
       if (z.def.kind === 'juggernaut') glowDot(z.x - Math.cos(z.face) * r * 0.62, z.y - Math.sin(z.face) * r * 0.62, r * 0.9, '#ffa040', 0.5);
       if (z.frozenT > 0) glowDot(z.x, z.y, r * 2, '#9fe8ff', 0.25);
+      if (z.charm > 0) glowDot(z.x, z.y, r * 2.2, '#b060ff', 0.3 + 0.1 * Math.sin(this.clock * 8 + z.id));
+      if (z.healing) glowDot(z.x, z.y, r * 2.2, '#7aff5a', 0.2 + 0.12 * Math.sin(this.clock * 10 + z.id));
+      if (z.def.kind === 'psyker') glowDot(z.x, z.y, r * ((z.yank?.windup ?? 0) > 0 ? 3.4 : 2.2), '#e08aff', (z.yank?.windup ?? 0) > 0 ? 0.45 : 0.18);
+      if (z.def.kind === 'blob') glowDot(z.x, z.y, r * 1.6, '#7ad8b0', 0.12);
+      if (z.zero) {
+        glowDot(z.x - Math.cos(z.face) * r * 0.5, z.y - Math.sin(z.face) * r * 0.5, r * 0.9, '#ff5adc', 0.35 + 0.15 * Math.sin(this.clock * 4));
+        if (z.zero.trans > 0) glowDot(z.x, z.y, r * 3, '#ff5adc', 0.4);
+        if (z.zero.phase === 3) glowDot(z.x + Math.cos(z.face) * r * 0.05, z.y + Math.sin(z.face) * r * 0.05, r * 0.8, '#ff3ad0', 0.5);
+      }
       if (z.def.kind === 'brood' && this.countKind('egg') > 0) glowDot(z.x, z.y, r * 1.9, '#ffcf5a', 0.2 + 0.08 * Math.sin(this.clock * 5));
     }
     ctx.globalAlpha = 1;
@@ -4263,6 +5430,17 @@ export class Game {
         else ctx.fillRect(-9, -3, 16, 6);
         ctx.restore();
         glowDot(b.x - Math.cos(a) * (b.homing ? 7 : 10), b.y - Math.sin(a) * (b.homing ? 7 : 10), b.homing ? 14 : 22, b.homing ? '#ff8a4a' : '#ffb347', 0.8);
+        continue;
+      }
+      if (b.charm) {
+        // Mind Ray: a wobbling violet orb with a short trail.
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#f0d8ff';
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 3.5 + Math.sin(this.clock * 30) * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+        glowDot(b.x, b.y, 16, '#c77dff', 0.75);
+        glowDot(b.x - b.vx * 0.02, b.y - b.vy * 0.02, 10, '#8a4aff', 0.4);
         continue;
       }
       if (b.goo) {
@@ -4334,6 +5512,68 @@ export class Game {
       glowDot(bo.x2, bo.y2, 26, bo.color, 0.6);
     }
     ctx.globalAlpha = 1;
+
+    // Railgun slugs and plasma beams
+    for (const bm of this.beams) {
+      const k = bm.life / bm.max;
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = bm.color;
+      ctx.lineWidth = bm.width * (0.6 + 0.4 * k);
+      ctx.beginPath();
+      ctx.moveTo(bm.x1, bm.y1);
+      ctx.lineTo(bm.x2, bm.y2);
+      ctx.stroke();
+      ctx.globalAlpha = k * 0.35;
+      ctx.lineWidth = bm.width * 3;
+      ctx.stroke();
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1.5, bm.width * 0.3);
+      ctx.stroke();
+      glowDot(bm.x2, bm.y2, bm.width * 3, bm.color, 0.6 * k);
+    }
+    ctx.globalAlpha = 1;
+    // Lab laser sweeps: a wall of red light crossing the map.
+    for (const c of this.consoles) {
+      if (c.phase !== 'sweep') continue;
+      const w = 20 + Math.sin(this.clock * 50) * 3;
+      ctx.fillStyle = 'rgba(255,40,70,0.35)';
+      if (c.axis === 'x') ctx.fillRect(c.pos - w, BORDER, w * 2, WORLD_H - BORDER * 2);
+      else ctx.fillRect(BORDER, c.pos - w, WORLD_W - BORDER * 2, w * 2);
+      ctx.fillStyle = 'rgba(255,220,230,0.9)';
+      if (c.axis === 'x') ctx.fillRect(c.pos - 2.5, BORDER, 5, WORLD_H - BORDER * 2);
+      else ctx.fillRect(BORDER, c.pos - 2.5, WORLD_W - BORDER * 2, 5);
+    }
+    // Patient Zero's eye beam
+    for (const z of this.zombies) {
+      const Z = z.zero;
+      if (!Z || Z.laserT <= 0) continue;
+      const ex = z.x + Math.cos(Z.laserA) * z.r * 0.6;
+      const ey = z.y + Math.sin(Z.laserA) * z.r * 0.6;
+      const len = this.rayWall(ex, ey, Z.laserA, 760);
+      const x2 = ex + Math.cos(Z.laserA) * len;
+      const y2 = ey + Math.sin(Z.laserA) * len;
+      ctx.strokeStyle = '#ff3ad0';
+      ctx.lineWidth = 26 + Math.sin(this.clock * 60) * 4;
+      ctx.globalAlpha = 0.4;
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = '#ffd0f4';
+      ctx.stroke();
+      glowDot(x2, y2, 50, '#ff5adc', 0.8);
+      glowDot(ex, ey, 40, '#ffffff', 0.6);
+    }
+    // Erupting tendrils glow at the tips
+    for (const s of this.spikes) if (s.t <= 0) glowDot(s.x2, s.y2, 30, '#ff5adc', 0.4 * (1 + s.t / SPIKE_LIFE));
+    // Railgun charging glow at your muzzle
+    if (this.charge > 0 && this.state === 'playing') {
+      const w = this.weapons[this.wi];
+      glowDot(this.p.x + Math.cos(this.p.angle) * (w.def.length + 4), this.p.y + Math.sin(this.p.angle) * (w.def.length + 4), 10 + this.charge * 26, '#7ae8ff', 0.5 + this.charge * 0.4);
+    }
 
     // Spit
     for (const s of this.spits) glowDot(s.x, s.y, s.soul ? 18 : 14, s.soul ? '#7affea' : s.web ? '#e8e8ff' : '#c060ff', 0.9);
@@ -4528,6 +5768,127 @@ export class Game {
         ctx.stroke();
       }
     }
+    // Tendrils: a cracked red line first, then a row of bone spikes.
+    for (const s of this.spikes) {
+      const dx = s.x2 - s.x1;
+      const dy = s.y2 - s.y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      if (s.t > 0) {
+        const q = 1 - s.t / SPIKE_WARN;
+        // A crack that widens and brightens until the bone bursts out.
+        ctx.strokeStyle = `rgba(255,40,80,${0.12 + 0.38 * q + 0.1 * Math.sin(this.clock * 40)})`;
+        ctx.lineWidth = SPIKE_W * (0.3 + 0.7 * q);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(s.x1, s.y1);
+        ctx.lineTo(s.x1 + dx * Math.min(1, q * 2.5), s.y1 + dy * Math.min(1, q * 2.5));
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(40,0,10,0.6)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let k = 0; k <= len * Math.min(1, q * 2.5); k += 18) ctx.lineTo(s.x1 + (dx / len) * k + nx * Math.sin(k * 0.7) * 6, s.y1 + (dy / len) * k + ny * Math.sin(k * 0.7) * 6);
+        ctx.stroke();
+        continue;
+      }
+      const up = Math.min(1, -s.t / 0.08) * Math.min(1, (SPIKE_LIFE + s.t) / 0.15);
+      for (let k = 14; k < len; k += 22) {
+        const cx = s.x1 + (dx / len) * k;
+        const cy = s.y1 + (dy / len) * k;
+        const h = (22 + ((k * 7) % 13)) * up;
+        const side = (k / 22) % 2 ? 1 : -1;
+        const tx = cx + nx * side * 6 + (dx / len) * 4;
+        const ty = cy + ny * side * 6 + (dy / len) * 4;
+        ctx.fillStyle = '#5a1a24';
+        ctx.beginPath();
+        ctx.moveTo(cx - (dx / len) * 9, cy - (dy / len) * 9);
+        ctx.lineTo(tx + nx * side * h * 0.3, ty + ny * side * h * 0.3 - h * 0.9);
+        ctx.lineTo(cx + (dx / len) * 9, cy + (dy / len) * 9);
+        ctx.fill();
+        ctx.fillStyle = '#f0e4c8';
+        ctx.beginPath();
+        ctx.moveTo(tx + nx * side * h * 0.3 - 3, ty + ny * side * h * 0.3 - h * 0.55);
+        ctx.lineTo(tx + nx * side * h * 0.3, ty + ny * side * h * 0.3 - h * 0.9);
+        ctx.lineTo(tx + nx * side * h * 0.3 + 3, ty + ny * side * h * 0.3 - h * 0.55);
+        ctx.fill();
+      }
+    }
+    // Psychic tethers while a Psyker (or Patient Zero) gets ready to yank.
+    for (const z of this.zombies) {
+      const w = (z.yank?.windup ?? 0) > 0 ? z.yank!.windup / 0.9 : z.zero && z.zero.yankT > 0 ? z.zero.yankT : -1;
+      if (w < 0) continue;
+      const to = z.yank && this.net !== 'client' ? [{ x: z.yank.tx, y: z.yank.ty }] : this.targets().filter((t) => Math.hypot(t.x - z.x, t.y - z.y) < 650);
+      for (const t of to) {
+        ctx.strokeStyle = `rgba(224,138,255,${0.35 + 0.4 * (1 - w)})`;
+        ctx.lineWidth = 2 + 3 * (1 - w);
+        ctx.setLineDash([8, 8]);
+        ctx.lineDashOffset = this.clock * 60;
+        ctx.beginPath();
+        ctx.moveTo(z.x, z.y);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
+        ctx.strokeStyle = 'rgba(224,138,255,0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 22 + 10 * w, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    // Patient Zero aiming its eye
+    for (const z of this.zombies) {
+      const Z = z.zero;
+      if (!Z || Z.laserW <= 0) continue;
+      ctx.strokeStyle = `rgba(255,58,208,${0.3 + 0.3 * Math.sin(this.clock * 30)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(z.x, z.y);
+      ctx.lineTo(z.x + Math.cos(Z.laserA) * 760, z.y + Math.sin(Z.laserA) * 760);
+      ctx.stroke();
+      // Show which way it will sweep.
+      ctx.fillStyle = 'rgba(255,58,208,0.1)';
+      ctx.beginPath();
+      ctx.moveTo(z.x, z.y);
+      ctx.arc(z.x, z.y, 700, Math.min(Z.laserA, Z.laserA + Z.laserDir * 1.95), Math.max(Z.laserA, Z.laserA + Z.laserDir * 1.95));
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Laser grid warming up: a flashing line where the beam will start.
+    for (const c of this.consoles) {
+      if (c.phase !== 'warn') continue;
+      const on = Math.floor(this.clock * 10) % 2 === 0;
+      ctx.strokeStyle = on ? 'rgba(255,40,70,0.8)' : 'rgba(255,40,70,0.25)';
+      ctx.lineWidth = 4;
+      ctx.setLineDash([20, 14]);
+      ctx.beginPath();
+      if (c.axis === 'x') {
+        ctx.moveTo(c.pos, BORDER);
+        ctx.lineTo(c.pos, WORLD_H - BORDER);
+      } else {
+        ctx.moveTo(BORDER, c.pos);
+        ctx.lineTo(WORLD_W - BORDER, c.pos);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // Railgun charge ring
+    if (this.charge > 0 && this.state === 'playing' && !this.down) {
+      ctx.strokeStyle = this.charge >= 0.95 ? '#ffffff' : '#7ae8ff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(this.p.x, this.p.y, 28, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * this.charge);
+      ctx.stroke();
+    }
+    // Generator health
+    const G = this.opS.gen;
+    if (G) {
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(G.x - 50, G.y - 48, 100, 8);
+      ctx.fillStyle = G.hp < G.max * 0.3 ? '#ff5a4a' : '#ffd23f';
+      ctx.fillRect(G.x - 49, G.y - 47, 98 * Math.max(0, G.hp / G.max), 6);
+    }
     // Grenade danger circles
     for (const g of this.grenades) {
       if (g.fuse > 0.5) continue;
@@ -4636,6 +5997,141 @@ export class Game {
         ctx.arc(v.x, v.y, VENT_R, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+  }
+
+  /** Lab console pads, story-mode drives, the generator and the landing zone (under everything that moves). */
+  private drawLabFloor() {
+    const ctx = this.ctx;
+    for (const c of this.consoles) {
+      const ready = c.phase === 'idle' && c.cd <= 0 && this.power.out <= 0;
+      // Pad ring
+      ctx.strokeStyle = ready ? (Math.floor(this.clock * 3) % 2 ? '#ff3a5a' : '#ff8a9a') : 'rgba(120,60,70,0.6)';
+      ctx.lineWidth = 5;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, CONSOLE_R, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Hold progress
+      if (c.hold > 0) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, CONSOLE_R - 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * c.hold);
+        ctx.stroke();
+      }
+      // Cooldown sweep
+      if (c.phase === 'idle' && c.cd > 0) {
+        ctx.fillStyle = 'rgba(255,58,90,0.12)';
+        ctx.beginPath();
+        ctx.moveTo(c.x, c.y);
+        ctx.arc(c.x, c.y, CONSOLE_R - 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - c.cd / CONSOLE_CD));
+        ctx.fill();
+      }
+      // The console itself: a little pedestal with a screen.
+      ctx.fillStyle = '#1a1e22';
+      ctx.fillRect(c.x - 16, c.y - 12, 32, 24);
+      ctx.fillStyle = ready ? '#ff3a5a' : this.power.out > 0 ? '#101214' : '#5a2a32';
+      ctx.fillRect(c.x - 12, c.y - 8, 24, 12);
+      ctx.fillStyle = '#c8a020';
+      ctx.fillRect(c.x - 16, c.y + 8, 32, 4);
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      ctx.font = `10px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(this.power.out > 0 ? 'NO POWER' : c.phase !== 'idle' ? 'ARMED' : c.cd > 0 ? `${Math.ceil(c.cd)}s` : c.axis === 'x' ? 'LASER ⇆' : 'LASER ⇅', c.x, c.y + CONSOLE_R + 12);
+    }
+    const S = this.opS;
+    if (!this.op) return;
+    for (const dv of S.drives) {
+      const b = Math.sin(this.clock * 4 + dv.x) * 2;
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(dv.x - 11, dv.y - 5, 24, 14);
+      ctx.fillStyle = '#2a3036';
+      ctx.fillRect(dv.x - 12, dv.y - 8 + b, 24, 14);
+      ctx.fillStyle = '#8a9298';
+      ctx.fillRect(dv.x - 12, dv.y - 8 + b, 24, 3);
+      ctx.fillStyle = Math.floor(this.clock * 4) % 2 ? '#5dff7a' : '#1a5a2a';
+      ctx.fillRect(dv.x + 5, dv.y - 2 + b, 4, 4);
+    }
+    const G = S.gen;
+    if (G) {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(G.x - 40, G.y - 26, 88, 62);
+      ctx.fillStyle = G.hurt > 0 ? '#ffffff' : '#4a5a3a';
+      ctx.fillRect(G.x - 44, G.y - 30, 88, 60);
+      ctx.fillStyle = '#5a6a48';
+      ctx.fillRect(G.x - 40, G.y - 26, 80, 52);
+      ctx.strokeStyle = '#2a3020';
+      ctx.lineWidth = 3;
+      for (let i = -30; i <= 30; i += 10) {
+        ctx.beginPath();
+        ctx.moveTo(G.x + i, G.y - 22);
+        ctx.lineTo(G.x + i, G.y + 22);
+        ctx.stroke();
+      }
+      // Spinning fan
+      ctx.save();
+      ctx.translate(G.x + 22, G.y);
+      ctx.fillStyle = '#1a1e14';
+      ctx.beginPath();
+      ctx.arc(0, 0, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.rotate(this.clock * 20);
+      ctx.fillStyle = '#8a9a78';
+      for (let i = 0; i < 4; i++) {
+        ctx.rotate(Math.PI / 2);
+        ctx.fillRect(-2, 2, 4, 12);
+      }
+      ctx.restore();
+      ctx.fillStyle = '#c8a020';
+      ctx.fillRect(G.x - 44, G.y + 22, 88, 8);
+      ctx.fillStyle = G.hp < G.max * 0.3 && Math.floor(this.clock * 6) % 2 ? '#ff3a3a' : '#5dff7a';
+      ctx.fillRect(G.x - 34, G.y - 18, 8, 8);
+    }
+    const Z = S.zone;
+    if (Z) {
+      const g = this.op.goal;
+      const hold = g.type === 'evac' ? g.hold : 1;
+      ctx.fillStyle = 'rgba(93,255,122,0.08)';
+      ctx.beginPath();
+      ctx.arc(Z.x, Z.y, Z.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(93,255,122,0.7)';
+      ctx.lineWidth = 5;
+      ctx.setLineDash([16, 12]);
+      ctx.lineDashOffset = -this.clock * 30;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+      ctx.strokeStyle = '#5dff7a';
+      ctx.lineWidth = 9;
+      ctx.beginPath();
+      ctx.arc(Z.x, Z.y, Z.r - 12, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, Z.hold / hold));
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(230,240,230,0.5)';
+      ctx.font = `bold 70px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('H', Z.x, Z.y + 4);
+      // The chopper's shadow circles lower as you hold the zone.
+      const k = Math.min(1, Z.hold / hold);
+      const a = this.clock * 0.9;
+      const cx = Z.x + Math.cos(a) * 220 * (1 - k);
+      const cy = Z.y + Math.sin(a) * 220 * (1 - k);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(a + Math.PI / 2);
+      ctx.fillStyle = `rgba(0,0,0,${0.25 + 0.25 * k})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 30, 14, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(-70, -4, 50, 8);
+      ctx.rotate(this.clock * 25);
+      ctx.fillRect(-80, -3, 160, 6);
+      ctx.fillRect(-3, -80, 6, 160);
+      ctx.restore();
     }
   }
 
@@ -4828,6 +6324,126 @@ export class Game {
         ctx.moveTo(w.x + w.w - 4, w.y + 4);
         ctx.lineTo(w.x + 4, w.y + w.h - 4);
         ctx.stroke();
+      } else if (w.kind === 'glass') {
+        // Reinforced containment glass: steel frame, cyan pane, scratches.
+        const horiz = w.w > w.h;
+        ctx.fillStyle = '#3c4650';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.fillStyle = 'rgba(120,220,255,0.35)';
+        if (horiz) ctx.fillRect(w.x + 3, w.y + 5, w.w - 6, w.h - 10);
+        else ctx.fillRect(w.x + 5, w.y + 3, w.w - 10, w.h - 6);
+        ctx.fillStyle = 'rgba(230,250,255,0.55)';
+        if (horiz) ctx.fillRect(w.x + 3, w.y + 6, w.w - 6, 2);
+        else ctx.fillRect(w.x + 6, w.y + 3, 2, w.h - 6);
+        ctx.fillStyle = '#5a6670';
+        const len = horiz ? w.w : w.h;
+        for (let t = 0; t <= len - 6; t += 45) {
+          if (horiz) ctx.fillRect(w.x + t, w.y, 6, w.h);
+          else ctx.fillRect(w.x, w.y + t, w.w, 6);
+        }
+        if (horiz) ctx.fillRect(w.x + w.w - 6, w.y, 6, w.h);
+        else ctx.fillRect(w.x, w.y + w.h - 6, w.w, 6);
+        // A crack or two
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 1;
+        const s = (w.x * 7 + w.y * 3) % 97;
+        ctx.beginPath();
+        const c0x = horiz ? w.x + 20 + (s % (w.w - 40)) : w.x + w.w / 2;
+        const c0y = horiz ? w.y + w.h / 2 : w.y + 20 + (s % (w.h - 40));
+        ctx.moveTo(c0x - 6, c0y - 4);
+        ctx.lineTo(c0x, c0y);
+        ctx.lineTo(c0x + 7, c0y + 3);
+        ctx.moveTo(c0x, c0y);
+        ctx.lineTo(c0x + 2, c0y - 6);
+        ctx.stroke();
+      } else if (w.kind === 'tube') {
+        // Specimen tube: metal base ring, green fluid, something floating in it.
+        const cx = w.x + w.w / 2;
+        const cy = w.y + w.h / 2;
+        const R = Math.min(w.w, w.h) / 2;
+        ctx.fillStyle = '#4a525a';
+        ctx.beginPath();
+        ctx.arc(cx, cy, R, 0, Math.PI * 2);
+        ctx.fill();
+        const broken = (w.x + w.y) % 3 === 0;
+        ctx.fillStyle = broken ? 'rgba(40,60,50,0.9)' : 'rgba(90,255,170,0.42)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, R - 6, 0, Math.PI * 2);
+        ctx.fill();
+        if (!broken) {
+          // Curled specimen silhouette
+          ctx.fillStyle = 'rgba(60,40,40,0.55)';
+          ctx.beginPath();
+          ctx.ellipse(cx + 2, cy + 1, R * 0.38, R * 0.26, 0.6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(cx - R * 0.25, cy - R * 0.18, R * 0.16, 0, Math.PI * 2);
+          ctx.fill();
+          const t = this.clock * 1.4 + w.x;
+          ctx.fillStyle = 'rgba(220,255,235,0.6)';
+          for (let i = 0; i < 3; i++) {
+            const k = (t + i * 0.33) % 1;
+            ctx.beginPath();
+            ctx.arc(cx - 6 + i * 6, cy + R * 0.5 - k * R, 1.6, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        } else {
+          // Shattered: glass shards on the rim
+          ctx.strokeStyle = 'rgba(180,240,255,0.6)';
+          ctx.lineWidth = 2;
+          for (let i = 0; i < 6; i++) {
+            const a = i * 1.1 + w.x;
+            ctx.beginPath();
+            ctx.moveTo(cx + Math.cos(a) * (R - 6), cy + Math.sin(a) * (R - 6));
+            ctx.lineTo(cx + Math.cos(a + 0.2) * (R - 14), cy + Math.sin(a + 0.2) * (R - 14));
+            ctx.stroke();
+          }
+        }
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.beginPath();
+        ctx.arc(cx - R * 0.35, cy - R * 0.35, R * 0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#2a3036';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, R - 2, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (w.kind === 'bench') {
+        // Steel lab bench with clutter on top.
+        const horiz = w.w > w.h;
+        ctx.fillStyle = '#5a636c';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.fillStyle = '#7c868f';
+        ctx.fillRect(w.x + 3, w.y + 3, w.w - 6, w.h - 6);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        if (horiz) ctx.fillRect(w.x + 3, w.y + 3, w.w - 6, 4);
+        else ctx.fillRect(w.x + 3, w.y + 3, 4, w.h - 6);
+        const len = horiz ? w.w : w.h;
+        const at = (t: number, o: number): [number, number] => (horiz ? [w.x + t, w.y + o] : [w.x + o, w.y + t]);
+        // Microscope, beakers, a monitor
+        let [px, py] = at(len * 0.2, 20);
+        ctx.fillStyle = '#2a2e33';
+        ctx.fillRect(px - 7, py - 8, 14, 16);
+        ctx.fillStyle = '#50565c';
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fill();
+        [px, py] = at(len * 0.5, 20);
+        const fl = ['#5aff9a', '#ff5adc', '#5ac8ff'];
+        for (let i = 0; i < 3; i++) {
+          ctx.fillStyle = fl[i];
+          ctx.globalAlpha = 0.75;
+          ctx.beginPath();
+          ctx.arc(px + (horiz ? (i - 1) * 9 : 0), py + (horiz ? 0 : (i - 1) * 9), 3.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        [px, py] = at(len * 0.8, 20);
+        ctx.fillStyle = '#16191c';
+        ctx.fillRect(px - 9, py - 7, 18, 14);
+        ctx.fillStyle = Math.sin(this.clock * 3 + w.x) > 0.6 ? '#ff4a4a' : '#3aff8a';
+        ctx.fillRect(px - 7, py - 5, 14, 2);
+        ctx.fillRect(px - 7, py - 1, 9, 2);
       } else if (w.kind === 'car') {
         const horiz = w.w > w.h;
         ctx.save();
@@ -5029,12 +6645,12 @@ export class Game {
     ctx.rotate(z.face);
     const hit = z.flash > 0;
     const frozen = this.active.freeze > 0;
-    const windup = z.boss?.state === 'windup' || z.leap?.state === 'crouch' || (z.jug?.windup ?? 0) > 0 || z.zapT > 0;
+    const windup = z.boss?.state === 'windup' || z.leap?.state === 'crouch' || (z.jug?.windup ?? 0) > 0 || z.zapT > 0 || (z.yank?.windup ?? 0) > 0 || (z.zero ? z.zero.yankT > 0 || z.zero.laserW > 0 || z.zero.trans > 0 : false);
     const alpha = this.crawlerAlpha(z);
     ctx.globalAlpha = alpha;
     const icy = frozen || z.frozenT > 0;
     const blink = windup && Math.floor(this.clock * 20) % 2 === 1;
-    const tint = hit ? Tint.Hit : blink ? (z.zapT > 0 ? Tint.Zap : Tint.Windup) : icy || z.slow > 0 ? Tint.Icy : z.burn > 0 ? Tint.Burn : Tint.None;
+    const tint = hit ? Tint.Hit : z.charm > 0 ? Tint.Charm : blink ? (z.zapT > 0 ? Tint.Zap : (z.yank?.windup ?? 0) > 0 ? Tint.Charm : Tint.Windup) : icy || z.slow > 0 ? Tint.Icy : z.burn > 0 ? Tint.Burn : Tint.None;
     const flat = (c: string) => (hit ? '#ffffff' : c);
     const swing = Math.sin(z.phase);
     const variant = z.id % VARIANTS;
@@ -5080,6 +6696,51 @@ export class Game {
         ctx.lineTo(-r * (1.35 + kick), side * r * 0.75);
         ctx.lineTo(-r * (1.55 + kick), side * r * 0.85);
         ctx.stroke();
+      }
+    } else if (kind === 'parasite') {
+      // Eight scrabbling legs, much faster than they look.
+      ctx.strokeStyle = flat('#3a2420');
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(1.4, r * 0.13);
+      const fast = z.latch ? 3 : 2.4;
+      for (const side of [-1, 1])
+        for (let i = 0; i < 4; i++) {
+          const a = side * (0.7 + i * 0.5) + Math.sin(z.phase * fast + i * 1.7 + (side > 0 ? 1 : 0)) * 0.22;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r * 0.35 - r * 0.25, Math.sin(a) * r * 0.35);
+          ctx.lineTo(Math.cos(a) * r * 1.1 - r * 0.2, Math.sin(a) * r * 1.1);
+          ctx.lineTo(Math.cos(a + side * 0.5) * r * 1.5 - r * 0.2, Math.sin(a + side * 0.5) * r * 1.5);
+          ctx.stroke();
+        }
+    } else if (kind === 'zero') {
+      // Writhing tendrils: more of them as it evolves.
+      const Z = z.zero;
+      const n = Z && Z.phase >= 2 ? 9 : 6;
+      for (let i = 0; i < n; i++) {
+        const base = Math.PI * 0.55 + (i / (n - 1)) * Math.PI * 0.9;
+        const len = r * (1.25 + 0.25 * Math.sin(this.clock * 2.3 + i * 1.9));
+        const pts: [number, number][] = [];
+        for (let k = 0; k <= 6; k++) {
+          const t = k / 6;
+          const a = base + Math.sin(this.clock * 3 + i * 2.1 + t * 3) * 0.28 * t;
+          pts.push([Math.cos(a) * (r * 0.55 + len * t), Math.sin(a) * (r * 0.55 + len * t)]);
+        }
+        for (let k = 0; k < 6; k++) {
+          const t = k / 6;
+          ctx.strokeStyle = flat(k % 2 ? '#a0404a' : '#8a3040');
+          ctx.lineWidth = r * 0.2 * (1 - t * 0.8);
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(pts[k][0], pts[k][1]);
+          ctx.lineTo(pts[k + 1][0], pts[k + 1][1]);
+          ctx.stroke();
+        }
+        // Hooked tip
+        ctx.fillStyle = flat('#f0e4c8');
+        ctx.beginPath();
+        ctx.arc(pts[6][0], pts[6][1], r * 0.045, 0, Math.PI * 2);
+        ctx.fill();
       }
     } else if (kind === 'webber' || kind === 'brood') {
       // Jointed spider / insect legs.
@@ -5135,11 +6796,14 @@ export class Game {
 
     // 3. The detailed body, swaying a little, plus gore as it gets hurt.
     const crouch = z.leap?.state === 'crouch' ? 0.85 : 1;
-    const pulse = (kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.1 : 1) * crouch;
+    const pulse = (kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.06 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.1 : kind === 'zero' && z.zero && z.zero.trans > 0 ? 1 + Math.sin(this.clock * 30) * 0.05 : 1) * crouch;
+    // Blobs jiggle; psykers bob as they float.
+    const wob = kind === 'blob' ? Math.sin(this.clock * 7 + z.id) * 0.07 : 0;
+    const bob = kind === 'psyker' ? 1 + Math.sin(this.clock * 3 + z.id) * 0.04 : 1;
     ctx.save();
-    ctx.rotate(swing * (r >= 40 ? 0.02 : 0.05));
+    ctx.rotate(swing * (r >= 40 ? 0.02 : kind === 'blob' ? 0 : 0.05));
     const hurt = z.hp < z.maxHp * 0.4 ? 2 : z.hp < z.maxHp * 0.8 ? 1 : 0;
-    stamp(ctx, bodySprite(def, variant, tint, hurt), r, pulse, pulse);
+    stamp(ctx, bodySprite(def, variant, tint, kind === 'blob' ? 0 : hurt), r, pulse * (1 + wob) * bob, pulse * (1 - wob) * bob);
     ctx.restore();
 
     // 4. Live details on top.
@@ -5293,6 +6957,17 @@ export class Game {
       ctx.stroke();
       ctx.restore();
     }
+    if (kind === 'zero' && z.zero) this.drawZeroParts(z, hit);
+    if (kind === 'psyker') {
+      // A ring of floating debris held up by its mind.
+      ctx.fillStyle = flat('#8a7a90');
+      const wind = (z.yank?.windup ?? 0) > 0;
+      for (let i = 0; i < 5; i++) {
+        const a = this.clock * (wind ? 6 : 1.5) + i * 1.26 + z.id;
+        const rr = r * (wind ? 1.25 : 1.5);
+        ctx.fillRect(Math.cos(a) * rr - 1.5, Math.sin(a) * rr - 1.5, 3 + (i % 2), 3);
+      }
+    }
     if (kind === 'sludger' || kind === 'sludge') {
       // Fresh sludge bubbling up and dripping off.
       ctx.fillStyle = flat('#b8e040');
@@ -5323,6 +6998,18 @@ export class Game {
       ctx.lineTo(z.x - r * 0.5, z.y - r * 0.9);
       ctx.stroke();
     }
+    if (z.charm > 0) {
+      // A little spiral over its head while it fights for you.
+      ctx.strokeStyle = '#d8a8ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let k = 0; k < 14; k++) {
+        const a = this.clock * 8 + k * 0.6;
+        const rr = 2 + k * 0.45;
+        ctx.lineTo(z.x + Math.cos(a) * rr, z.y - r - 12 + Math.sin(a) * rr * 0.5);
+      }
+      ctx.stroke();
+    }
     if (z.elite) {
       const c = ELITES[z.elite].color;
       ctx.strokeStyle = c;
@@ -5333,12 +7020,106 @@ export class Game {
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
-    if (z.hp < z.maxHp && !isBoss(z) && this.crawlerAlpha(z) > 0.5) {
+    if (z.charm > 0) {
+      // Turned: the bar shows how long until its brain fries.
+      const w = Math.max(20, r * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(z.x - w / 2, z.y - r - 6, w, 3);
+      ctx.fillStyle = '#c77dff';
+      ctx.fillRect(z.x - w / 2, z.y - r - 6, w * Math.min(1, z.charm / 7), 3);
+    } else if (z.hp < z.maxHp && !isBoss(z) && this.crawlerAlpha(z) > 0.5 && !z.latch) {
       const w = r * 2;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(z.x - w / 2, z.y - r - 10, w, 4);
-      ctx.fillStyle = '#e0483e';
+      ctx.fillStyle = z.healing ? '#7aff5a' : '#e0483e';
       ctx.fillRect(z.x - w / 2, z.y - r - 10, w * Math.max(0, z.hp / z.maxHp), 4);
+    }
+  }
+
+  /** Patient Zero's moving parts: restraints (form 1), glowing cracks (form 2+), the eye (form 3). */
+  private drawZeroParts(z: Zombie, hit: boolean) {
+    const ctx = this.ctx;
+    const r = z.r;
+    const Z = z.zero!;
+    const flat = (c: string) => (hit ? '#ffffff' : c);
+    if (Z.phase === 1) {
+      // Containment harness: steel collar, straps across the body, snapped chains.
+      ctx.strokeStyle = flat('#5a6066');
+      ctx.lineWidth = r * 0.09;
+      ctx.beginPath();
+      ctx.arc(r * 0.5, 0, r * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = flat('#a8b0b8');
+      ctx.lineWidth = r * 0.03;
+      ctx.beginPath();
+      ctx.arc(r * 0.5, 0, r * 0.4, -1.2, -0.4);
+      ctx.stroke();
+      ctx.strokeStyle = flat('#3a3028');
+      ctx.lineWidth = r * 0.12;
+      for (const off of [-0.25, 0.15]) {
+        ctx.beginPath();
+        ctx.moveTo(r * off - r * 0.25, -r * 0.95);
+        ctx.quadraticCurveTo(r * off, 0, r * off - r * 0.25, r * 0.95);
+        ctx.stroke();
+      }
+      ctx.fillStyle = flat('#c8a020');
+      for (const off of [-0.25, 0.15]) ctx.fillRect(r * off - r * 0.08, -r * 0.08, r * 0.14, r * 0.16);
+      // Broken chain links swinging off the collar
+      ctx.strokeStyle = flat('#8a9298');
+      ctx.lineWidth = r * 0.035;
+      for (const side of [-1, 1]) {
+        for (let k = 0; k < 4; k++) {
+          const sw = Math.sin(this.clock * 4 + k + side) * 0.2;
+          ctx.beginPath();
+          ctx.ellipse(r * (0.3 - k * 0.2), side * r * (0.45 + k * 0.12 + sw * 0.2), r * 0.08, r * 0.05, k % 2 ? 0 : Math.PI / 2, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    } else {
+      // Cracks glowing hot pink through the skin.
+      ctx.strokeStyle = hit ? '#fff' : `rgba(255,${120 + Math.floor(60 * Math.sin(this.clock * 5))},230,0.85)`;
+      ctx.lineWidth = r * 0.035;
+      ctx.lineCap = 'round';
+      const cracks = [
+        [-0.2, -0.7, 0.1, -0.3, 0.3, -0.45],
+        [-0.7, 0.2, -0.35, 0.35, -0.1, 0.75],
+        [0.1, 0.2, 0.25, 0.45, 0.05, 0.7],
+        [-0.6, -0.5, -0.3, -0.35, -0.35, -0.1],
+      ];
+      for (const c of cracks) {
+        ctx.beginPath();
+        ctx.moveTo(c[0] * r, c[1] * r);
+        ctx.lineTo(c[2] * r, c[3] * r);
+        ctx.lineTo(c[4] * r, c[5] * r);
+        ctx.stroke();
+      }
+    }
+    if (Z.phase === 3) {
+      // A huge eye splits open across its chest and tracks you.
+      const open = Z.trans > 0 ? 1 - Z.trans / 1.5 : 1;
+      ctx.save();
+      ctx.translate(r * 0.05, 0);
+      ctx.fillStyle = '#2a0408';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 0.34, r * 0.24 * open + 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 0.3, r * 0.2 * open + 0.3, 0, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.fillStyle = flat('#f4e8e0');
+      ctx.fillRect(-r * 0.35, -r * 0.25, r * 0.7, r * 0.5);
+      const look = Z.laserW > 0 || Z.laserT > 0 ? 0 : Math.sin(this.clock * 1.7) * 0.4;
+      ctx.fillStyle = flat('#ff3ad0');
+      ctx.beginPath();
+      ctx.arc(r * 0.12, r * look * 0.2, r * 0.14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#1a0010';
+      ctx.beginPath();
+      ctx.ellipse(r * 0.15, r * look * 0.2, r * 0.04, r * 0.1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.restore();
     }
   }
 
@@ -5640,6 +7421,128 @@ export class Game {
     }
   }
 
+  /** Story mode objective progress for the HUD. */
+  private opHudLine() {
+    const g = this.op!.goal;
+    const S = this.opS;
+    const left = (n: number) => `${Math.max(0, Math.ceil(n - S.t))}s`;
+    switch (g.type) {
+      case 'survive':
+        return `SURVIVE  ·  ${left(g.time)} LEFT`;
+      case 'kill':
+        return `${(g.kind ?? 'zombie').toUpperCase()}S  ${Math.min(S.n, g.n)} / ${g.n}`;
+      case 'collect':
+        return `DATA DRIVES  ${S.n} / ${g.n}`;
+      case 'defend':
+        return `DEFEND THE GENERATOR  ·  ${left(g.time)} LEFT`;
+      case 'evac':
+        return S.zone ? `HOLD THE LANDING ZONE  ${S.zone.hold.toFixed(1)} / ${g.hold}s` : `CHOPPER INBOUND  ·  ${left(g.after)}`;
+      case 'boss':
+        return 'KILL PATIENT ZERO';
+    }
+  }
+
+  /** Radio subtitles, the DASH warning, power status and objective arrows. */
+  private drawLabHud(pad: number) {
+    const ctx = this.ctx;
+    // Off-screen arrows to objectives
+    const marks: { x: number; y: number; color: string }[] = [];
+    if (this.op) {
+      const S = this.opS;
+      if (S.drives.length) {
+        let best = S.drives[0];
+        for (const d of S.drives) if (Math.hypot(d.x - this.p.x, d.y - this.p.y) < Math.hypot(best.x - this.p.x, best.y - this.p.y)) best = d;
+        marks.push({ x: best.x, y: best.y, color: '#5dff7a' });
+      }
+      if (S.zone) marks.push({ x: S.zone.x, y: S.zone.y, color: '#5dff7a' });
+      if (S.gen) marks.push({ x: S.gen.x, y: S.gen.y, color: S.gen.hurt > 0 ? '#ff5a4a' : '#ffd23f' });
+    }
+    for (const m of marks) {
+      const s = this.toScreen(m.x, m.y);
+      const mg = 46;
+      if (s.x > mg && s.x < this.w - mg && s.y > mg && s.y < this.h - mg) continue;
+      const a = Math.atan2(s.y - this.h / 2, s.x - this.w / 2);
+      const ex = clamp(s.x, mg, this.w - mg);
+      const ey = clamp(s.y, mg + 40, this.h - mg);
+      const bob = Math.sin(this.clock * 6) * 4;
+      ctx.save();
+      ctx.translate(ex + Math.cos(a) * bob, ey + Math.sin(a) * bob);
+      ctx.rotate(a);
+      ctx.fillStyle = m.color;
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(16, 0);
+      ctx.lineTo(-8, -11);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-8, 11);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fill();
+      ctx.restore();
+    }
+    // Power status on maps with power cuts
+    if (this.map.powercut && this.power.out > 0) {
+      ctx.textAlign = 'right';
+      ctx.font = `12px ${FONT}`;
+      ctx.fillStyle = Math.sin(this.clock * 8) > 0 ? '#ff4a3a' : '#7a2a24';
+      ctx.fillText(`⚡ POWER OUT  ${Math.ceil(this.power.out)}s`, this.w - 62, pad + 50);
+    }
+    // Parasites on you: flashing DASH prompt
+    if (this.latchedCount() > 0 && this.state === 'playing') {
+      const a = 0.6 + 0.4 * Math.sin(this.clock * 14);
+      ctx.globalAlpha = a;
+      ctx.textAlign = 'center';
+      ctx.font = `${Math.round(Math.min(34, this.w / 16))}px ${FONT}`;
+      ctx.fillStyle = '#000';
+      ctx.fillText('DASH TO SHAKE IT OFF!', this.w / 2 + 2, this.h * 0.72 + 2);
+      ctx.fillStyle = '#ff5a4a';
+      ctx.fillText('DASH TO SHAKE IT OFF!', this.w / 2, this.h * 0.72);
+      ctx.globalAlpha = 1;
+    }
+    // Radio subtitles
+    const sb = this.subtitle;
+    if (sb.t > 0 && this.state === 'playing') {
+      ctx.globalAlpha = Math.min(1, sb.t * 2, (5.5 - sb.t) * 5);
+      ctx.font = '600 14px system-ui, sans-serif';
+      // Top of the screen, between the health and weapon panels, clear of the fight.
+      const maxW = clamp(this.w - 440, 300, 560);
+      const words = sb.text.split(' ');
+      const lines: string[] = [];
+      let cur = '';
+      for (const wd of words) {
+        const t = cur ? `${cur} ${wd}` : wd;
+        if (ctx.measureText(t).width > maxW - 90 && cur) {
+          lines.push(cur);
+          cur = wd;
+        } else cur = t;
+      }
+      if (cur) lines.push(cur);
+      const bh = 26 + lines.length * 18;
+      const bx = this.w / 2 - maxW / 2;
+      const by = pad + 50 + (this.zombies.some(isBoss) ? 36 : 0);
+      ctx.fillStyle = 'rgba(8,12,10,0.84)';
+      ctx.fillRect(bx, by, maxW, bh);
+      ctx.fillStyle = sb.who === OKAFOR ? '#5ac8ff' : '#ffd23f';
+      ctx.fillRect(bx, by, 4, bh);
+      // Static-y portrait square
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(bx + 12, by + 10, 50, bh - 20);
+      ctx.font = '22px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(sb.who === OKAFOR ? '🔬' : '🎖️', bx + 37, by + bh / 2 + 1);
+      ctx.textAlign = 'left';
+      ctx.font = `11px ${FONT}`;
+      ctx.fillStyle = sb.who === OKAFOR ? '#5ac8ff' : '#ffd23f';
+      ctx.fillText(`📻 ${sb.who}`, bx + 74, by + 14);
+      ctx.font = '600 14px system-ui, sans-serif';
+      ctx.fillStyle = '#eef2e6';
+      lines.forEach((l, i) => ctx.fillText(l, bx + 74, by + 33 + i * 18));
+      ctx.globalAlpha = 1;
+    }
+  }
+
   private drawHud() {
     const ctx = this.ctx;
     const pad = 14;
@@ -5687,11 +7590,19 @@ export class Game {
     // Wave
     ctx.textAlign = 'center';
     ctx.fillStyle = '#fff';
-    ctx.font = `22px ${FONT}`;
-    ctx.fillText(`WAVE ${this.wave}`, this.w / 2, pad + 10);
-    ctx.font = '600 12px system-ui, sans-serif';
-    ctx.fillStyle = '#c9d1b8';
-    ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left${this.modeLabel ? `  ·  ${this.modeLabel}` : ''}`, this.w / 2, pad + 31);
+    if (this.op) {
+      ctx.font = `20px ${FONT}`;
+      ctx.fillText(this.op.name.toUpperCase(), this.w / 2, pad + 10);
+      ctx.font = '700 12px system-ui, sans-serif';
+      ctx.fillStyle = '#ffd23f';
+      ctx.fillText(this.opHudLine(), this.w / 2, pad + 31);
+    } else {
+      ctx.font = `22px ${FONT}`;
+      ctx.fillText(`WAVE ${this.wave}`, this.w / 2, pad + 10);
+      ctx.font = '600 12px system-ui, sans-serif';
+      ctx.fillStyle = '#c9d1b8';
+      ctx.fillText(`${this.toSpawn + this.zombies.length} zombies left${this.modeLabel ? `  ·  ${this.modeLabel}` : ''}`, this.w / 2, pad + 31);
+    }
 
     let rowY = pad + 50;
     if (this.challenge) {
@@ -5710,9 +7621,19 @@ export class Game {
       const shielded = boss.def.kind === 'brood' && this.countKind('egg') > 0;
       ctx.fillStyle = BOSS_COLORS[boss.def.kind] ?? '#b05bd6';
       ctx.fillRect(bx + 2, rowY - 4, (bw - 4) * Math.max(0, boss.hp / boss.maxHp), 8);
+      if (boss.def.kind === 'zero') {
+        // Phase ticks at 2/3 and 1/3, and a white flicker while it transforms.
+        ctx.fillStyle = '#fff';
+        for (const f of [2 / 3, 1 / 3]) ctx.fillRect(bx + 2 + (bw - 4) * f - 1, rowY - 7, 2, 14);
+        if (boss.zero && boss.zero.trans > 0) {
+          ctx.fillStyle = `rgba(255,255,255,${0.3 + 0.3 * Math.sin(this.clock * 30)})`;
+          ctx.fillRect(bx + 2, rowY - 4, bw - 4, 8);
+        }
+      }
       ctx.fillStyle = '#fff';
       ctx.font = `11px ${FONT}`;
-      ctx.fillText(`${BOSS_NAMES[boss.def.kind]}${boss.mini ? ' (MINI)' : ''}${shielded ? '  (SHIELDED BY EGGS)' : ''}`, this.w / 2, rowY + 15);
+      const zp = boss.zero ? `  ·  FORM ${boss.zero.phase}/3${boss.zero.trans > 0 ? '  (MUTATING!)' : ''}` : '';
+      ctx.fillText(`${BOSS_NAMES[boss.def.kind]}${boss.mini ? ' (MINI)' : ''}${shielded ? '  (SHIELDED BY EGGS)' : ''}${zp}`, this.w / 2, rowY + 15);
       rowY += 34;
     }
     // Active power-ups
@@ -5773,6 +7694,7 @@ export class Game {
     }
 
     if (this.allies.length) this.drawSquadHud(pad);
+    this.drawLabHud(pad);
 
     // Buttons
     for (const b of this.input.buttons) {

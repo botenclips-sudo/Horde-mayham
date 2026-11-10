@@ -4,6 +4,7 @@
 import { WEAPONS, ZombieKind } from './data';
 import { MAPS } from './maps';
 import { BADGES, BadgeDef } from './achievements';
+import { OPS } from './campaign';
 import { emptyBonus, GearBonus, gearDef, GearItem, gearValue, RARITIES, rollGear, SCRAP_VALUE } from './gear';
 
 export const GEAR_MAX = 24;
@@ -40,6 +41,7 @@ export interface SaveData {
   gear: GearItem[];
   equipped: { armor: string; trinket: string }; // gear uids ('' = empty)
   player: string; // name on the leaderboards
+  campaign: Record<string, number>; // story op id -> best stars (1..3)
 }
 
 export interface RunRecord {
@@ -77,7 +79,7 @@ export const trainingCost = (t: TrainingDef, lv: number) => Math.round(t.base * 
 
 // ------------------------------------------------------------------ guns
 
-export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300, acid: 900, swarm: 1350, singularity: 1500 };
+export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300, acid: 900, swarm: 1350, singularity: 1500, railgun: 1450, plasma: 1100, mindray: 1250 };
 export const MASTERY_MAX = 10;
 export const masteryCost = (lv: number) => Math.round(40 * Math.pow(1.45, lv));
 
@@ -95,6 +97,7 @@ export interface ModeDef {
 
 export const MODES: ModeDef[] = [
   { id: 'endless', name: 'Endless', icon: '♾️', desc: 'Survive as long as you can. A boss every 10 waves.', unlock: 1, brains: 1 },
+  { id: 'campaign', name: 'Story', icon: '🎖️', desc: 'Operation Patient Zero: 8 hand-made missions with their own gear and goals.', unlock: 1, brains: 1 },
   { id: 'daily', name: 'Daily Challenge', icon: '📅', desc: 'Same map and twists for everyone today. First run of the day pays +50 🧠.', unlock: 1, brains: 1 },
   { id: 'bossrush', name: 'Boss Rush', icon: '💀', desc: 'Every wave is a boss. Brains x1.5.', unlock: 3, brains: 1.5 },
   { id: 'hardcore', name: 'Hardcore', icon: '☠️', desc: 'No medkits, no health drops, no Second Wind. Brains x2.', unlock: 5, brains: 2 },
@@ -172,6 +175,9 @@ export interface RunReport {
   trainKills: number;
   ventKills: number;
   barrelKills: number;
+  laserKills: number; // Hive Lab laser sweeps
+  turned: number; // zombies turned with the Mind Ray
+  shaken: number; // parasites shaken off with a dash
   hitsTaken: number;
   revives: number;
   bestBurst: number; // most zombies killed in one burst
@@ -231,6 +237,14 @@ export const MISSIONS: MissionDef[] = [
   { id: 'webbers', text: 'Kill 25 webbers', goal: 25, reward: 45, measure: kindKills('webber') },
   { id: 'medics', text: 'Kill 12 medics', goal: 12, reward: 60, measure: kindKills('medic') },
   { id: 'sludgers', text: 'Kill 20 sludgers', goal: 20, reward: 55, measure: kindKills('sludger') },
+  { id: 'parasites', text: 'Kill 60 parasites', goal: 60, reward: 45, measure: kindKills('parasite') },
+  { id: 'mutants', text: 'Kill 15 mutants', goal: 15, reward: 60, measure: kindKills('mutant') },
+  { id: 'psykers', text: 'Kill 10 psykers', goal: 10, reward: 65, measure: kindKills('psyker') },
+  { id: 'blobs', text: 'Pop 50 Mitosis blobs', goal: 50, reward: 50, measure: kindKills('blob') },
+  { id: 'lasers', text: 'Kill 25 zombies with lab lasers', goal: 25, reward: 55, measure: (r) => r.laserKills },
+  { id: 'railgun', text: 'Kill 200 zombies holding the Railgun', goal: 200, reward: 60, measure: gunKills('railgun') },
+  { id: 'plasma', text: 'Kill 250 zombies holding the Plasma Cutter', goal: 250, reward: 60, measure: gunKills('plasma') },
+  { id: 'mindray', text: 'Turn 30 zombies with the Mind Ray', goal: 30, reward: 60, measure: (r) => r.turned },
 ];
 
 export const today = () => {
@@ -283,6 +297,7 @@ function fresh(): SaveData {
     gear: [],
     equipped: { armor: '', trinket: '' },
     player: '',
+    campaign: {},
   };
 }
 
@@ -317,6 +332,11 @@ function sanitize(raw: unknown): SaveData {
       .map((x) => ({ wave: num(x.wave, 0), kills: num(x.kills, 0), mode: String(x.mode ?? 'endless'), map: String(x.map ?? 'lot'), day: String(x.day ?? '') }))
       .slice(0, 10);
   if (typeof r.player === 'string') d.player = r.player.slice(0, 16);
+  if (r.campaign && typeof r.campaign === 'object')
+    for (const op of OPS) {
+      const s = num((r.campaign as Record<string, unknown>)[op.id], 0);
+      if (s > 0) d.campaign[op.id] = Math.min(3, Math.floor(s));
+    }
   if (Array.isArray(r.gear))
     d.gear = r.gear
       .filter((g) => g && typeof g.uid === 'string' && gearDef(g.id) && RARITIES.includes(g.rarity))
@@ -517,7 +537,7 @@ class Meta {
       res.brainsGained += 40;
       res.rewards.push(`Challenge beaten: +40 🧠`);
     }
-    if (r.wave > 0) {
+    if (r.wave > 0 && mode !== 'campaign') {
       d.records.push({ wave: r.wave, kills: r.kills, mode, map, day: today() });
       d.records.sort((a, b) => b.wave - a.wave || b.kills - a.kills);
       d.records = d.records.slice(0, 10);
@@ -527,7 +547,7 @@ class Meta {
     d.totals.bosses += r.bosses;
     // The headline "best wave" is for normal runs; every mode also keeps its own best.
     if ((mode === 'endless' || mode === 'hardcore') && r.wave > d.best) d.best = r.wave;
-    if (r.wave > (d.bests[mode] ?? 0)) {
+    if (mode !== 'campaign' && r.wave > (d.bests[mode] ?? 0)) {
       d.bests[mode] = r.wave;
       res.newBest = true;
     }
@@ -571,6 +591,29 @@ class Meta {
     res.badges = this.unlockBadges(r, mode, challengeBeaten);
     this.save();
     return res;
+  }
+
+  /** Story mode: an op is open once the one before it is cleared. */
+  opUnlocked(i: number) {
+    return i === 0 || (this.data.campaign[OPS[i - 1]?.id] ?? 0) > 0;
+  }
+
+  /** Records a cleared op. Pays the op's reward on the first clear and 15 brains per new star after that. */
+  clearOp(id: string, stars: number) {
+    const op = OPS.find((o) => o.id === id);
+    if (!op) return { brains: 0, first: false, newStars: 0 };
+    const had = this.data.campaign[id] ?? 0;
+    const first = had === 0;
+    const newStars = Math.max(0, stars - had);
+    const brains = (first ? op.reward : 0) + (first ? Math.max(0, newStars - 1) : newStars) * 15;
+    if (stars > had) this.data.campaign[id] = stars;
+    this.data.brains += brains;
+    this.save();
+    return { brains, first, newStars };
+  }
+
+  campaignStars() {
+    return Object.values(this.data.campaign).reduce((a, b) => a + b, 0);
   }
 
   exportCode() {

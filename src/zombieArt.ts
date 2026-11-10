@@ -24,7 +24,7 @@ export interface Sprite {
 }
 
 /** Color states a zombie can flash into. */
-export const Tint = { None: 0, Hit: 1, Icy: 2, Burn: 3, Windup: 4, Zap: 5 } as const;
+export const Tint = { None: 0, Hit: 1, Icy: 2, Burn: 3, Windup: 4, Zap: 5, Charm: 6 } as const;
 export type Tint = (typeof Tint)[keyof typeof Tint];
 
 const TINTS: Record<number, [string, number]> = {
@@ -33,6 +33,7 @@ const TINTS: Record<number, [string, number]> = {
   [Tint.Burn]: ['#1e0e04', 0.55],
   [Tint.Windup]: ['#ff3030', 0.6],
   [Tint.Zap]: ['#d8fbff', 0.65],
+  [Tint.Charm]: ['#b060ff', 0.45],
 };
 
 /** How many different looks each regular zombie kind comes in. */
@@ -1447,6 +1448,411 @@ const BODY: Record<string, (ctx: Ctx, L: Look) => void> = {
       ctx.fill();
     }
   },
+  parasite: (ctx, L) => {
+    const { r, skin } = L;
+    // A fat, pale tick: veined abdomen behind, armored plates, a round mouth full of hooks.
+    ctx.save();
+    blobPath(ctx, -0.38, 0, 0.66, 0.6, r, 0.07, 20);
+    dome(ctx, -0.38, 0, 0.66, mix(skin, '#e8c8b8', 0.3), 0.35, 0.5);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(150,30,60,0.55)';
+    ctx.lineWidth = 0.04;
+    for (let i = 0; i < 7; i++) {
+      let x = -0.95 + r() * 0.2;
+      let y = (r() - 0.5) * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      for (let k = 0; k < 4; k++) {
+        x += 0.14 + r() * 0.05;
+        y += (r() - 0.5) * 0.18;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // Eggs showing through the skin
+    for (let i = 0; i < 5; i++) {
+      ctx.fillStyle = 'rgba(255,240,200,0.35)';
+      ctx.beginPath();
+      ctx.arc(-0.6 + r() * 0.4, (r() - 0.5) * 0.6, 0.08 + r() * 0.05, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    // Segmented carapace
+    for (let i = 0; i < 3; i++) {
+      const x = 0.05 - i * 0.2;
+      shell(ctx, r, mix(L.dark, '#2a1a14', 0.3), x, 0, 0.17, 0.42 - i * 0.04);
+      ctx.strokeStyle = 'rgba(255,220,200,0.3)';
+      ctx.lineWidth = 0.025;
+      ctx.beginPath();
+      ctx.arc(x, 0, 0.32 - i * 0.04, -1.1, -0.4);
+      ctx.stroke();
+    }
+    // Mouth disk with a ring of hooked teeth
+    ctx.fillStyle = mix(skin, '#8a3a3a', 0.4);
+    ctx.beginPath();
+    ctx.arc(0.5, 0, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#2a0408';
+    ctx.beginPath();
+    ctx.arc(0.53, 0, 0.18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#f0e4c8';
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(0.53 + Math.cos(a) * 0.19, Math.sin(a) * 0.19);
+      ctx.lineTo(0.53 + Math.cos(a + 0.25) * 0.09, Math.sin(a + 0.25) * 0.09);
+      ctx.lineTo(0.53 + Math.cos(a + 0.4) * 0.19, Math.sin(a + 0.4) * 0.19);
+      ctx.fill();
+    }
+    // Two hooked feelers
+    for (const side of [-1, 1]) {
+      ctx.strokeStyle = '#3a2420';
+      ctx.lineWidth = 0.07;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0.6, side * 0.18);
+      ctx.quadraticCurveTo(0.95, side * 0.45, 1.05, side * 0.18);
+      ctx.stroke();
+    }
+  },
+  mutant: (ctx, L) => {
+    const { r, v } = L;
+    // Failed regeneration test subject: one side is a swollen mass of raw muscle.
+    humanoid(ctx, L, {
+      torso: [0.56, 0.96],
+      clothes: mix(['#9ab8b0', '#a8b8c0', '#b0b8a0'][v], '#3a4a4a', 0.15),
+      holes: 2,
+      ribs: false,
+      head: { hairStyle: 'buzz', hair: '#3a2a20', rad: 0.33, x: 0.2, jaw: 'teeth', skull: v === 1 },
+    });
+    // The overgrown side: striated muscle bulging through the gown.
+    ctx.save();
+    blobPath(ctx, -0.12, 0.5, 0.52, 0.5, r, 0.12, 22);
+    dome(ctx, -0.12, 0.5, 0.55, '#b0343a', 0.3, 0.5);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(255,170,160,0.45)';
+    ctx.lineWidth = 0.03;
+    for (let i = 0; i < 12; i++) {
+      const y = 0.05 + i * 0.08;
+      ctx.beginPath();
+      ctx.moveTo(-0.65, y + (r() - 0.5) * 0.05);
+      ctx.bezierCurveTo(-0.3, y + 0.08, 0.05, y - 0.06, 0.4, y + (r() - 0.5) * 0.1);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(80,0,10,0.5)';
+    ctx.lineWidth = 0.045;
+    for (let i = 0; i < 5; i++) {
+      const y = 0.15 + i * 0.16;
+      ctx.beginPath();
+      ctx.moveTo(-0.6, y);
+      ctx.quadraticCurveTo(-0.15, y + 0.1, 0.35, y - 0.02);
+      ctx.stroke();
+    }
+    ctx.restore();
+    // Bone spurs breaking out of the muscle
+    for (let i = 0; i < 4; i++) {
+      const x = -0.5 + i * 0.22;
+      const y = 0.72 + r() * 0.15;
+      const g = ctx.createLinearGradient(x, y - 0.05, x - 0.08, y + 0.3);
+      g.addColorStop(0, '#6a2a2a');
+      g.addColorStop(1, '#f4ead0');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(x - 0.06, y - 0.05);
+      ctx.lineTo(x - 0.1, y + 0.32 + r() * 0.08);
+      ctx.lineTo(x + 0.06, y - 0.02);
+      ctx.fill();
+    }
+    // Glowing green serum in the veins
+    ctx.strokeStyle = 'rgba(122,255,90,0.75)';
+    ctx.lineWidth = 0.028;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 6; i++) {
+      let x = -0.5 + r() * 0.5;
+      let y = -0.6 + r() * 1.3;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      for (let k = 0; k < 4; k++) {
+        x += (r() - 0.4) * 0.16;
+        y += (r() - 0.5) * 0.18;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    glowDot(ctx, -0.25, 0.45, 0.25, '#7aff5a', 0.35);
+    // IV line still taped to the other shoulder, the bag torn off
+    ctx.strokeStyle = 'rgba(220,240,235,0.85)';
+    ctx.lineWidth = 0.03;
+    ctx.beginPath();
+    ctx.moveTo(0.0, -0.62);
+    ctx.bezierCurveTo(-0.4, -0.9, -0.7, -0.5, -1.0, -0.75);
+    ctx.stroke();
+    ctx.fillStyle = '#e8e8e0';
+    ctx.fillRect(-0.06, -0.68, 0.14, 0.1);
+    ctx.fillStyle = 'rgba(122,255,90,0.7)';
+    ctx.beginPath();
+    ctx.arc(-1.0, -0.75, 0.05, 0, Math.PI * 2);
+    ctx.fill();
+    // Patient tag
+    ctx.fillStyle = '#e8e4d0';
+    ctx.fillRect(-0.45, -0.3, 0.22, 0.13);
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(-0.42, -0.27, 0.16, 0.025);
+    ctx.fillRect(-0.42, -0.22, 0.1, 0.025);
+  },
+  blob: (ctx, L) => {
+    const { r, v, skin } = L;
+    // Mitosis: a quivering bag of jelly. You can see what it ate.
+    ctx.save();
+    blobPath(ctx, 0, 0, 1.0, 0.94, r, 0.1, 26);
+    const g = ctx.createRadialGradient(-0.3, -0.35, 0.05, 0, 0, 1.05);
+    g.addColorStop(0, mix(skin, '#ffffff', 0.55, 0.92));
+    g.addColorStop(0.45, mix(skin, skin, 0, 0.82));
+    g.addColorStop(1, mix(L.dark, L.dark, 0, 0.92));
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.clip();
+    // Half-digested remains floating inside
+    ctx.globalAlpha = 0.55;
+    if (v !== 2) {
+      ctx.fillStyle = '#e8dcc0';
+      blobPath(ctx, -0.25, 0.1, 0.3, 0.26, r, 0.08, 14);
+      ctx.fill();
+      ctx.fillStyle = '#2a3a34';
+      ctx.beginPath();
+      ctx.ellipse(-0.12, 0.02, 0.07, 0.06, 0, 0, Math.PI * 2);
+      ctx.ellipse(-0.12, 0.2, 0.07, 0.06, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = '#e8dcc0';
+    ctx.lineWidth = 0.05;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.arc(-0.45 - i * 0.08, -0.35 + v * 0.05, 0.22 + i * 0.03, 0.4, 1.9);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    // Nuclei, about to divide
+    for (let i = 0; i < 3; i++) {
+      const x = 0.15 + (r() - 0.5) * 0.9;
+      const y = (r() - 0.5) * 1.0;
+      const s = 0.13 + r() * 0.08;
+      const ng = ctx.createRadialGradient(x - s * 0.3, y - s * 0.3, 0, x, y, s);
+      ng.addColorStop(0, '#f0ffa0');
+      ng.addColorStop(0.5, '#9ad040');
+      ng.addColorStop(1, 'rgba(40,90,40,0.3)');
+      ctx.fillStyle = ng;
+      blobPath(ctx, x, y, s, s * 0.85, r, 0.2, 12);
+      ctx.fill();
+    }
+    // Bubbles
+    for (let i = 0; i < 9; i++) {
+      const x = (r() - 0.5) * 1.5;
+      const y = (r() - 0.5) * 1.4;
+      const s = 0.025 + r() * 0.05;
+      ctx.strokeStyle = 'rgba(230,255,245,0.55)';
+      ctx.lineWidth = 0.015;
+      ctx.beginPath();
+      ctx.arc(x, y, s, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+    // Membrane rim and a wet highlight
+    ctx.strokeStyle = mix(L.dark, '#ffffff', 0.15, 0.8);
+    ctx.lineWidth = 0.05;
+    blobPath(ctx, 0, 0, 1.0, 0.94, rng(hash('blob') + v * 977 + 13), 0.1, 26);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath();
+    ctx.ellipse(-0.35, -0.45, 0.28, 0.1, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(0.4, 0.5, 0.12, 0.05, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+    // A cluster of yellow eyes on the front
+    for (const [x, y, s] of [
+      [0.72, -0.18, 0.11],
+      [0.74, 0.16, 0.1],
+      [0.6, 0, 0.07],
+    ]) {
+      ctx.fillStyle = '#1a2a20';
+      ctx.beginPath();
+      ctx.arc(x, y, s * 1.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f0ff8a';
+      ctx.beginPath();
+      ctx.arc(x, y, s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#101810';
+      ctx.beginPath();
+      ctx.ellipse(x + s * 0.2, y, s * 0.25, s * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  },
+  psyker: (ctx, L) => {
+    const { r, v, skin } = L;
+    // Frail test subject in a hospital gown, skull sawn open, brain swollen and wired up.
+    humanoid(ctx, L, {
+      torso: [0.42, 0.78],
+      clothes: mix('#d8dcd4', '#6a7a7a', 0.15 + v * 0.05),
+      holes: 1,
+      ribs: false,
+      head: { rad: 0.01, x: -5, hair: null, hairStyle: 'none', jaw: 'none', ears: false, brow: false },
+    });
+    // Little face under the brain
+    ctx.fillStyle = skin;
+    ctx.beginPath();
+    ctx.ellipse(0.42, 0, 0.18, 0.24, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1a0a1a';
+    ctx.beginPath();
+    ctx.ellipse(0.52, -0.09, 0.05, 0.045, 0, 0, Math.PI * 2);
+    ctx.ellipse(0.52, 0.09, 0.05, 0.045, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // The brain: oversized, glistening, folded
+    const bx = 0.05;
+    ctx.save();
+    blobPath(ctx, bx, 0, 0.5, 0.48, r, 0.06, 22);
+    dome(ctx, bx, 0, 0.52, '#d88aa8', 0.35, 0.45);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(120,30,70,0.6)';
+    ctx.lineWidth = 0.035;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 16; i++) {
+      let x = bx + (r() - 0.5) * 0.9;
+      let y = (r() - 0.5) * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      for (let k = 0; k < 5; k++) {
+        x += (r() - 0.5) * 0.16;
+        y += (r() - 0.5) * 0.16;
+        ctx.quadraticCurveTo(x + (r() - 0.5) * 0.1, y + (r() - 0.5) * 0.1, x, y);
+      }
+      ctx.stroke();
+    }
+    // Hemisphere split
+    ctx.strokeStyle = 'rgba(90,20,50,0.8)';
+    ctx.lineWidth = 0.05;
+    ctx.beginPath();
+    ctx.moveTo(bx - 0.5, 0);
+    ctx.quadraticCurveTo(bx, 0.03, bx + 0.5, 0);
+    ctx.stroke();
+    ctx.restore();
+    // Rim of sawn skull
+    ctx.strokeStyle = '#e8dcc0';
+    ctx.lineWidth = 0.05;
+    ctx.beginPath();
+    ctx.ellipse(bx + 0.05, 0, 0.52, 0.5, 0, -1.1, 1.1);
+    ctx.stroke();
+    // Electrodes with wires trailing off the back
+    for (let i = 0; i < 5; i++) {
+      const a = Math.PI * 0.55 + i * 0.22 + (r() - 0.5) * 0.1;
+      const x = bx + Math.cos(a) * 0.3;
+      const y = Math.sin(a) * 0.3 * (i % 2 ? 1 : -1);
+      ctx.strokeStyle = ['#e04040', '#4080e0', '#e0c040', '#40c060', '#c040c0'][i];
+      ctx.lineWidth = 0.025;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.bezierCurveTo(x - 0.4, y * 1.6, -0.8, y * 2.2, -1.0, y * 1.5 + (r() - 0.5) * 0.3);
+      ctx.stroke();
+      ctx.fillStyle = '#c8ccd0';
+      ctx.beginPath();
+      ctx.arc(x, y, 0.045, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    glowDot(ctx, bx + 0.1, 0, 0.35, '#e08aff', 0.35);
+  },
+  zero: (ctx, L) => {
+    const { r, skin } = L;
+    // Patient Zero: a fused, swollen mass of flesh grown out of a hospital patient.
+    ctx.save();
+    blobPath(ctx, -0.08, 0, 1.0, 0.98, r, 0.12, 34);
+    dome(ctx, -0.08, 0, 1.02, skin, 0.3, 0.6);
+    ctx.clip();
+    mottle(ctx, r, 0, 0, 0.95, 0.95, skin, 34);
+    // Raw muscle bands wrapping the body
+    for (let i = 0; i < 4; i++) {
+      const y = -0.75 + i * 0.5;
+      ctx.fillStyle = 'rgba(160,30,40,0.55)';
+      blobPath(ctx, -0.2 + (r() - 0.5) * 0.3, y, 0.55, 0.16, r, 0.25, 16, (r() - 0.5) * 0.6);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,170,170,0.35)';
+      ctx.lineWidth = 0.02;
+      for (let k = 0; k < 5; k++) {
+        ctx.beginPath();
+        ctx.moveTo(-0.7, y + (k - 2) * 0.04);
+        ctx.lineTo(0.3, y + (k - 2) * 0.05 + (r() - 0.5) * 0.04);
+        ctx.stroke();
+      }
+    }
+    // Shreds of the hospital gown still stuck on
+    ctx.fillStyle = 'rgba(170,200,195,0.75)';
+    blobPath(ctx, 0.05, -0.55, 0.32, 0.2, r, 0.4, 12, 0.4);
+    ctx.fill();
+    blobPath(ctx, -0.6, 0.45, 0.25, 0.18, r, 0.4, 12, -0.3);
+    ctx.fill();
+    ctx.restore();
+    // Open rib cage on the back, something pulsing inside
+    ribs(ctx, r, -0.5, 0, 0.38, 0.36);
+    glowDot(ctx, -0.5, 0, 0.3, '#ff5adc', 0.6);
+    // Glowing pustules
+    for (let i = 0; i < 10; i++) {
+      const a = r() * Math.PI * 2;
+      const d = 0.35 + r() * 0.55;
+      const x = Math.cos(a) * d - 0.08;
+      const y = Math.sin(a) * d * 0.95;
+      if (x < -0.3 && Math.abs(y) < 0.4) continue;
+      const s = 0.06 + r() * 0.07;
+      const pg = ctx.createRadialGradient(x - s * 0.3, y - s * 0.3, 0, x, y, s);
+      pg.addColorStop(0, '#fff0fa');
+      pg.addColorStop(0.4, '#ff8ae0');
+      pg.addColorStop(1, '#7a1a50');
+      ctx.fillStyle = pg;
+      ctx.beginPath();
+      ctx.arc(x, y, s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    wound(ctx, r, 0.25, 0.55, 0.12);
+    wound(ctx, r, -0.2, -0.75, 0.1);
+    stitches(ctx, 0.1, -0.35, 0.4, 0.1, 7);
+    // Bone ridge down the spine
+    for (let i = 0; i < 6; i++) {
+      const x = -0.95 + i * 0.12;
+      const g = ctx.createLinearGradient(x, 0, x - 0.2, 0);
+      g.addColorStop(0, '#6a2a3a');
+      g.addColorStop(1, '#f4ead0');
+      ctx.fillStyle = g;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(x + 0.05, side * 0.05);
+        ctx.lineTo(x - 0.18, side * (0.22 + i * 0.02));
+        ctx.lineTo(x - 0.03, side * 0.03);
+        ctx.fill();
+      }
+    }
+    // The head: still human, stretched, with a jaw split open sideways
+    head(ctx, r, { x: 0.5, rad: 0.33, skin: mix(skin, '#e8c8b8', 0.3), hair: '#2a1a14', hairStyle: 'patchy', jaw: 'none' });
+    ctx.fillStyle = '#2a0408';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(0.7, side * 0.06);
+      ctx.quadraticCurveTo(1.05, side * 0.32, 0.98, side * 0.06);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#f0e4c8';
+    for (let i = 0; i < 8; i++) {
+      const t = i / 7;
+      const side = i % 2 ? 1 : -1;
+      ctx.beginPath();
+      ctx.moveTo(0.74 + t * 0.24, side * (0.08 + t * 0.18));
+      ctx.lineTo(0.78 + t * 0.24, side * (0.02 + t * 0.12));
+      ctx.lineTo(0.82 + t * 0.24, side * (0.08 + t * 0.18));
+      ctx.fill();
+    }
+  },
   sludge: (ctx, L) => {
     const { r, skin } = L;
     // The Sludge King: a hulking mound of toxic waste in a crown of pipes.
@@ -1531,10 +1937,14 @@ export function armStyle(kind: string): ArmStyle {
     case 'dog':
     case 'brood':
     case 'egg':
+    case 'parasite':
+    case 'blob':
       return 'none';
     case 'tank':
     case 'boss':
     case 'juggernaut':
+    case 'mutant':
+    case 'zero':
       return 'big';
     case 'reaper':
     case 'necro':
@@ -1553,12 +1963,12 @@ export function armStyle(kind: string): ArmStyle {
 
 /** Whether a kind shuffles on two visible feet. */
 export function hasFeet(kind: string) {
-  return !['bloater', 'dog', 'crawler', 'wraith', 'reaper', 'brood', 'sludge', 'egg', 'webber'].includes(kind);
+  return !['bloater', 'dog', 'crawler', 'wraith', 'reaper', 'brood', 'sludge', 'egg', 'webber', 'parasite', 'blob', 'psyker', 'zero'].includes(kind);
 }
 
 function paintArm(ctx: Ctx, def: ZombieDef, style: ArmStyle, r: Rng) {
   const skin = def.body;
-  const sleeve = style === 'bone' ? (def.kind === 'necro' ? '#24243a' : '#1c1c28') : def.kind === 'medic' ? '#e8e8de' : def.kind === 'soldier' ? '#4a5638' : def.kind === 'shield' ? '#2a3036' : style === 'human' ? mix(CLOTHES[hash(def.kind) % CLOTHES.length], def.dark, 0.35) : null;
+  const sleeve = style === 'bone' ? (def.kind === 'necro' ? '#24243a' : '#1c1c28') : def.kind === 'medic' ? '#e8e8de' : def.kind === 'psyker' ? '#d0d4cc' : def.kind === 'soldier' ? '#4a5638' : def.kind === 'shield' ? '#2a3036' : style === 'human' ? mix(CLOTHES[hash(def.kind) % CLOTHES.length], def.dark, 0.35) : null;
   const thick = style === 'big' ? 0.22 : 0.15;
   // Sleeve / upper arm
   if (sleeve) {
@@ -1791,6 +2201,9 @@ const BOUNDS: Record<string, [number, number, number, number]> = {
   boss: [-1.55, -1.55, 3.1, 3.1],
   bloater: [-1.15, -1.15, 2.3, 2.3],
   sludge: [-1.2, -1.2, 2.4, 2.4],
+  parasite: [-1.15, -0.85, 2.35, 1.7],
+  blob: [-1.15, -1.1, 2.3, 2.2],
+  zero: [-1.3, -1.25, 2.6, 2.5],
 };
 
 const kindKey = (def: ZombieDef) => (BODY[def.kind] ? def.kind : `x-${def.kind}-${def.body}`);
@@ -1988,6 +2401,16 @@ export function eyeSpot(kind: string): [number, number] {
       return [0.54, 0.12];
     case 'sludge':
       return [0.69, 0.13];
+    case 'parasite':
+      return [0.3, 0.3];
+    case 'blob':
+      return [0.73, 0.17];
+    case 'psyker':
+      return [0.52, 0.09];
+    case 'mutant':
+      return [0.48, 0.13];
+    case 'zero':
+      return [0.62, 0.1];
     default:
       return [0.56, 0.17];
   }
