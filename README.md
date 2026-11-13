@@ -24,7 +24,10 @@ npm install
 npm run dev          # local server, also reachable from your phone on the same Wi-Fi
 npm run build        # production build in dist/ (installable PWA)
 npm run build:single # whole game in one HTML file in dist-single/
+npm test             # type-check + headless soak (every map, boss waves) + two-tab co-op sync
 ```
+
+`npm run test:soak` takes `SOAK_MAPS=lot,lab` and `SOAK_WAVES=1,9` to run a subset. The same tests run on every push and pull request (`.github/workflows/test.yml`).
 
 Pushes to `main` deploy to GitHub Pages through `.github/workflows/deploy.yml` (set Settings → Pages → Source to "GitHub Actions" once).
 

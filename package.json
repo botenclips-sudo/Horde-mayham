@@ -9,9 +9,13 @@
     "build": "tsc --noEmit && vite build",
     "build:single": "tsc --noEmit && vite build --mode single",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "test:soak": "node tests/soak.mjs",
+    "test:coop": "node tests/coop.mjs",
+    "test": "npm run typecheck && npm run test:soak && npm run test:coop"
   },
   "devDependencies": {
+    "playwright": "1.63.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.4",
     "vite-plugin-singlefile": "^2.3.3"

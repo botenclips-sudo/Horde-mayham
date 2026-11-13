@@ -1,0 +1,30 @@
+name: Tests
+
+# Type-check, then play the game headless: every map through boss waves, plus a two-tab co-op session.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run typecheck
+      - run: npm run build
+      # A shorter soak than the full local run: waves 1-2, 9-10 (first boss) and 24-25 (mini-boss) on every map.
+      - run: npm run test:soak
+        env:
+          SOAK_WAVES: 1,9,24
+      - run: npm run test:coop
