@@ -20,3 +20,8 @@ create policy "anyone reads scores" on public.scores for select to anon, authent
 
 drop policy if exists "anyone adds a score" on public.scores;
 create policy "anyone adds a score" on public.scores for insert to anon, authenticated with check (true);
+
+-- The game talks to this table with the public (anon) key, so that role needs table access too.
+-- Newer Supabase projects don't grant it automatically; without these lines the game gets "no permission".
+grant usage on schema public to anon, authenticated;
+grant select, insert on public.scores to anon, authenticated;
