@@ -1497,7 +1497,112 @@ const BODY: Record<string, (ctx: Ctx, L: Look) => void> = {
       ctx.restore();
     }
   },
+
+  // Frozen Outpost
+  icer: (ctx, L) => {
+    const { r } = L;
+    humanoid(ctx, L, { torso: [0.52, 0.92], clothes: mix('#3a5a74', L.dark, 0.2), holes: 2, ribs: false, head: { hairStyle: 'none', jaw: 'teeth' } });
+    iceSpikes(ctx, r, 4, 0.55, 0.6);
+  },
+  roller: (ctx, L) => {
+    humanoid(ctx, L, { torso: [0.56, 0.9], clothes: null, ribs: false, head: { hairStyle: 'none', jaw: 'gape' } });
+    // Armored back plates it curls up behind.
+    for (let i = 0; i < 3; i++) {
+      const cx = -0.18 - i * 0.22;
+      const rad = 0.95 - i * 0.12;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, 0, rad, Math.PI * 0.6, Math.PI * 1.4);
+      ctx.arc(cx, 0, rad - 0.2, Math.PI * 1.4, Math.PI * 0.6, true);
+      ctx.closePath();
+      dome(ctx, cx, 0, rad, mix('#8a9aa8', L.dark, i * 0.15), 0.35, 0.5);
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 0.03;
+      ctx.beginPath();
+      ctx.arc(cx, 0, rad - 0.03, Math.PI * 0.7, Math.PI * 1.3);
+      ctx.stroke();
+    }
+  },
+  mimic: (ctx) => {
+    // A supply crate on legs, lid hinged open on a mouthful of teeth.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-0.95, -0.95, 1.6, 1.9);
+    dome(ctx, -0.15, 0, 1.2, '#8a5a20', 0.25, 0.5);
+    ctx.restore();
+    ctx.strokeStyle = '#4a2e10';
+    ctx.lineWidth = 0.05;
+    for (const y of [-0.45, 0.45]) {
+      ctx.beginPath();
+      ctx.moveTo(-0.95, y);
+      ctx.lineTo(0.65, y);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = '#ffd23f';
+    ctx.lineWidth = 0.06;
+    ctx.strokeRect(-0.95, -0.95, 1.6, 1.9);
+    bolts(ctx, [[-0.85, -0.85], [0.55, -0.85], [-0.85, 0.85], [0.55, 0.85]]);
+    // Gaping maw
+    ctx.fillStyle = '#3a0a0a';
+    ctx.beginPath();
+    ctx.moveTo(0.65, -0.8);
+    ctx.lineTo(1.05, 0);
+    ctx.lineTo(0.65, 0.8);
+    ctx.fill();
+    ctx.fillStyle = '#f0e8d0';
+    for (let i = -2; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.moveTo(0.65, i * 0.32 - 0.12);
+      ctx.lineTo(0.9, i * 0.32);
+      ctx.lineTo(0.65, i * 0.32 + 0.12);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#d05a6a';
+    ctx.fillRect(0.7, -0.08, 0.32, 0.16);
+  },
+  titan: (ctx, L) => {
+    const { r, skin } = L;
+    // A glacier of a body: frozen muscle, ice armor, massive fists.
+    for (const side of [-1, 1]) {
+      ctx.save();
+      blobPath(ctx, 0.0, side * 0.6, 0.46, 0.4, r, 0.1);
+      dome(ctx, 0.0, side * 0.6, 0.46, skin, 0.35, 0.55);
+      ctx.restore();
+    }
+    humanoid(ctx, L, { torso: [0.66, 0.88], clothes: null, ribs: false, head: { rad: 0.36, x: 0.32, hairStyle: 'none', skull: false, jaw: 'gape' } });
+    iceSpikes(ctx, r, 7, 0.75, 0.38);
+    // Frost sheen
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.beginPath();
+    ctx.arc(-0.2, -0.3, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    for (const side of [-1, 1]) {
+      ctx.save();
+      blobPath(ctx, 0.95, side * 0.7, 0.34, 0.32, r, 0.08);
+      dome(ctx, 0.95, side * 0.7, 0.34, '#6a9ab8', 0.4, 0.55);
+      ctx.restore();
+    }
+  },
 };
+
+/** Ice crystals jutting out of the back and shoulders. */
+function iceSpikes(ctx: Ctx, r: Rng, n: number, base: number, spread: number) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.PI + (i - (n - 1) / 2) * spread;
+    const len = base * (0.85 + 0.35 * r());
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a - 0.14) * 0.72, Math.sin(a - 0.14) * 0.72);
+    ctx.lineTo(Math.cos(a) * (0.72 + len), Math.sin(a) * (0.72 + len));
+    ctx.lineTo(Math.cos(a + 0.14) * 0.72, Math.sin(a + 0.14) * 0.72);
+    ctx.closePath();
+    ctx.fillStyle = i % 2 ? '#dff6ff' : '#b8e4f8';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 0.02;
+    ctx.stroke();
+  }
+}
 
 function sludgeCoat(ctx: Ctx, r: Rng, rad: number, n: number) {
   for (let i = 0; i < n; i++) {
@@ -1535,6 +1640,7 @@ export function armStyle(kind: string): ArmStyle {
     case 'tank':
     case 'boss':
     case 'juggernaut':
+    case 'titan':
       return 'big';
     case 'reaper':
     case 'necro':
@@ -1542,6 +1648,7 @@ export function armStyle(kind: string): ArmStyle {
     case 'leaper':
     case 'burrower':
     case 'webber':
+    case 'mimic':
       return 'claw';
     case 'sludger':
     case 'sludge':
@@ -1791,6 +1898,9 @@ const BOUNDS: Record<string, [number, number, number, number]> = {
   boss: [-1.55, -1.55, 3.1, 3.1],
   bloater: [-1.15, -1.15, 2.3, 2.3],
   sludge: [-1.2, -1.2, 2.4, 2.4],
+  icer: [-1.45, -1.25, 2.6, 2.5],
+  titan: [-1.55, -1.4, 2.9, 2.8],
+  mimic: [-1.1, -1.1, 2.3, 2.2],
 };
 
 const kindKey = (def: ZombieDef) => (BODY[def.kind] ? def.kind : `x-${def.kind}-${def.body}`);
@@ -1988,6 +2098,10 @@ export function eyeSpot(kind: string): [number, number] {
       return [0.54, 0.12];
     case 'sludge':
       return [0.69, 0.13];
+    case 'titan':
+      return [0.58, 0.12];
+    case 'mimic':
+      return [0.4, 0.45];
     default:
       return [0.56, 0.17];
   }
