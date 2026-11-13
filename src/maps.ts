@@ -5,7 +5,9 @@ export const WORLD_W = 2200;
 export const WORLD_H = 1600;
 export const BORDER = 40;
 
-export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar' | 'grave' | 'crypt' | 'tank' | 'pipe';
+import type { ZombieKind } from './data';
+
+export type WallKind = 'border' | 'concrete' | 'car' | 'crate' | 'brick' | 'pillar' | 'grave' | 'crypt' | 'tank' | 'pipe' | 'hut' | 'snowbank' | 'glass' | 'tube' | 'bench';
 
 export interface Wall {
   x: number;
@@ -27,6 +29,16 @@ export interface MapDef {
   barrels: { x: number; y: number; big?: boolean }[];
   tracks?: number[]; // subway: y centers of the rail lines trains run along
   vents?: { x: number; y: number }[]; // refinery: steam vents that blast anything standing on them
+  ice?: { x: number; y: number; w: number; h: number }[]; // outpost: slippery ice sheets
+  blizzard?: boolean; // outpost: blizzards blow through, pushing everyone and burying the view in snow
+  /** Lab: stand on a console to send a laser sweep across the whole map ('x' moves left/right). */
+  consoles?: { x: number; y: number; axis: 'x' | 'y' }[];
+  /** Lab: the power fails every so often (lamps out, consoles offline). */
+  powercut?: boolean;
+  /** Zombie kinds that show up earlier than usual here (kind -> first wave). */
+  natives?: Partial<Record<ZombieKind, number>>;
+  /** This map's own boss comes first in the boss rotation. */
+  boss?: ZombieKind;
   ground: (c: CanvasRenderingContext2D) => void;
 }
 
@@ -313,6 +325,236 @@ function groundRefinery(c: CanvasRenderingContext2D) {
   grit(c, 30);
 }
 
+/** Frozen Outpost ice sheets: a frozen lake in the middle and two frozen creeks. */
+const ICE = [
+  { x: 760, y: 600, w: 680, h: 400 },
+  { x: 160, y: 440, w: 300, h: 120 },
+  { x: 1740, y: 1040, w: 300, h: 120 },
+];
+
+function groundOutpost(c: CanvasRenderingContext2D) {
+  c.fillStyle = '#b9c4cc';
+  c.fillRect(0, 0, WORLD_W, WORLD_H);
+  // Wind-blown drifts
+  for (let i = 0; i < 120; i++) {
+    c.fillStyle = Math.random() < 0.6 ? 'rgba(255,255,255,0.18)' : 'rgba(90,110,130,0.1)';
+    c.beginPath();
+    c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(40, 160), rand(14, 40), -0.3 + rand(-0.15, 0.15), 0, Math.PI * 2);
+    c.fill();
+  }
+  // Boot and tyre tracks
+  c.strokeStyle = 'rgba(80,95,110,0.18)';
+  c.lineWidth = 10;
+  for (const y of [WORLD_H / 2 - 330, WORLD_H / 2 + 330]) {
+    c.beginPath();
+    c.moveTo(BORDER, y);
+    for (let x = BORDER; x < WORLD_W; x += 80) c.lineTo(x, y + Math.sin(x / 140) * 18);
+    c.stroke();
+  }
+  // Ice sheets: blue-grey with cracks and a bright rim
+  for (const r of ICE) {
+    c.fillStyle = '#7fa8c4';
+    c.beginPath();
+    c.roundRect(r.x, r.y, r.w, r.h, 40);
+    c.fill();
+    c.fillStyle = 'rgba(200,230,255,0.25)';
+    c.beginPath();
+    c.roundRect(r.x + 14, r.y + 14, r.w - 28, r.h - 28, 30);
+    c.fill();
+    c.strokeStyle = 'rgba(255,255,255,0.6)';
+    c.lineWidth = 4;
+    c.beginPath();
+    c.roundRect(r.x, r.y, r.w, r.h, 40);
+    c.stroke();
+    c.strokeStyle = 'rgba(255,255,255,0.35)';
+    c.lineWidth = 1.5;
+    for (let i = 0; i < r.w / 30; i++) {
+      let x = rand(r.x + 30, r.x + r.w - 30);
+      let y = rand(r.y + 30, r.y + r.h - 30);
+      c.beginPath();
+      c.moveTo(x, y);
+      for (let k = 0; k < 4; k++) {
+        x = Math.min(r.x + r.w - 20, Math.max(r.x + 20, x + rand(-40, 40)));
+        y = Math.min(r.y + r.h - 20, Math.max(r.y + 20, y + rand(-40, 40)));
+        c.lineTo(x, y);
+      }
+      c.stroke();
+    }
+  }
+  for (let i = 0; i < 6000; i++) {
+    c.fillStyle = Math.random() < 0.6 ? 'rgba(255,255,255,0.08)' : 'rgba(60,80,100,0.06)';
+    const sz = rand(2, 5);
+    c.fillRect(rand(0, WORLD_W), rand(0, WORLD_H), sz, sz);
+  }
+}
+
+function groundLab(c: CanvasRenderingContext2D) {
+  c.fillStyle = '#1f2828';
+  c.fillRect(0, 0, WORLD_W, WORLD_H);
+  // Clinical floor tiles, some cracked, stained or missing.
+  const T = 60;
+  for (let x = 0; x < WORLD_W; x += T)
+    for (let y = 0; y < WORLD_H; y += T) {
+      const r = Math.random();
+      c.fillStyle = r < 0.04 ? '#141a1a' : r < 0.5 ? 'rgba(200,235,230,0.035)' : 'rgba(0,0,0,0.05)';
+      c.fillRect(x + 1, y + 1, T - 2, T - 2);
+      if (r < 0.04) {
+        // Missing tile: bare concrete with rubble.
+        for (let i = 0; i < 6; i++) {
+          c.fillStyle = 'rgba(120,130,125,0.25)';
+          c.fillRect(x + rand(4, T - 8), y + rand(4, T - 8), rand(2, 6), rand(2, 5));
+        }
+      } else if (r > 0.93) {
+        c.strokeStyle = 'rgba(0,0,0,0.5)';
+        c.lineWidth = 1.5;
+        c.beginPath();
+        let cx = x + rand(5, T - 5);
+        let cy = y + rand(5, T - 5);
+        c.moveTo(cx, cy);
+        for (let k = 0; k < 4; k++) {
+          cx += rand(-18, 18);
+          cy += rand(-18, 18);
+          c.lineTo(cx, cy);
+        }
+        c.stroke();
+      }
+    }
+  c.strokeStyle = 'rgba(0,0,0,0.4)';
+  c.lineWidth = 2;
+  for (let x = 0; x <= WORLD_W; x += T) {
+    c.beginPath();
+    c.moveTo(x, 0);
+    c.lineTo(x, WORLD_H);
+    c.stroke();
+  }
+  for (let y = 0; y <= WORLD_H; y += T) {
+    c.beginPath();
+    c.moveTo(0, y);
+    c.lineTo(WORLD_W, y);
+    c.stroke();
+  }
+  // Containment zone: hazard band around the central chamber and a big biohazard mark.
+  const cx = WORLD_W / 2;
+  const cy = WORLD_H / 2;
+  c.save();
+  c.beginPath();
+  c.rect(790, 560, 620, 480);
+  c.rect(860, 630, 480, 340);
+  c.clip('evenodd');
+  for (let i = -700; i < 700; i += 36) {
+    c.fillStyle = (i / 36) % 2 ? 'rgba(220,180,30,0.32)' : 'rgba(10,10,10,0.35)';
+    c.beginPath();
+    c.moveTo(cx + i, 540);
+    c.lineTo(cx + i + 18, 540);
+    c.lineTo(cx + i + 18 + 520, 1060);
+    c.lineTo(cx + i + 520, 1060);
+    c.fill();
+  }
+  c.restore();
+  c.strokeStyle = 'rgba(255,60,200,0.16)';
+  c.lineWidth = 10;
+  c.beginPath();
+  c.arc(cx, cy, 120, 0, Math.PI * 2);
+  c.stroke();
+  c.fillStyle = 'rgba(255,60,200,0.12)';
+  c.font = 'bold 150px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText('☣', cx, cy + 8);
+  c.fillStyle = 'rgba(230,240,235,0.16)';
+  c.font = 'bold 34px sans-serif';
+  c.fillText('ZONE 0', cx, cy + 128);
+  // Painted lanes and arrows toward the exits.
+  c.fillStyle = 'rgba(230,200,60,0.22)';
+  for (const [x, y, a] of [
+    [cx, 360, -Math.PI / 2],
+    [cx, 1240, Math.PI / 2],
+    [500, cy, Math.PI],
+    [1700, cy, 0],
+  ] as const) {
+    c.save();
+    c.translate(x, y);
+    c.rotate(a);
+    c.beginPath();
+    c.moveTo(40, 0);
+    c.lineTo(0, -26);
+    c.lineTo(0, -10);
+    c.lineTo(-40, -10);
+    c.lineTo(-40, 10);
+    c.lineTo(0, 10);
+    c.lineTo(0, 26);
+    c.fill();
+    c.restore();
+  }
+  // Drain grates
+  for (const [x, y] of [
+    [420, 620],
+    [1780, 980],
+    [700, 1300],
+    [1500, 300],
+  ]) {
+    c.fillStyle = '#0e1212';
+    c.fillRect(x - 26, y - 26, 52, 52);
+    c.strokeStyle = '#3a4646';
+    c.lineWidth = 3;
+    for (let i = -18; i <= 18; i += 9) {
+      c.beginPath();
+      c.moveTo(x + i, y - 22);
+      c.lineTo(x + i, y + 22);
+      c.stroke();
+    }
+  }
+  // Blood drag marks and pink mutagen spills.
+  for (let i = 0; i < 14; i++) {
+    let x = rand(150, WORLD_W - 150);
+    let y = rand(150, WORLD_H - 150);
+    const a = rand(0, Math.PI * 2);
+    c.strokeStyle = 'rgba(90,10,14,0.4)';
+    c.lineCap = 'round';
+    for (let k = 0; k < 3; k++) {
+      c.lineWidth = rand(4, 9);
+      c.beginPath();
+      c.moveTo(x, y);
+      const l = rand(80, 200);
+      c.lineTo(x + Math.cos(a) * l + rand(-10, 10), y + Math.sin(a) * l + rand(-10, 10));
+      c.stroke();
+      x += rand(-6, 6);
+      y += rand(-6, 6);
+    }
+  }
+  for (let i = 0; i < 18; i++) {
+    c.fillStyle = Math.random() < 0.5 ? 'rgba(255,70,200,0.1)' : 'rgba(120,255,160,0.07)';
+    c.beginPath();
+    c.ellipse(rand(0, WORLD_W), rand(0, WORLD_H), rand(20, 70), rand(14, 50), rand(0, 3), 0, Math.PI * 2);
+    c.fill();
+  }
+  // Scattered papers
+  for (let i = 0; i < 60; i++) {
+    c.save();
+    c.translate(rand(60, WORLD_W - 60), rand(60, WORLD_H - 60));
+    c.rotate(rand(0, Math.PI));
+    c.fillStyle = 'rgba(225,228,215,0.28)';
+    c.fillRect(-7, -9, 14, 18);
+    c.fillStyle = 'rgba(40,40,40,0.25)';
+    for (let k = -5; k < 6; k += 3) c.fillRect(-5, k, 10, 1);
+    c.restore();
+  }
+  grit(c, 20);
+}
+
+/** Specimen tubes in pairs, a flow cell apart. */
+const TUBES: Wall[] = (() => {
+  const out: Wall[] = [];
+  for (const [x0, y0] of [
+    [300, 250],
+    [1740, 250],
+    [300, 1290],
+    [1740, 1290],
+  ])
+    for (let i = 0; i < 2; i++) out.push({ x: x0 + i * 110, y: y0, w: 56, h: 56, kind: 'tube' });
+  return out;
+})();
+
 /** Headstone rows, kept a flow-field cell apart so zombies can weave between them. */
 const GRAVES: Wall[] = (() => {
   const out: Wall[] = [];
@@ -539,6 +781,102 @@ export const MAPS: MapDef[] = [
       { x: 1900, y: 620 },
     ],
     ground: groundRefinery,
+  },
+  {
+    id: 'outpost',
+    name: 'Frozen Outpost',
+    desc: 'Slide on the ice and brace for blizzards. Icers live here.',
+    unlock: 10,
+    walls: [
+      ...BORDER_WALLS,
+      // Four research huts
+      { x: 300, y: 230, w: 220, h: 140, kind: 'hut' },
+      { x: 1680, y: 230, w: 220, h: 140, kind: 'hut' },
+      { x: 300, y: 1230, w: 220, h: 140, kind: 'hut' },
+      { x: 1680, y: 1230, w: 220, h: 140, kind: 'hut' },
+      // Snowbanks around the lake (gaps left so the horde can pour through)
+      { x: 820, y: 330, w: 200, h: 54, kind: 'snowbank' },
+      { x: 1180, y: 330, w: 200, h: 54, kind: 'snowbank' },
+      { x: 820, y: 1216, w: 200, h: 54, kind: 'snowbank' },
+      { x: 1180, y: 1216, w: 200, h: 54, kind: 'snowbank' },
+      { x: 560, y: 700, w: 54, h: 200, kind: 'snowbank' },
+      { x: 1586, y: 700, w: 54, h: 200, kind: 'snowbank' },
+      // Supply crates
+      { x: 220, y: 780, w: 60, h: 44, kind: 'crate' },
+      { x: 1920, y: 780, w: 60, h: 44, kind: 'crate' },
+    ],
+    gates: GATES,
+    lamps: [
+      { x: 620, y: 300, flicker: false },
+      { x: 1580, y: 300, flicker: true },
+      { x: 620, y: 1300, flicker: true },
+      { x: 1580, y: 1300, flicker: false },
+      { x: 1100, y: 560, flicker: false },
+    ],
+    barrels: [
+      { x: 560, y: 420 },
+      { x: 1640, y: 420 },
+      { x: 560, y: 1180 },
+      { x: 1640, y: 1180 },
+      { x: 1100, y: 470, big: true },
+      { x: 1100, y: 1130, big: true },
+    ],
+    ice: ICE,
+    blizzard: true,
+    ground: groundOutpost,
+  },
+  {
+    id: 'lab',
+    name: 'Hive Lab',
+    desc: 'Stand on a console to sweep a laser across the map. Watch for power cuts.',
+    unlock: 9,
+    walls: [
+      ...BORDER_WALLS,
+      // Zone 0: the glass containment chamber you start in, one door per side.
+      { x: 840, y: 610, w: 180, h: 20, kind: 'glass' },
+      { x: 1180, y: 610, w: 180, h: 20, kind: 'glass' },
+      { x: 840, y: 970, w: 180, h: 20, kind: 'glass' },
+      { x: 1180, y: 970, w: 180, h: 20, kind: 'glass' },
+      { x: 840, y: 630, w: 20, h: 110, kind: 'glass' },
+      { x: 840, y: 860, w: 20, h: 110, kind: 'glass' },
+      { x: 1340, y: 630, w: 20, h: 110, kind: 'glass' },
+      { x: 1340, y: 860, w: 20, h: 110, kind: 'glass' },
+      ...TUBES,
+      // Lab benches
+      { x: 520, y: 430, w: 200, h: 40, kind: 'bench' },
+      { x: 1480, y: 430, w: 200, h: 40, kind: 'bench' },
+      { x: 520, y: 1130, w: 200, h: 40, kind: 'bench' },
+      { x: 1480, y: 1130, w: 200, h: 40, kind: 'bench' },
+      { x: 250, y: 560, w: 40, h: 160, kind: 'bench' },
+      { x: 1910, y: 880, w: 40, h: 160, kind: 'bench' },
+      { x: 680, y: 220, w: 40, h: 130, kind: 'bench' },
+      { x: 1480, y: 1250, w: 40, h: 130, kind: 'bench' },
+    ],
+    gates: GATES,
+    lamps: [
+      { x: 1100, y: 800, flicker: false },
+      { x: 560, y: 320, flicker: false },
+      { x: 1640, y: 320, flicker: true },
+      { x: 560, y: 1280, flicker: true },
+      { x: 1640, y: 1280, flicker: false },
+      { x: 400, y: 900, flicker: false },
+      { x: 1800, y: 700, flicker: false },
+    ],
+    barrels: [
+      { x: 760, y: 520 },
+      { x: 1440, y: 1080 },
+      { x: 320, y: 420 },
+      { x: 1880, y: 1180 },
+      { x: 1100, y: 300 },
+    ],
+    consoles: [
+      { x: 600, y: 800, axis: 'x' },
+      { x: 1600, y: 800, axis: 'y' },
+    ],
+    powercut: true,
+    natives: { parasite: 2, mutant: 5, blob: 7, psyker: 9 },
+    boss: 'zero',
+    ground: groundLab,
   },
 ];
 

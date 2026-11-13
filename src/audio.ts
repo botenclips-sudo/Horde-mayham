@@ -58,7 +58,33 @@ export type SfxKind =
   | 'heal'
   | 'web'
   | 'mortar'
-  | 'gurgle';
+  | 'gurgle'
+  | 'glaive'
+  | 'harpoon'
+  | 'cluster'
+  | 'catch'
+  | 'wind'
+  | 'mimic'
+  | 'boulder'
+  | 'nova'
+  | 'roll'
+  | 'crack'
+  | 'railgun'
+  | 'charge'
+  | 'plasma'
+  | 'mindray'
+  | 'charm'
+  | 'latch'
+  | 'psy'
+  | 'yank'
+  | 'alarm'
+  | 'laser'
+  | 'powerdown'
+  | 'powerup'
+  | 'tendril'
+  | 'roar'
+  | 'radio'
+  | 'pickup';
 
 export type MusicMood = 'menu' | 'calm' | 'fight' | 'boss' | 'off';
 
@@ -149,6 +175,11 @@ export class Sfx {
     }
     if (this.ctx && this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : 0.8, this.ctx.currentTime, 0.05);
     return this.muted;
+  }
+
+  /** Silences everything while an ad plays, without touching the player's mute setting. */
+  duck(on: boolean) {
+    if (this.ctx && this.master) this.master.gain.setTargetAtTime(on || this.muted ? 0 : 0.8, this.ctx.currentTime, 0.05);
   }
 
   setMusic(mood: MusicMood, intensity = 0) {
@@ -261,7 +292,7 @@ export class Sfx {
     if (!ctx || !this.sfxBus || this.muted) return;
     // Rate-limit so 40 zombies dying at once doesn't clip.
     const now = ctx.currentTime;
-    const gap = kind === 'hit' ? 0.035 : kind === 'coin' ? 0.04 : kind === 'flamer' ? 0.07 : kind === 'death' ? 0.03 : kind === 'clank' ? 0.05 : kind === 'freeze' ? 0.08 : kind === 'shatter' ? 0.04 : 0.015;
+    const gap = kind === 'hit' ? 0.035 : kind === 'coin' ? 0.04 : kind === 'flamer' ? 0.07 : kind === 'death' ? 0.03 : kind === 'clank' ? 0.05 : kind === 'freeze' ? 0.08 : kind === 'shatter' ? 0.04 : kind === 'plasma' ? 0.09 : kind === 'tendril' ? 0.06 : 0.015;
     if (now - (this.last[kind] ?? -1) < gap) return;
     this.last[kind] = now;
     const bus = this.sfxBus;
@@ -481,6 +512,115 @@ export class Sfx {
         break;
       case 'gurgle':
         for (let i = 0; i < 4; i++) this.tone(now + i * 0.08, 0.1, 120 + Math.random() * 80, 60, 0.2 * v, 'sine', bus);
+        break;
+      case 'glaive':
+        this.tone(now, 0.22, 900, 1400, 0.12 * v, 'triangle', bus);
+        this.burst(now, 0.18, 3200, 0.25 * v, 'bandpass', bus);
+        break;
+      case 'harpoon':
+        this.burst(now, 0.12, 900, 0.55 * v, 'lowpass', bus);
+        this.tone(now, 0.3, 220, 90, 0.22 * v, 'sawtooth', bus);
+        this.tone(now + 0.04, 0.35, 1200, 600, 0.05 * v, 'triangle', bus);
+        break;
+      case 'cluster':
+        this.burst(now, 0.15, 600, 0.45 * v, 'lowpass', bus);
+        this.tone(now, 0.2, 320, 160, 0.18 * v, 'square', bus);
+        break;
+      case 'catch':
+        this.tone(now, 0.08, 1500, 1800, 0.08 * v, 'triangle', bus);
+        break;
+      case 'wind':
+        this.burst(now, 3, 700, 0.35 * v, 'bandpass', bus);
+        this.burst(now + 0.8, 2.6, 1400, 0.2 * v, 'bandpass', bus);
+        this.tone(now, 3, 180, 260, 0.05 * v, 'sine', bus);
+        break;
+      case 'mimic':
+        this.tone(now, 0.25, 160, 70, 0.3 * v, 'sawtooth', bus);
+        this.burst(now, 0.2, 1200, 0.45 * v, 'bandpass', bus);
+        this.tone(now + 0.1, 0.2, 90, 50, 0.3 * v, 'square', bus);
+        break;
+      case 'boulder':
+        this.tone(now, 0.45, 110, 40, 0.4 * v, 'sine', bus);
+        this.burst(now, 0.35, 400, 0.6 * v, 'lowpass', bus);
+        this.burst(now + 0.03, 0.25, 4000, 0.2 * v, 'highpass', bus);
+        break;
+      case 'nova':
+        this.tone(now, 0.7, 1800, 300, 0.12 * v, 'triangle', bus);
+        this.burst(now, 0.6, 5000, 0.35 * v, 'highpass', bus);
+        this.tone(now, 0.5, 120, 60, 0.3 * v, 'sine', bus);
+        break;
+      case 'roll':
+        this.burst(now, 0.6, 250, 0.4 * v, 'lowpass', bus);
+        this.tone(now, 0.6, 70, 110, 0.15 * v, 'sawtooth', bus);
+        break;
+      case 'crack':
+        this.burst(now, 0.1, 4500, 0.4 * v, 'highpass', bus);
+        this.tone(now, 0.12, 2400, 1600, 0.06 * v, 'triangle', bus);
+        break;
+      case 'railgun':
+        // A sharp electric crack with a deep thump under it.
+        this.tone(now, 0.5, 2400, 90, 0.35 * v, 'sawtooth', bus);
+        this.burst(now, 0.35, 4200, 0.7 * v, 'bandpass', bus);
+        this.tone(now, 0.4, 90, 30, 0.7 * v, 'sine', bus);
+        break;
+      case 'charge':
+        this.tone(now, 0.6, 200, 1600, 0.09 * v, 'sawtooth', bus);
+        this.tone(now, 0.6, 203, 1620, 0.06 * v, 'square', bus);
+        break;
+      case 'plasma':
+        this.tone(now, 0.1, 620 + Math.random() * 60, 540, 0.05 * v, 'sawtooth', bus);
+        this.burst(now, 0.09, 3000, 0.07 * v, 'bandpass', bus);
+        break;
+      case 'mindray':
+        this.tone(now, 0.18, 700, 1100, 0.09 * v, 'sine', bus);
+        this.tone(now, 0.18, 1050, 1650, 0.05 * v, 'triangle', bus);
+        break;
+      case 'charm':
+        [523, 784, 659, 1046].forEach((f, i) => this.tone(now + i * 0.05, 0.22, f, f * 0.98, 0.09 * v, 'sine', bus));
+        break;
+      case 'latch':
+        this.burst(now, 0.12, 900, 0.4 * v, 'bandpass', bus);
+        this.tone(now, 0.18, 1300, 500, 0.12 * v, 'square', bus);
+        break;
+      case 'psy':
+        this.tone(now, 0.9, 140, 600, 0.12 * v, 'sine', bus);
+        this.tone(now, 0.9, 147, 590, 0.1 * v, 'triangle', bus);
+        break;
+      case 'yank':
+        this.tone(now, 0.25, 600, 120, 0.25 * v, 'sawtooth', bus);
+        this.burst(now, 0.2, 1500, 0.25 * v, 'bandpass', bus);
+        break;
+      case 'alarm':
+        for (let i = 0; i < 3; i++) this.tone(now + i * 0.22, 0.18, 880, 660, 0.12 * v, 'square', bus);
+        break;
+      case 'laser':
+        this.tone(now, 1.6, 1800, 1500, 0.08 * v, 'sawtooth', bus);
+        this.tone(now, 1.6, 90, 80, 0.3 * v, 'sawtooth', bus);
+        this.burst(now, 1.2, 6000, 0.1 * v, 'highpass', bus);
+        break;
+      case 'powerdown':
+        this.tone(now, 1.4, 220, 30, 0.4 * v, 'sawtooth', bus);
+        this.tone(now, 1.4, 330, 40, 0.2 * v, 'square', bus);
+        break;
+      case 'powerup':
+        this.tone(now, 0.9, 40, 260, 0.3 * v, 'sawtooth', bus);
+        this.burst(now + 0.7, 0.1, 3000, 0.2 * v, 'highpass', bus);
+        break;
+      case 'tendril':
+        this.burst(now, 0.3, 500, 0.6 * v, 'lowpass', bus);
+        this.tone(now, 0.2, 260, 70, 0.3 * v, 'square', bus);
+        break;
+      case 'roar':
+        this.tone(now, 1.5, 70, 45, 0.6, 'sawtooth', bus);
+        this.tone(now, 1.5, 104, 60, 0.4, 'sawtooth', bus);
+        this.burst(now, 1.3, 700, 0.5, 'bandpass', bus);
+        break;
+      case 'radio':
+        this.burst(now, 0.08, 2500, 0.12, 'bandpass', bus);
+        this.tone(now + 0.05, 0.06, 1400, 1400, 0.05, 'square', bus);
+        break;
+      case 'pickup':
+        [880, 1320, 1760].forEach((f, i) => this.tone(now + i * 0.05, 0.1, f, f, 0.1, 'triangle', bus));
         break;
       case 'levelup':
         [523, 659, 784, 1046, 1318].forEach((f, i) => this.tone(now + i * 0.09, 0.22, f, f, 0.16, 'triangle', bus));

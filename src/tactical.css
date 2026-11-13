@@ -1,0 +1,799 @@
+/*
+ * Tactical theme: the shared look for every menu screen.
+ * Loaded after style.css and overrides it. New screens should reuse these pieces:
+ *   .overlay > header.topbar   back button top-left (.back-btn), title (.topbar-title), info (.topbar-right)
+ *   .panel                     dark steel panel with amber corner brackets
+ *   .t-card                    item / option card (also applied to the existing card classes below)
+ *   button.big / .ghost / .buy primary, secondary and small action buttons
+ *   .t-label                   small mono caps label, e.g. "// LOADOUT"
+ */
+
+:root {
+  --bg: #0a0c09;
+  --panel: rgba(13, 16, 12, 0.95);
+  --panel-2: #151a12;
+  --panel-3: #1c2318;
+  --edge: #364230;
+  --edge-hi: #5d6d4c;
+  --steel: #8b979c;
+  --text: #e4e8d6;
+  --muted: #8d987f;
+  --accent: #f0b429;
+  --accent-dim: rgba(240, 180, 41, 0.14);
+  --red: #d8412f;
+  --olive: #4b5a32;
+  --hud: #a6e05a;
+  --display: 'Black Ops One', 'Arial Black', system-ui, sans-serif;
+  --body: 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'Share Tech Mono', ui-monospace, 'Roboto Mono', monospace;
+  --cut: 10px;
+  --topbar-h: 54px;
+}
+
+html,
+body {
+  font-family: var(--body);
+}
+
+/* ---------------------------------------------------------------- overlays */
+
+.overlay {
+  background:
+    repeating-linear-gradient(0deg, rgba(166, 224, 90, 0.035) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, rgba(5, 7, 4, 0.55), rgba(0, 0, 0, 0.85));
+  padding-top: calc(var(--topbar-h) + 10px + env(safe-area-inset-top));
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+}
+
+.overlay.title {
+  background:
+    repeating-linear-gradient(0deg, rgba(166, 224, 90, 0.035) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.7));
+  padding-top: 16px;
+}
+
+/* ---------------------------------------------------------------- top bar + back button */
+
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  height: calc(var(--topbar-h) + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) max(10px, env(safe-area-inset-right)) 0 max(10px, env(safe-area-inset-left));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #090b08;
+  border-bottom: 1px solid var(--edge);
+  box-shadow: 0 1px 0 rgba(240, 180, 41, 0.12);
+}
+
+.back-btn {
+  flex: none;
+  height: 34px;
+  min-width: 88px;
+  padding: 0 14px 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-3);
+  border: 1px solid var(--edge-hi);
+  color: var(--accent);
+  font: 400 15px/1 var(--display);
+  letter-spacing: 2px;
+  clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
+}
+
+.back-btn .chev {
+  width: 9px;
+  height: 9px;
+  border-left: 3px solid currentColor;
+  border-bottom: 3px solid currentColor;
+  transform: rotate(45deg);
+  margin-left: 4px;
+}
+
+.back-btn:active {
+  background: var(--accent);
+  color: #111;
+}
+
+.topbar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 15px var(--mono);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.topbar-title b {
+  font: 400 17px var(--display);
+  letter-spacing: 2px;
+  color: var(--text);
+}
+
+.topbar-right {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font: 16px var(--mono);
+}
+
+.topbar-right .cash b {
+  color: var(--accent);
+  font-size: 19px;
+}
+
+.topbar-right .cash {
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+
+/* ---------------------------------------------------------------- panels */
+
+.panel {
+  position: relative;
+  border: 1px solid var(--edge);
+  border-radius: 0;
+  background:
+    linear-gradient(180deg, rgba(240, 180, 41, 0.05), transparent 40px),
+    var(--panel);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.7), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+/* Amber corner brackets, drawn in one pseudo-element. */
+.panel::before,
+.title-wrap .profile::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  pointer-events: none;
+  --b: var(--accent);
+  background:
+    linear-gradient(var(--b), var(--b)) top left / 16px 2px,
+    linear-gradient(var(--b), var(--b)) top left / 2px 16px,
+    linear-gradient(var(--b), var(--b)) top right / 16px 2px,
+    linear-gradient(var(--b), var(--b)) top right / 2px 16px,
+    linear-gradient(var(--b), var(--b)) bottom left / 16px 2px,
+    linear-gradient(var(--b), var(--b)) bottom left / 2px 16px,
+    linear-gradient(var(--b), var(--b)) bottom right / 16px 2px,
+    linear-gradient(var(--b), var(--b)) bottom right / 2px 16px;
+  background-repeat: no-repeat;
+}
+
+h1,
+h2,
+button.big {
+  font-family: var(--display);
+}
+
+h2 {
+  text-transform: uppercase;
+  letter-spacing: 3px;
+}
+
+h2::before {
+  content: '// ';
+  color: var(--accent);
+  font-size: 0.7em;
+  vertical-align: 0.15em;
+}
+
+h1 {
+  text-shadow: 0 5px 0 #000, 0 0 30px rgba(240, 180, 41, 0.18);
+}
+
+h1 span {
+  color: var(--accent);
+}
+
+.tag,
+.tiny,
+.sub,
+.best {
+  font-family: var(--body);
+}
+
+.t-label {
+  font: 12px var(--mono);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+button.big {
+  border-radius: 0;
+  background: linear-gradient(180deg, #f6c445, #e0a21c);
+  color: #15120a;
+  box-shadow: none;
+  letter-spacing: 4px;
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+}
+
+button.big:active {
+  transform: translateY(1px);
+  box-shadow: none;
+  filter: brightness(1.15);
+}
+
+button.big:disabled {
+  filter: grayscale(1) brightness(0.6);
+}
+
+button.big.coop-btn {
+  background: linear-gradient(180deg, #5a6870, #3f4b52);
+  color: var(--text);
+  box-shadow: none;
+}
+
+button.big.coop-btn:active {
+  box-shadow: none;
+}
+
+button.ghost {
+  border-radius: 0;
+  border-color: var(--edge-hi);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  font: 15px var(--mono);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+button.ghost:active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.buy {
+  border-radius: 0;
+  background: var(--olive);
+  border: 1px solid #6b7d4a;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+button.buy span {
+  font-family: var(--mono);
+}
+
+button.buy.on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+button.link {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--muted);
+}
+
+.share-btn {
+  border-radius: 0;
+  background: #3f4b52;
+  box-shadow: none;
+  font: 13px var(--mono);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.share-btn.alt {
+  background: #7a2a20;
+  box-shadow: none;
+}
+
+/* ---------------------------------------------------------------- cards and rows */
+
+.t-card,
+.card,
+.shop-item,
+.meta-card,
+.mode-card,
+.map-chip,
+.mission,
+.badge,
+.gear-slot,
+.base-btn:not(.link),
+.co-players li {
+  border-radius: 0;
+  background: linear-gradient(180deg, var(--panel-3), var(--panel-2));
+  border: 1px solid var(--edge);
+}
+
+.card {
+  border-width: 1px;
+  border-top: 3px solid var(--common);
+}
+
+.card.rare {
+  border-top-color: var(--rare);
+}
+
+.card.epic {
+  border-top-color: var(--epic);
+  box-shadow: inset 0 0 22px rgba(192, 101, 255, 0.18);
+}
+
+.card .name,
+.meta-card .name,
+.mode-card .name,
+.badge .name,
+.gear-slot .name,
+.shop-item .label {
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.card .rarity {
+  font-family: var(--mono);
+  letter-spacing: 3px;
+}
+
+.mode-card.on,
+.map-chip.on,
+.meta-card.equipped {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(240, 180, 41, 0.16), var(--panel-2));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.shop-item {
+  border-left: 3px solid var(--edge-hi);
+}
+
+.shop-item:active:not(:disabled),
+.card:active,
+.base-btn:active {
+  border-color: var(--accent);
+}
+
+.shop-item .price,
+.pips,
+.brains,
+.big-brains,
+.profile .lvl {
+  font-family: var(--mono);
+}
+
+.base-btn:not(.link) {
+  font: 600 13px var(--body);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.base-btn .dot {
+  border-radius: 0;
+  background: var(--accent);
+}
+
+.tabs button {
+  border-radius: 0;
+  border: none;
+  border-bottom: 2px solid var(--edge);
+  background: transparent;
+  font: 14px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.tabs button.on {
+  background: var(--accent-dim);
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.mission.done {
+  border-color: #4f8a3a;
+  box-shadow: inset 3px 0 0 var(--hud);
+}
+
+.badge.got {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.chip {
+  border-radius: 0;
+  font-family: var(--mono);
+}
+
+/* ---------------------------------------------------------------- bars and inputs */
+
+.xpbar,
+.xpbar > div {
+  border-radius: 0;
+}
+
+.xpbar {
+  height: 8px;
+  background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.1) 0 8px, transparent 8px 10px);
+}
+
+.xpbar > div {
+  background: repeating-linear-gradient(90deg, var(--accent) 0 8px, transparent 8px 10px);
+}
+
+.mission.done .xpbar > div {
+  background: repeating-linear-gradient(90deg, var(--hud) 0 8px, transparent 8px 10px);
+}
+
+input,
+textarea,
+.co-input,
+#challenge-out input,
+.challenge-row input,
+.lb-row input {
+  border-radius: 0 !important;
+  font-family: var(--mono) !important;
+  letter-spacing: 1px;
+  background: rgba(0, 0, 0, 0.5) !important;
+  border: 1px solid var(--edge-hi) !important;
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent) !important;
+}
+
+/* ---------------------------------------------------------------- title screen */
+
+.title-wrap .profile {
+  position: relative;
+  border-radius: 0;
+  background: rgba(8, 10, 7, 0.8);
+  border: 1px solid var(--edge);
+}
+
+.title-wrap .help {
+  border-radius: 0;
+  border-left: 3px solid var(--edge-hi);
+}
+
+.co-codeline b {
+  font-family: var(--mono);
+}
+
+.co-players li {
+  border-left: 5px solid var(--edge);
+}
+
+.share img,
+.share video {
+  border-radius: 0;
+}
+
+/* ---------------------------------------------------------------- per-screen tweaks */
+
+/* The top bar carries the title on these screens, so the panel goes straight to content. */
+.panel.shop {
+  max-width: 760px;
+}
+
+@media (max-height: 500px) {
+  :root {
+    --topbar-h: 50px;
+  }
+  .overlay {
+    padding-top: calc(var(--topbar-h) + 8px + env(safe-area-inset-top));
+    padding-bottom: 8px;
+  }
+  h2 {
+    font-size: 22px;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar-title {
+    font-size: 12px;
+  }
+  .topbar-title b {
+    font-size: 15px;
+  }
+}
+
+.base-btn .dot {
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+}
+
+/* ================================================================ comfort pass: thumb-sized targets */
+/* Everything you tap is at least 44px tall (Android recommends 48dp); primary actions are bigger. */
+
+.back-btn {
+  height: 44px;
+  min-width: 104px;
+  font-size: 16px;
+}
+
+button.big {
+  min-height: 52px;
+}
+
+button.ghost,
+button.buy,
+.tabs button,
+.chip,
+.challenge-row button.buy,
+.lb-row button.buy,
+.co-codeline button.buy,
+.share-btn {
+  min-height: 44px;
+}
+
+button.buy {
+  align-items: center;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.tabs button {
+  padding: 10px 14px;
+}
+
+input,
+.co-input,
+.challenge-row input,
+.lb-row input,
+#challenge-out input {
+  min-height: 46px;
+  font-size: 16px !important; /* 16px stops Android/iOS zooming into the field */
+}
+
+.shop-item {
+  min-height: 64px;
+  padding: 10px 14px;
+}
+
+.mode-card,
+.map-chip {
+  min-height: 56px;
+}
+
+/* Every button gets a clear pressed state. */
+button:not(:disabled) {
+  transition: transform 0.06s, filter 0.06s;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.97);
+  filter: brightness(1.25);
+}
+
+/* ---------------------------------------------------------------- title screen (landscape command deck) */
+
+.title-wrap {
+  max-width: 460px;
+}
+
+.title-right {
+  display: flex;
+  flex-direction: column;
+}
+
+.base-row .base-btn {
+  min-height: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.base-btn .bi {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.util-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.util-wrap {
+  display: contents;
+}
+
+#clips-wrap.hidden,
+.util.hidden {
+  display: none;
+}
+
+button.util,
+a.util {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  min-height: 44px;
+  padding: 4px 6px;
+  background: rgba(8, 10, 7, 0.82);
+  border: 1px solid var(--edge);
+  border-bottom: 2px solid var(--edge-hi);
+  color: var(--text);
+  font: 12px var(--mono);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dossier {
+  display: flex;
+  gap: 1px;
+  margin: 8px auto 0;
+  max-width: 340px;
+  background: var(--edge);
+  border: 1px solid var(--edge);
+}
+
+.dossier > div {
+  flex: 1;
+  padding: 5px 8px;
+  background: rgba(8, 10, 7, 0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.dossier .t-label {
+  font-size: 10px;
+}
+
+.dossier b {
+  font: 15px var(--mono);
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.dossier b.ok {
+  color: var(--hud);
+}
+
+.dossier b.warn {
+  color: var(--red);
+}
+
+/* Phone landscape: title on the left, controls on the right, nothing to scroll. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .title-wrap {
+    max-width: 780px;
+    display: grid;
+    grid-template-columns: 1fr 1.15fr;
+    gap: 22px;
+    align-items: center;
+  }
+  .title-left h1 {
+    font-size: clamp(40px, 7.5vw, 64px);
+  }
+  .title-right button.big {
+    margin-top: 0;
+    margin-bottom: 8px;
+  }
+  .title-right .base-row {
+    margin-top: 0;
+  }
+  .dossier,
+  .title-wrap .profile {
+    max-width: none;
+  }
+}
+
+/* ---------------------------------------------------------------- detail: panel serial tags */
+
+.panel[data-code]::after {
+  content: attr(data-code) '  \25AE\25AE\25AF';
+  position: absolute;
+  top: -8px;
+  right: 22px;
+  padding: 0 6px;
+  background: var(--bg);
+  font: 10px/16px var(--mono);
+  letter-spacing: 2px;
+  color: var(--accent);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Hazard stripe along the bottom of the main call-to-action. */
+#start,
+#next-wave,
+#play,
+#again {
+  background:
+    repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.55) 0 8px, transparent 8px 16px) bottom / 100% 5px no-repeat,
+    linear-gradient(180deg, #f6c445, #e0a21c);
+}
+
+/* Card detail: a small notch tag in the corner of every option card. */
+.meta-card,
+.shop-item,
+.mode-card {
+  position: relative;
+}
+
+.meta-card::after,
+.mode-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 10px 10px 0;
+  border-color: transparent var(--edge-hi) transparent transparent;
+}
+
+.meta-card.equipped::after,
+.mode-card.on::after {
+  border-right-color: var(--accent);
+}
+
+/* Weapon stat bars (armory + shop). */
+.wstats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 6px;
+  align-items: center;
+  margin: 3px 0 2px;
+  width: 100%;
+}
+
+.wstats span {
+  font: 9px/1 var(--mono);
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.wstats i {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wstats b {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.shop-item > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.shop-item .wstats {
+  max-width: 170px;
+}
+
+.meta-card.locked .wstats b {
+  background: var(--steel);
+}
+
+/* The main action stays on screen even when the list above it scrolls. */
+#start,
+#next-wave,
+#again {
+  position: sticky;
+  bottom: 4px;
+  z-index: 3;
+  filter: drop-shadow(0 -6px 10px rgba(0, 0, 0, 0.8));
+}

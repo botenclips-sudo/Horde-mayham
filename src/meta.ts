@@ -4,7 +4,9 @@
 import { WEAPONS, ZombieKind } from './data';
 import { MAPS } from './maps';
 import { BADGES, BadgeDef } from './achievements';
+import { OPS } from './campaign';
 import { emptyBonus, GearBonus, gearDef, GearItem, gearValue, RARITIES, rollGear, SCRAP_VALUE } from './gear';
+import { AD_DIAMONDS, AD_DIAMONDS_PER_DAY, BADGE_DIAMONDS, BRAIN_BUNDLE, DIAMOND_PRICE, LEVEL_DIAMONDS, missionDiamonds, REVIVE_TOKEN_MAX, skinById, STASH_BONUS, XP_BOOST_RUNS } from './diamonds';
 
 export const GEAR_MAX = 24;
 export const CRATE_COST = 150;
@@ -40,6 +42,16 @@ export interface SaveData {
   gear: GearItem[];
   equipped: { armor: string; trinket: string }; // gear uids ('' = empty)
   player: string; // name on the leaderboards
+  diamonds: number;
+  skins: string[]; // owned skin ids
+  skin: string; // equipped skin id ('' = default look)
+  stash: boolean; // bought the stash expansion
+  reviveTokens: number;
+  xpBoost: number; // runs left with double XP
+  adDay: string;
+  adDiamonds: number; // diamond ads watched on adDay
+  buyer: string; // random id that ties real-money purchases to this save
+  campaign: Record<string, number>; // story op id -> best stars (1..3)
 }
 
 export interface RunRecord {
@@ -77,7 +89,7 @@ export const trainingCost = (t: TrainingDef, lv: number) => Math.round(t.base * 
 
 // ------------------------------------------------------------------ guns
 
-export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300, acid: 900, swarm: 1350, singularity: 1500 };
+export const GUN_UNLOCK: Record<string, number> = { pistol: 0, smg: 120, shotgun: 200, rifle: 380, flamer: 600, rocket: 850, launcher: 950, sniper: 1050, freeze: 1150, minigun: 1200, tesla: 1400, crossbow: 700, autoshotgun: 1000, ripper: 1300, acid: 900, swarm: 1350, singularity: 1500, glaive: 1100, harpoon: 1250, cluster: 1450, railgun: 1450, plasma: 1100, mindray: 1250 };
 export const MASTERY_MAX = 10;
 export const masteryCost = (lv: number) => Math.round(40 * Math.pow(1.45, lv));
 
@@ -95,6 +107,7 @@ export interface ModeDef {
 
 export const MODES: ModeDef[] = [
   { id: 'endless', name: 'Endless', icon: '♾️', desc: 'Survive as long as you can. A boss every 10 waves.', unlock: 1, brains: 1 },
+  { id: 'campaign', name: 'Story', icon: '🎖️', desc: 'Operation Patient Zero: 8 hand-made missions with their own gear and goals.', unlock: 1, brains: 1 },
   { id: 'daily', name: 'Daily Challenge', icon: '📅', desc: 'Same map and twists for everyone today. First run of the day pays +50 🧠.', unlock: 1, brains: 1 },
   { id: 'bossrush', name: 'Boss Rush', icon: '💀', desc: 'Every wave is a boss. Brains x1.5.', unlock: 3, brains: 1.5 },
   { id: 'hardcore', name: 'Hardcore', icon: '☠️', desc: 'No medkits, no health drops, no Second Wind. Brains x2.', unlock: 5, brains: 2 },
@@ -171,7 +184,11 @@ export interface RunReport {
   brains: number; // collected during the run
   trainKills: number;
   ventKills: number;
+  pinKills: number;
   barrelKills: number;
+  laserKills: number; // Hive Lab laser sweeps
+  turned: number; // zombies turned with the Mind Ray
+  shaken: number; // parasites shaken off with a dash
   hitsTaken: number;
   revives: number;
   bestBurst: number; // most zombies killed in one burst
@@ -231,6 +248,20 @@ export const MISSIONS: MissionDef[] = [
   { id: 'webbers', text: 'Kill 25 webbers', goal: 25, reward: 45, measure: kindKills('webber') },
   { id: 'medics', text: 'Kill 12 medics', goal: 12, reward: 60, measure: kindKills('medic') },
   { id: 'sludgers', text: 'Kill 20 sludgers', goal: 20, reward: 55, measure: kindKills('sludger') },
+  { id: 'glaive', text: 'Kill 250 zombies holding the Glaive', goal: 250, reward: 55, measure: gunKills('glaive') },
+  { id: 'harpoon', text: 'Kill 200 zombies holding the Harpoon Gun', goal: 200, reward: 55, measure: gunKills('harpoon') },
+  { id: 'cluster', text: 'Kill 300 zombies holding the Cluster Bomb', goal: 300, reward: 60, measure: gunKills('cluster') },
+  { id: 'icers', text: 'Kill 25 icers', goal: 25, reward: 50, measure: kindKills('icer') },
+  { id: 'rollers', text: 'Kill 20 rollers', goal: 20, reward: 50, measure: kindKills('roller') },
+  { id: 'mimics', text: 'Kill 6 mimics', goal: 6, reward: 50, measure: kindKills('mimic') },
+  { id: 'parasites', text: 'Kill 60 parasites', goal: 60, reward: 45, measure: kindKills('parasite') },
+  { id: 'mutants', text: 'Kill 15 mutants', goal: 15, reward: 60, measure: kindKills('mutant') },
+  { id: 'psykers', text: 'Kill 10 psykers', goal: 10, reward: 65, measure: kindKills('psyker') },
+  { id: 'blobs', text: 'Pop 50 Mitosis blobs', goal: 50, reward: 50, measure: kindKills('blob') },
+  { id: 'lasers', text: 'Kill 25 zombies with lab lasers', goal: 25, reward: 55, measure: (r) => r.laserKills },
+  { id: 'railgun', text: 'Kill 200 zombies holding the Railgun', goal: 200, reward: 60, measure: gunKills('railgun') },
+  { id: 'plasma', text: 'Kill 250 zombies holding the Plasma Cutter', goal: 250, reward: 60, measure: gunKills('plasma') },
+  { id: 'mindray', text: 'Turn 30 zombies with the Mind Ray', goal: 30, reward: 60, measure: (r) => r.turned },
 ];
 
 export const today = () => {
@@ -283,7 +314,29 @@ function fresh(): SaveData {
     gear: [],
     equipped: { armor: '', trinket: '' },
     player: '',
+    diamonds: 0,
+    skins: [],
+    skin: '',
+    stash: false,
+    reviveTokens: 0,
+    xpBoost: 0,
+    adDay: '',
+    adDiamonds: 0,
+    buyer: newBuyerId(),
+    campaign: {},
   };
+}
+
+function newBuyerId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    // randomUUID needs a secure context; fall back to a v4-shaped id.
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 3) | 8).toString(16);
+    });
+  }
 }
 
 function sanitize(raw: unknown): SaveData {
@@ -317,11 +370,26 @@ function sanitize(raw: unknown): SaveData {
       .map((x) => ({ wave: num(x.wave, 0), kills: num(x.kills, 0), mode: String(x.mode ?? 'endless'), map: String(x.map ?? 'lot'), day: String(x.day ?? '') }))
       .slice(0, 10);
   if (typeof r.player === 'string') d.player = r.player.slice(0, 16);
+  if (r.campaign && typeof r.campaign === 'object')
+    for (const op of OPS) {
+      const s = num((r.campaign as Record<string, unknown>)[op.id], 0);
+      if (s > 0) d.campaign[op.id] = Math.min(3, Math.floor(s));
+    }
   if (Array.isArray(r.gear))
     d.gear = r.gear
       .filter((g) => g && typeof g.uid === 'string' && gearDef(g.id) && RARITIES.includes(g.rarity))
       .map((g) => ({ uid: g.uid, id: g.id, rarity: g.rarity }))
-      .slice(0, GEAR_MAX);
+      .slice(0, GEAR_MAX + STASH_BONUS);
+  d.diamonds = Math.max(0, Math.floor(num(r.diamonds, 0)));
+  if (Array.isArray(r.skins)) d.skins = r.skins.filter((x) => typeof x === 'string' && !!skinById(x));
+  if (typeof r.skin === 'string' && d.skins.includes(r.skin)) d.skin = r.skin;
+  d.stash = !!r.stash;
+  d.reviveTokens = Math.min(REVIVE_TOKEN_MAX, Math.max(0, Math.floor(num(r.reviveTokens, 0))));
+  d.xpBoost = Math.max(0, Math.floor(num(r.xpBoost, 0)));
+  if (typeof r.adDay === 'string') d.adDay = r.adDay;
+  d.adDiamonds = Math.max(0, num(r.adDiamonds, 0));
+  if (typeof r.buyer === 'string' && /^[0-9a-f-]{36}$/i.test(r.buyer)) d.buyer = r.buyer;
+  if (!d.stash) d.gear = d.gear.slice(0, GEAR_MAX);
   if (r.equipped && typeof r.equipped === 'object')
     for (const slot of ['armor', 'trinket'] as const) {
       const uid = r.equipped[slot];
@@ -336,7 +404,9 @@ export interface RunResult {
   brainsGained: number;
   levelsGained: number[];
   rewards: string[];
-  missionsDone: { text: string; reward: number }[];
+  missionsDone: { text: string; reward: number; diamonds: number }[];
+  diamondsGained: number;
+  xpBoosted: boolean;
   newBest: boolean;
   badges: BadgeDef[]; // unlocked at the end of this run (live unlocks are tracked by the caller)
   challengeBeaten: boolean;
@@ -416,7 +486,7 @@ class Meta {
   }
 
   unlockGun(id: string) {
-    if (this.data.unlocked.includes(id) || !this.spend(GUN_UNLOCK[id] ?? 0)) return false;
+    if (this.data.unlocked.includes(id) || !(id in GUN_UNLOCK) || !this.spend(GUN_UNLOCK[id])) return false;
     this.data.unlocked.push(id);
     if (this.data.loadout.length < this.slots()) this.data.loadout.push(id);
     this.save();
@@ -455,7 +525,7 @@ class Meta {
 
   /** Adds loot to the stash; when it's full the item is scrapped for brains. Returns brains given instead. */
   addGear(it: GearItem): number {
-    if (this.data.gear.length >= GEAR_MAX) {
+    if (this.data.gear.length >= this.gearMax()) {
       this.data.brains += SCRAP_VALUE[it.rarity];
       this.save();
       return SCRAP_VALUE[it.rarity];
@@ -487,10 +557,135 @@ class Meta {
 
   /** Buys a supply crate with brains: one random piece of gear. */
   buyCrate(): GearItem | null {
-    if (this.data.gear.length >= GEAR_MAX || !this.spend(CRATE_COST)) return null;
+    if (this.data.gear.length >= this.gearMax() || !this.spend(CRATE_COST)) return null;
     const it = rollGear(Math.min(30, this.data.best), 0.3);
     this.addGear(it);
     return it;
+  }
+
+  gearMax() {
+    return GEAR_MAX + (this.data.stash ? STASH_BONUS : 0);
+  }
+
+  // -------------------------------------------------------------- diamonds
+
+  spendDiamonds(cost: number) {
+    if (this.data.diamonds < cost) return false;
+    this.data.diamonds -= cost;
+    this.save();
+    return true;
+  }
+
+  addDiamonds(n: number) {
+    this.data.diamonds += Math.max(0, Math.floor(n));
+    this.save();
+  }
+
+  addBrains(n: number) {
+    this.data.brains += Math.max(0, Math.floor(n));
+    this.save();
+  }
+
+  /** Free diamond ads left today. */
+  adDiamondsLeft() {
+    if (this.data.adDay !== today()) return AD_DIAMONDS_PER_DAY;
+    return Math.max(0, AD_DIAMONDS_PER_DAY - this.data.adDiamonds);
+  }
+
+  rewardDiamondAd() {
+    const d = this.data;
+    if (d.adDay !== today()) {
+      d.adDay = today();
+      d.adDiamonds = 0;
+    }
+    if (d.adDiamonds >= AD_DIAMONDS_PER_DAY) return 0;
+    d.adDiamonds++;
+    d.diamonds += AD_DIAMONDS;
+    this.save();
+    return AD_DIAMONDS;
+  }
+
+  buySkin(id: string) {
+    const s = skinById(id);
+    if (!s || this.data.skins.includes(id) || !this.spendDiamonds(s.price)) return false;
+    this.data.skins.push(id);
+    this.data.skin = id;
+    this.save();
+    return true;
+  }
+
+  wearSkin(id: string) {
+    this.data.skin = id === '' || this.data.skins.includes(id) ? id : this.data.skin;
+    this.save();
+  }
+
+  skinColors(): [string, string, string] | null {
+    return skinById(this.data.skin)?.colors ?? null;
+  }
+
+  buyPrism() {
+    if (this.data.unlocked.includes('prism') || !this.spendDiamonds(DIAMOND_PRICE.prism)) return false;
+    this.data.unlocked.push('prism');
+    if (this.data.loadout.length < this.slots()) this.data.loadout.push('prism');
+    this.save();
+    return true;
+  }
+
+  buyStash() {
+    if (this.data.stash || !this.spendDiamonds(DIAMOND_PRICE.stash)) return false;
+    this.data.stash = true;
+    this.save();
+    return true;
+  }
+
+  /** Elite crate: always epic, sometimes legendary. */
+  buyEliteCrate(): GearItem | null {
+    if (this.data.gear.length >= this.gearMax() || !this.spendDiamonds(DIAMOND_PRICE.eliteCrate)) return null;
+    const it = rollGear(Math.min(30, this.data.best), 1);
+    it.rarity = Math.random() < 0.2 ? 'legendary' : 'epic';
+    this.addGear(it);
+    return it;
+  }
+
+  buyBrains() {
+    if (!this.spendDiamonds(DIAMOND_PRICE.brains)) return false;
+    this.addBrains(BRAIN_BUNDLE);
+    return true;
+  }
+
+  buyReviveToken() {
+    if (this.data.reviveTokens >= REVIVE_TOKEN_MAX || !this.spendDiamonds(DIAMOND_PRICE.reviveToken)) return false;
+    this.data.reviveTokens++;
+    this.save();
+    return true;
+  }
+
+  useReviveToken() {
+    if (this.data.reviveTokens <= 0) return false;
+    this.data.reviveTokens--;
+    this.save();
+    return true;
+  }
+
+  buyXpBoost() {
+    if (!this.spendDiamonds(DIAMOND_PRICE.xpBoost)) return false;
+    this.data.xpBoost += XP_BOOST_RUNS;
+    this.save();
+    return true;
+  }
+
+  /** Swaps one unfinished daily mission for a different one. */
+  rerollMission(id: string) {
+    const d = this.data;
+    const i = d.missions.findIndex((m) => m.id === id && !m.done);
+    if (i < 0) return false;
+    const taken = new Set(d.missions.map((m) => m.id));
+    const killDup = d.missions.some((m, j) => j !== i && m.id.startsWith('kill'));
+    const pool = MISSIONS.filter((m) => !taken.has(m.id) && !(killDup && m.id.startsWith('kill')));
+    if (!pool.length || !this.spendDiamonds(DIAMOND_PRICE.reroll)) return false;
+    d.missions[i] = { id: pool[Math.floor(Math.random() * pool.length)].id, progress: 0, done: false };
+    this.save();
+    return true;
   }
 
   /** Unlocks any badges this run has earned so far; pays their brains right away. */
@@ -502,6 +697,7 @@ class Meta {
     for (const b of got) {
       d.badges.push(b.id);
       d.brains += b.reward;
+      d.diamonds += BADGE_DIAMONDS;
     }
     this.save();
     return got;
@@ -512,12 +708,12 @@ class Meta {
     this.refreshMissions();
     const mdef = MODES.find((m) => m.id === mode) ?? MODES[0];
     const challengeBeaten = !!challenge && r.wave > challenge.wave;
-    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains * (1 + this.gearBonus().brains)), levelsGained: [], rewards: [], missionsDone: [], newBest: false, badges: [], challengeBeaten };
+    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains * (1 + this.gearBonus().brains)), levelsGained: [], rewards: [], missionsDone: [], newBest: false, badges: [], challengeBeaten, diamondsGained: 0, xpBoosted: false };
     if (challengeBeaten) {
       res.brainsGained += 40;
       res.rewards.push(`Challenge beaten: +40 🧠`);
     }
-    if (r.wave > 0) {
+    if (r.wave > 0 && mode !== 'campaign') {
       d.records.push({ wave: r.wave, kills: r.kills, mode, map, day: today() });
       d.records.sort((a, b) => b.wave - a.wave || b.kills - a.kills);
       d.records = d.records.slice(0, 10);
@@ -527,7 +723,7 @@ class Meta {
     d.totals.bosses += r.bosses;
     // The headline "best wave" is for normal runs; every mode also keeps its own best.
     if ((mode === 'endless' || mode === 'hardcore') && r.wave > d.best) d.best = r.wave;
-    if (r.wave > (d.bests[mode] ?? 0)) {
+    if (mode !== 'campaign' && r.wave > (d.bests[mode] ?? 0)) {
       d.bests[mode] = r.wave;
       res.newBest = true;
     }
@@ -550,15 +746,23 @@ class Meta {
         m.progress = def.goal;
         m.done = true;
         res.brainsGained += def.reward;
-        res.missionsDone.push({ text: def.text, reward: def.reward });
+        const dia = missionDiamonds(def.reward);
+        res.diamondsGained += dia;
+        res.missionsDone.push({ text: def.text, reward: def.reward, diamonds: dia });
       }
     }
     res.xpGained = Math.round(r.kills + r.wave * 15 + r.bosses * 120 + r.elites * 10);
+    if (d.xpBoost > 0 && r.wave > 0) {
+      d.xpBoost--;
+      res.xpGained *= 2;
+      res.xpBoosted = true;
+    }
     d.xp += res.xpGained;
     while (d.xp >= xpToNext(d.level)) {
       d.xp -= xpToNext(d.level);
       d.level++;
       res.levelsGained.push(d.level);
+      res.diamondsGained += LEVEL_DIAMONDS;
       const rw = LEVEL_REWARDS.find((x) => x.level === d.level);
       if (rw) res.rewards.push(`Level ${d.level}: ${rw.text}`);
       else {
@@ -568,9 +772,33 @@ class Meta {
       }
     }
     d.brains += res.brainsGained;
+    d.diamonds += res.diamondsGained;
     res.badges = this.unlockBadges(r, mode, challengeBeaten);
     this.save();
     return res;
+  }
+
+  /** Story mode: an op is open once the one before it is cleared. */
+  opUnlocked(i: number) {
+    return i === 0 || (this.data.campaign[OPS[i - 1]?.id] ?? 0) > 0;
+  }
+
+  /** Records a cleared op. Pays the op's reward on the first clear and 15 brains per new star after that. */
+  clearOp(id: string, stars: number) {
+    const op = OPS.find((o) => o.id === id);
+    if (!op) return { brains: 0, first: false, newStars: 0 };
+    const had = this.data.campaign[id] ?? 0;
+    const first = had === 0;
+    const newStars = Math.max(0, stars - had);
+    const brains = (first ? op.reward : 0) + (first ? Math.max(0, newStars - 1) : newStars) * 15;
+    if (stars > had) this.data.campaign[id] = stars;
+    this.data.brains += brains;
+    this.save();
+    return { brains, first, newStars };
+  }
+
+  campaignStars() {
+    return Object.values(this.data.campaign).reduce((a, b) => a + b, 0);
   }
 
   exportCode() {

@@ -1,17 +1,22 @@
 import './style.css';
+import './tactical.css';
 import { Sfx } from './audio';
-import { Game, RunSummary, SUITS } from './game';
+import { Game, OpResult, RunSummary, SUITS } from './game';
 import { Input } from './input';
 import { Challenge, dailySetup, GUN_UNLOCK, LEVEL_REWARDS, MASTERY_MAX, masteryCost, meta, MISSIONS, MODES, MUTATORS, RunResult, today, TRAINING, trainingCost, xpToNext } from './meta';
 import { MAPS, mapById } from './maps';
 import { WEAPONS } from './data';
+import { goalText, OPS, star3Text } from './campaign';
 import { challengeCode, challengeLink, isFramed, LIVE_URL, makeShareCard, parseChallenge, SaveOutcome, shareCard, shareFile } from './share';
 import { BadgeDef, BADGES } from './achievements';
 import { Clip, ClipRecorder } from './clips';
 import { gearDef, gearValue, RARITIES, RARITY_COLOR, SCRAP_VALUE } from './gear';
-import { CRATE_COST, GEAR_MAX } from './meta';
+import { CRATE_COST } from './meta';
 import { boardFor, cleanName, leaderboardsOn, postScore, Score, topScores } from './leaderboard';
 import { NetMsg, Room } from './net';
+import { ads, AdPlacement, AdResult } from './monetize/ads';
+import { pay, PACKS } from './monetize/pay';
+import { AD_DIAMONDS, BADGE_DIAMONDS, BRAIN_BUNDLE, LEVEL_DIAMONDS, DIAMOND_PRICE, missionDiamonds, REVIVE_TOKEN_MAX, SKINS, STASH_BONUS, XP_BOOST_RUNS } from './diamonds';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -20,7 +25,7 @@ const input = new Input(canvas);
 input.touchMode = window.matchMedia('(pointer: coarse)').matches;
 const sfx = new Sfx();
 
-const screens = ['menu', 'modes', 'coop', 'base', 'perks', 'shop', 'pause', 'over'];
+const screens = ['menu', 'modes', 'coop', 'base', 'perks', 'shop', 'pause', 'revive', 'over'];
 function show(id: string | null) {
   for (const s of screens) $(s).classList.toggle('hidden', s !== id);
   canvas.style.cursor = id === null && !input.touchMode ? 'none' : 'default';
@@ -33,12 +38,17 @@ const game = new Game(canvas, input, sfx, {
     clips.pause(true);
     showPerks();
   },
-  onGameOver: (s) => setTimeout(() => showGameOver(s), 900),
+  onGameOver: (s) => setTimeout(() => (game.op ? showOpOver({ op: game.op, won: false, time: game.opProgress().t, hits: s.report.hitsTaken, hpFrac: 0, summary: s }) : showGameOver(s)), 900),
+  onOpEnd: (r) => setTimeout(() => showOpOver(r), 400),
   onPause: () => {
     clips.pause(true);
     show('pause');
   },
   onHighlight: (label) => clips.mark(label),
+  onReviveOffer: () => {
+    clips.pause(true);
+    offerRevive();
+  },
 });
 
 // Dev builds only: lets browser tests drive the game.
@@ -97,6 +107,8 @@ function showShop() {
     b.querySelector('.label')!.textContent = item.label;
     b.querySelector('.sub')!.textContent = item.sub;
     b.querySelector('.price')!.textContent = `$${item.price}`;
+    const gun = /^(buy|up):/.test(item.id) ? WEAPONS.find((w) => w.id === item.id.split(':')[1]) : undefined;
+    if (gun) b.firstElementChild!.insertAdjacentHTML('beforeend', gunStats(gun));
     b.addEventListener('click', () => {
       if (game.buy(item.id)) showShop();
     });
@@ -106,13 +118,21 @@ function showShop() {
 }
 
 let shareCanvas: HTMLCanvasElement | null = null;
+let lastRes: RunResult | null = null;
+let lastBadges: BadgeDef[] = [];
+/** The 2x brains ad was already used on this game-over screen. */
+let doubled = false;
 let lastRun: RunSummary | null = null;
 
 function showGameOver(s: RunSummary) {
+  overMode(null);
   const scene = game.snapshot();
   clips.finish('Last stand');
   const res = meta.finishRun(s.report, game.mode, game.map.id, game.challenge);
   const badges = [...runBadges, ...res.badges];
+  lastRes = res;
+  lastBadges = badges;
+  doubled = false;
   runBadges = [];
   if (res.levelsGained.length) sfx.play('levelup');
   lastRun = s;
@@ -125,6 +145,7 @@ function showGameOver(s: RunSummary) {
     `Reached <b>wave ${s.wave}</b>${res.newBest ? ' 🏆 new best!' : ` (best: wave ${meta.data.bests[game.mode] ?? 0})`}<br>` +
     `<b>${s.kills}</b> zombies killed<br>Best combo <b>x${s.bestCombo}</b><br><b>$${s.cash}</b> earned · survived <b>${m}:${sec}</b>`;
   $('over-rewards').innerHTML = rewardsHtml(res, badges);
+  renderDoubleAd();
   shareCanvas = makeShareCard(s, scene, meta.data.level, res.newBest, runLabel().toUpperCase(), badges);
   $<HTMLImageElement>('share-img').src = shareCanvas.toDataURL('image/jpeg', 0.8);
   $('share-msg').textContent = '';
@@ -142,10 +163,109 @@ function showGameOver(s: RunSummary) {
   show('over');
 }
 
+/** Bar chart of a gun's damage, fire rate, magazine and range, scaled against the whole arsenal. */
+type Gun = (typeof WEAPONS)[number];
+const GUN_STATS: [string, (w: Gun) => number][] = [
+  ['DMG', (w) => w.damage * w.pellets],
+  ['RATE', (w) => w.fireRate],
+  ['MAG', (w) => w.mag],
+  ['RNG', (w) => w.speed * w.life],
+];
+const GUN_MAX = GUN_STATS.map(([, f]) => Math.max(...WEAPONS.map(f)));
+function gunStats(w: Gun) {
+  const rows = GUN_STATS.map(([label, f], i) => {
+    // Square root so one extreme gun (minigun rate, rocket damage) doesn't flatten everything else.
+    const pct = Math.max(6, Math.round(Math.sqrt(f(w) / GUN_MAX[i]) * 100));
+    return `<span>${label}</span><i><b style="width:${pct}%"></b></i>`;
+  });
+  return `<div class="wstats">${rows.join('')}</div>`;
+}
+
+// ------------------------------------------------------------------ story mode
+
+/** The op picked on the modes screen (index into OPS). */
+let opPick = Math.max(0, OPS.findIndex((o, i) => meta.opUnlocked(i) && !meta.data.campaign[o.id]));
+if (opPick < 0 || !meta.opUnlocked(opPick)) opPick = 0;
+/** What the PLAY AGAIN button does after an op: retry it, or go to the next one. */
+let opAfter: { retry: number; next: number } | null = null;
+
+const stars = (n: number) => '★'.repeat(n) + '☆'.repeat(3 - n);
+
+function startOp(i: number) {
+  const op = OPS[i];
+  if (!op || !meta.opUnlocked(i)) return;
+  opPick = i;
+  sfx.unlock();
+  goFullscreen();
+  challenge = null;
+  game.configureOp(op);
+  game.modeLabel = 'STORY';
+  runBadges = [];
+  game.newRun();
+  show(null);
+  game.startOp();
+  clips.start();
+}
+
+/** Switches the game over screen between a normal run and a story op. */
+function overMode(r: { won: boolean; next: boolean } | null) {
+  const h = document.querySelector('#over h2') as HTMLElement;
+  h.textContent = r ? (r.won ? 'Mission complete' : 'Mission failed') : 'You got eaten';
+  h.className = r?.won ? 'green' : 'red';
+  $('again').textContent = r ? (r.won && r.next ? 'NEXT MISSION ▶' : r.won ? 'PLAY AGAIN' : 'RETRY') : 'PLAY AGAIN';
+  if (!r) opAfter = null;
+}
+
+function showOpOver(r: OpResult) {
+  if (!$('over').classList.contains('hidden')) return;
+  const scene = game.snapshot();
+  clips.finish(r.won ? `${r.op.name} complete` : 'Last stand');
+  const i = OPS.findIndex((o) => o.id === r.op.id);
+  const s3 = r.op.star3;
+  const third = r.won && (s3.type === 'time' ? r.time <= s3.s : r.hits <= s3.n);
+  const got = r.won ? 1 + (r.hpFrac >= 0.5 ? 1 : 0) + (third ? 1 : 0) : 0;
+  const clear = r.won ? meta.clearOp(r.op.id, got) : { brains: 0, first: false, newStars: 0 };
+  const res = meta.finishRun(r.summary.report, 'campaign', game.map.id, null);
+  if (clear.brains) {
+    res.rewards.unshift(clear.first ? `First clear: +${clear.brains} 🧠` : `New stars: +${clear.brains} 🧠`);
+    res.brainsGained += clear.brains;
+  }
+  const badges = [...runBadges, ...res.badges];
+  runBadges = [];
+  if (res.levelsGained.length || r.won) sfx.play('levelup');
+  lastRun = r.summary;
+  const m = Math.floor(r.time / 60);
+  const sec = Math.floor(r.time % 60)
+    .toString()
+    .padStart(2, '0');
+  const row = (ok: boolean, text: string) => `<span class="${ok ? 'gold' : 'dim'}">${ok ? '★' : '☆'} ${esc(text)}</span>`;
+  $('over-stats').innerHTML =
+    `<b>Op ${i + 1}: ${esc(r.op.name)}</b> · ${esc(game.map.name)}<br>` +
+    `<span class="op-stars">${stars(got)}</span>${(meta.data.campaign[r.op.id] ?? 0) > got ? ` <span class="dim">(best ${stars(meta.data.campaign[r.op.id])})</span>` : ''}<br>` +
+    `${row(r.won, goalText(r.op.goal))}<br>${row(r.won && r.hpFrac >= 0.5, 'Finish with half your health or more')}<br>${row(third, star3Text(s3))}<br>` +
+    `<span class="dim">${m}:${sec} · ${r.hits} hits taken · ${r.summary.kills} kills</span>`;
+  $('over-rewards').innerHTML = rewardsHtml(res, badges);
+  shareCanvas = makeShareCard(r.summary, scene, meta.data.level, false, `STORY · ${r.op.name.toUpperCase()} ${stars(got)}`, badges);
+  $<HTMLImageElement>('share-img').src = shareCanvas.toDataURL('image/jpeg', 0.8);
+  $('share-msg').textContent = '';
+  $('challenge-out').classList.add('hidden');
+  $('lb-box').classList.add('hidden');
+  $('challenge-btn').classList.add('hidden');
+  const hasNext = i + 1 < OPS.length && meta.opUnlocked(i + 1);
+  overMode({ won: r.won, next: hasNext });
+  opAfter = { retry: i, next: r.won && hasNext ? i + 1 : i };
+  showing = null;
+  renderClips();
+  refreshMenu();
+  show('over');
+}
+
 const esc = (t: string) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
 
 function rewardsHtml(r: RunResult, badges: BadgeDef[]) {
-  const lines = [`<div class="gain"><span>+${r.xpGained} XP</span><span class="pink">+${r.brainsGained + badges.reduce((a, b) => a + b.reward, 0)} 🧠</span></div>`];
+  const dia = r.diamondsGained + badges.length * BADGE_DIAMONDS;
+  const brains = r.brainsGained * (doubled ? 2 : 1) + badges.reduce((a, b) => a + b.reward, 0);
+  const lines = [`<div class="gain"><span>+${r.xpGained} XP${r.xpBoosted ? ' (2x)' : ''}</span><span class="pink">+${brains} 🧠${doubled ? ' (2x)' : ''}</span>${dia ? `<span class="cyan">+${dia} 💎</span>` : ''}</div>`];
   for (const it of game.loot) {
     const g = gearDef(it.id)!;
     lines.push(`<div class="badge-got" style="color:${RARITY_COLOR[it.rarity]}">📦 Loot: ${g.icon} <b>${it.rarity} ${esc(g.name)}</b></div>`);
@@ -153,7 +273,7 @@ function rewardsHtml(r: RunResult, badges: BadgeDef[]) {
   for (const b of badges) lines.push(`<div class="badge-got">${b.icon} Badge: <b>${esc(b.name)}</b> <span class="pink">+${b.reward} 🧠</span></div>`);
   for (const lv of r.levelsGained) if (!r.rewards.some((x) => x.startsWith(`Level ${lv}:`))) lines.push(`<div class="lvup">LEVEL ${lv}!</div>`);
   for (const t of r.rewards) lines.push(`<div class="lvup">⬆ ${esc(t)}</div>`);
-  for (const mi of r.missionsDone) lines.push(`<div class="mission-done">✔ ${esc(mi.text)} <span class="pink">+${mi.reward} 🧠</span></div>`);
+  for (const mi of r.missionsDone) lines.push(`<div class="mission-done">✔ ${esc(mi.text)} <span class="pink">+${mi.reward} 🧠</span> <span class="cyan">+${mi.diamonds} 💎</span></div>`);
   const d = meta.data;
   lines.push(`<div class="xpline">LV ${d.level} <div class="xpbar"><div style="width:${Math.round((d.xp / xpToNext(d.level)) * 100)}%"></div></div></div>`);
   return lines.join('');
@@ -170,6 +290,8 @@ function refreshMenu() {
   $('m-xp').style.width = `${Math.round((d.xp / xpToNext(d.level)) * 100)}%`;
   $('m-brains').textContent = String(d.brains);
   $('b-brains').textContent = String(d.brains);
+  $('m-diamonds').textContent = String(d.diamonds);
+  $('b-diamonds').textContent = String(d.diamonds);
   $('best').textContent = `wave ${d.best}`;
   // A dot on the Missions button when today's missions are untouched.
   $('m-missions').classList.toggle('hidden', d.missions.some((m) => m.progress > 0));
@@ -195,9 +317,265 @@ function btn(label: string, cost: number | null, onClick: () => void, cls = '') 
   return b;
 }
 
+/** A plain button whose handler re-renders by itself (for async flows like ads and checkout). */
+function abtn(label: string, onClick: (b: HTMLButtonElement) => void, cls = '') {
+  const b = document.createElement('button');
+  b.className = `buy ${cls}`;
+  b.textContent = label;
+  b.addEventListener('click', () => onClick(b));
+  return b;
+}
+
+/** A buy button priced in diamonds. */
+function dbtn(label: string, cost: number, onClick: () => void, cls = '') {
+  const b = document.createElement('button');
+  b.className = `buy dia-buy ${cls}`;
+  b.innerHTML = `${esc(label)} <span>💎 ${cost}</span>`;
+  if (meta.data.diamonds < cost) b.disabled = true;
+  b.addEventListener('click', () => {
+    onClick();
+    refreshMenu();
+    renderBase();
+  });
+  return b;
+}
+
+let storeMsg = '';
+
+function storeCard(title: string, sub: string, cls = '') {
+  const card = document.createElement('div');
+  card.className = `meta-card store-card ${cls}`;
+  card.innerHTML = `<div class="name"></div><div class="sub"></div>`;
+  (card.children[0] as HTMLElement).innerHTML = title;
+  (card.children[1] as HTMLElement).innerHTML = sub;
+  return card;
+}
+
+function storeHead(text: string, note = '') {
+  const h = document.createElement('h3');
+  h.className = 'store-head';
+  h.innerHTML = `${esc(text)}${note ? ` <span class="test-tag">${esc(note)}</span>` : ''}`;
+  return h;
+}
+
+function renderStore(body: HTMLElement) {
+  const d = meta.data;
+  if (storeMsg) {
+    const p = document.createElement('p');
+    p.className = 'tag';
+    p.innerHTML = `<b class="gold">${esc(storeMsg)}</b>`;
+    body.appendChild(p);
+    storeMsg = '';
+  }
+  // Free diamonds first: nobody should feel they have to pay.
+  body.appendChild(storeHead('Free diamonds', ads.test ? 'TEST ADS' : ''));
+  const free = document.createElement('div');
+  free.className = 'meta-grid';
+  const left = meta.adDiamondsLeft();
+  const adCard = storeCard('📺 Watch an ad', left ? `+${AD_DIAMONDS} 💎 · ${left} left today` : 'Come back tomorrow for more');
+  const adB = abtn(left ? `Watch +${AD_DIAMONDS} 💎` : 'All watched today', async () => {
+    if (await watchAd('diamonds')) {
+      const n = meta.rewardDiamondAd();
+      storeMsg = n ? `+${n} 💎 Thanks for watching!` : '';
+      sfx.play('power');
+    }
+    refreshMenu();
+    renderBase();
+  });
+  adB.disabled = !left;
+  adCard.appendChild(adB);
+  free.appendChild(adCard);
+  free.appendChild(storeCard('📋 Daily missions', 'Every mission pays 4 to 12 💎. Three new ones every day.'));
+  free.appendChild(storeCard('⬆ Level ups & badges', `+${LEVEL_DIAMONDS} 💎 every level, +${BADGE_DIAMONDS} 💎 every badge.`));
+  body.appendChild(free);
+
+  body.appendChild(storeHead('Diamond packs', pay.test ? 'TEST MODE · NO REAL MONEY' : ''));
+  const packs = document.createElement('div');
+  packs.className = 'meta-grid packs';
+  for (const pk of PACKS) {
+    const card = storeCard(`💎 ${pk.diamonds.toLocaleString()}`, `${pk.bonus ? `<span class="green">${pk.bonus} bonus</span>` : 'Starter'}${pk.tag ? ` · <b class="gold">${pk.tag}</b>` : ''}`, 'pack');
+    const b = abtn(pk.price, async (b) => {
+      b.disabled = true;
+      const r = await pay.buy(pk, d.buyer);
+      if (r.ok) {
+        meta.addDiamonds(r.diamonds);
+        storeMsg = `+${r.diamonds.toLocaleString()} 💎 added. Thank you!`;
+        sfx.play('levelup');
+      } else if (r.redirecting) return;
+      else if (r.error) storeMsg = r.error;
+      refreshMenu();
+      renderBase();
+    }, 'price');
+    card.appendChild(b);
+    packs.appendChild(card);
+  }
+  body.appendChild(packs);
+
+  body.appendChild(storeHead('Exclusive'));
+  const ex = document.createElement('div');
+  ex.className = 'meta-grid';
+  const prism = WEAPONS.find((w) => w.id === 'prism')!;
+  const ownPrism = d.unlocked.includes('prism');
+  const pc = storeCard(`🔫 ${esc(prism.name)}`, 'Diamond-only gun. A laser that slices through 10 zombies in a line. Weaker against big crowds.', 'exclusive');
+  if (ownPrism) pc.appendChild(btn('Owned · equip in Armory', null, () => (tab = 'armory'), 'on'));
+  else pc.appendChild(dbtn('Unlock', DIAMOND_PRICE.prism, () => meta.buyPrism() && sfx.play('levelup')));
+  ex.appendChild(pc);
+  for (const sk of SKINS) {
+    const own = d.skins.includes(sk.id);
+    const on = d.skin === sk.id;
+    const c = storeCard(`<span class="swatch" style="background:${sk.colors[0]};border-color:${sk.colors[2]}"></span> ${esc(sk.name)}`, 'Skin: your soldier wears it in every run.', 'exclusive');
+    if (!own) c.appendChild(dbtn('Buy', sk.price, () => meta.buySkin(sk.id) && sfx.play('perk')));
+    else c.appendChild(btn(on ? 'Wearing · take off' : 'Wear', null, () => meta.wearSkin(on ? '' : sk.id), on ? 'on' : ''));
+    ex.appendChild(c);
+  }
+  const st = storeCard('🎒 Bigger stash', d.stash ? `Done: your stash holds ${meta.gearMax()} items.` : `+${STASH_BONUS} gear slots, forever.`);
+  if (!d.stash) st.appendChild(dbtn('Expand', DIAMOND_PRICE.stash, () => meta.buyStash() && sfx.play('buy')));
+  ex.appendChild(st);
+  body.appendChild(ex);
+
+  body.appendChild(storeHead('Boosts'));
+  const bo = document.createElement('div');
+  bo.className = 'meta-grid';
+  const crate = storeCard('📦 Elite crate', 'One piece of gear, always epic, 1 in 5 legendary.');
+  crate.appendChild(
+    dbtn('Open', DIAMOND_PRICE.eliteCrate, () => {
+      const it = meta.buyEliteCrate();
+      if (it) {
+        sfx.play('levelup');
+        storeMsg = `You got: ${gearDef(it.id)!.icon} ${it.rarity} ${gearDef(it.id)!.name}`;
+      } else if (d.gear.length >= meta.gearMax()) storeMsg = 'Your stash is full. Scrap something first.';
+    }),
+  );
+  bo.appendChild(crate);
+  const br = storeCard(`🧠 ${BRAIN_BUNDLE} brains`, 'Skip some grinding for guns and training.');
+  br.appendChild(dbtn('Buy', DIAMOND_PRICE.brains, () => meta.buyBrains() && sfx.play('buy')));
+  bo.appendChild(br);
+  const rt = storeCard('✚ Revive token', `Get back up on the death screen. You have ${d.reviveTokens}/${REVIVE_TOKEN_MAX}.`);
+  if (d.reviveTokens < REVIVE_TOKEN_MAX) rt.appendChild(dbtn('Buy', DIAMOND_PRICE.reviveToken, () => meta.buyReviveToken() && sfx.play('buy')));
+  bo.appendChild(rt);
+  const xp = storeCard('⭐ Double XP', `2x XP for your next ${XP_BOOST_RUNS} runs.${d.xpBoost ? ` ${d.xpBoost} runs left.` : ''}`);
+  xp.appendChild(dbtn('Buy', DIAMOND_PRICE.xpBoost, () => meta.buyXpBoost() && sfx.play('buy')));
+  bo.appendChild(xp);
+  body.appendChild(bo);
+  const fine = document.createElement('p');
+  fine.className = 'sub';
+  fine.textContent = 'Diamonds live in your save, like brains. Back it up with the Save tab before switching phones.';
+  body.appendChild(fine);
+}
+
+// ------------------------------------------------------------------ rewarded ads
+
+let adBusy = false;
+
+/** Shows a rewarded ad. True only if the player watched it to the end. */
+async function watchAd(place: AdPlacement): Promise<boolean> {
+  if (adBusy) return false;
+  adBusy = true;
+  sfx.duck(true);
+  let r: AdResult = 'unavailable';
+  try {
+    r = await ads.showRewarded(place);
+  } finally {
+    sfx.duck(false);
+    adBusy = false;
+  }
+  if (r === 'unavailable') notice('No ad available right now. Try again in a minute.');
+  return r === 'rewarded';
+}
+
+let noticeT = 0;
+function notice(text: string) {
+  const n = $('notice');
+  n.textContent = text;
+  n.classList.remove('hidden');
+  clearTimeout(noticeT);
+  noticeT = window.setTimeout(() => n.classList.add('hidden'), 3500);
+}
+
+/** Game-over offer: watch an ad to double the brains from this run. */
+function renderDoubleAd() {
+  const b = $<HTMLButtonElement>('over-ad');
+  const n = lastRes?.brainsGained ?? 0;
+  b.classList.toggle('hidden', doubled || n < 10);
+  b.disabled = false;
+  b.textContent = `📺 Watch an ad: double your brains (+${n} 🧠)`;
+}
+
+$('over-ad').addEventListener('click', async () => {
+  if (!lastRes || doubled) return;
+  const b = $<HTMLButtonElement>('over-ad');
+  b.disabled = true;
+  if (await watchAd('double')) {
+    doubled = true;
+    meta.addBrains(lastRes.brainsGained);
+    sfx.play('levelup');
+    $('over-rewards').innerHTML = rewardsHtml(lastRes, lastBadges);
+    refreshMenu();
+  }
+  renderDoubleAd();
+});
+
+// ------------------------------------------------------------------ revive offer
+
+const REVIVE_SECONDS = 10;
+let rvLeft = 0;
+let rvTimer = 0;
+
+function offerRevive() {
+  rvLeft = REVIVE_SECONDS;
+  $('rv-msg').textContent = ads.test ? 'Test ads: no ad network connected yet.' : '';
+  renderRevive();
+  show('revive');
+  clearInterval(rvTimer);
+  rvTimer = window.setInterval(() => {
+    if (adBusy) return; // the clock stops while an ad plays
+    rvLeft -= 0.1;
+    $('rv-bar').style.width = `${Math.max(0, (rvLeft / REVIVE_SECONDS) * 100)}%`;
+    if (rvLeft <= 0) giveUp();
+  }, 100);
+}
+
+function renderRevive() {
+  const d = meta.data;
+  const tok = $<HTMLButtonElement>('rv-token');
+  tok.textContent = `✚ Use revive token (${d.reviveTokens})`;
+  tok.disabled = d.reviveTokens <= 0;
+  const dia = $<HTMLButtonElement>('rv-dia');
+  dia.innerHTML = `Revive <span>💎 ${DIAMOND_PRICE.reviveNow}</span>`;
+  dia.disabled = d.diamonds < DIAMOND_PRICE.reviveNow;
+  $('rv-bar').style.width = `${(rvLeft / REVIVE_SECONDS) * 100}%`;
+}
+
+function revived() {
+  clearInterval(rvTimer);
+  refreshMenu();
+  show(null);
+  game.reviveNow();
+  clips.pause(false);
+}
+
+function giveUp() {
+  clearInterval(rvTimer);
+  if (!game.awaitingRevive) return;
+  show(null);
+  game.endRun();
+}
+
+$('rv-ad').addEventListener('click', async () => {
+  sfx.unlock();
+  if (await watchAd('revive')) revived();
+  else if (game.awaitingRevive) $('rv-msg').textContent = 'No reward without watching it all. You can still use a token or diamonds.';
+});
+$('rv-token').addEventListener('click', () => meta.useReviveToken() && revived());
+$('rv-dia').addEventListener('click', () => meta.spendDiamonds(DIAMOND_PRICE.reviveNow) && revived());
+$('rv-no').addEventListener('click', giveUp);
+$('rv-back').addEventListener('click', giveUp);
+
 function renderBase() {
   for (const b of document.querySelectorAll<HTMLButtonElement>('#base .tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
   $('b-brains').textContent = String(meta.data.brains);
+  $('base-title').textContent = tab[0].toUpperCase() + tab.slice(1);
+  $('b-diamonds').textContent = String(meta.data.diamonds);
   const body = $('base-body');
   body.innerHTML = '';
   const d = meta.data;
@@ -216,8 +594,9 @@ function renderBase() {
       const lv = meta.mastery(w.id);
       const card = document.createElement('div');
       card.className = `meta-card${owned ? '' : ' locked'}${d.loadout.includes(w.id) && owned ? ' equipped' : ''}`;
-      card.innerHTML = `<div class="name">${esc(w.name)}</div><div class="sub">Mastery ${lv}/${MASTERY_MAX}</div><div class="pips">${'■'.repeat(lv)}${'□'.repeat(MASTERY_MAX - lv)}</div>`;
-      if (!owned) card.appendChild(btn('Unlock', GUN_UNLOCK[w.id], () => meta.unlockGun(w.id) && sfx.play('buy')));
+      card.innerHTML = `<div class="name">${esc(w.name)}</div><div class="sub">Mastery ${lv}/${MASTERY_MAX}</div><div class="pips">${'■'.repeat(lv)}${'□'.repeat(MASTERY_MAX - lv)}</div>${gunStats(w)}`;
+      if (!owned && w.exclusive) card.appendChild(btn('💎 In the Shop', null, () => (tab = 'store')));
+      else if (!owned) card.appendChild(btn('Unlock', GUN_UNLOCK[w.id], () => meta.unlockGun(w.id) && sfx.play('buy')));
       else {
         const inLo = d.loadout.slice(0, meta.slots()).includes(w.id);
         card.appendChild(btn(inLo ? 'Equipped' : 'Equip', null, () => meta.equip(w.id), inLo ? 'on' : ''));
@@ -246,7 +625,8 @@ function renderBase() {
       const def = MISSIONS.find((x) => x.id === m.id)!;
       const row = document.createElement('div');
       row.className = `mission${m.done ? ' done' : ''}`;
-      row.innerHTML = `<div class="mtext">${m.done ? '✔ ' : ''}${esc(def.text)}</div><div class="xpbar"><div style="width:${Math.round((m.progress / def.goal) * 100)}%"></div></div><div class="sub">${Math.floor(m.progress)} / ${def.goal} · <span class="pink">+${def.reward} 🧠</span></div>`;
+      row.innerHTML = `<div class="mtext">${m.done ? '✔ ' : ''}${esc(def.text)}</div><div class="xpbar"><div style="width:${Math.round((m.progress / def.goal) * 100)}%"></div></div><div class="sub">${Math.floor(m.progress)} / ${def.goal} · <span class="pink">+${def.reward} 🧠</span> <span class="cyan">+${missionDiamonds(def.reward)} 💎</span></div>`;
+      if (!m.done) row.appendChild(dbtn('🎲 Swap', DIAMOND_PRICE.reroll, () => meta.rerollMission(m.id) && sfx.play('buy'), 'reroll'));
       list.appendChild(row);
     }
     body.appendChild(list);
@@ -257,6 +637,8 @@ function renderBase() {
     body.appendChild(p);
   } else if (tab === 'ranks') {
     void renderRanks(body);
+  } else if (tab === 'store') {
+    renderStore(body);
   } else if (tab === 'gear') {
     const slots = document.createElement('div');
     slots.className = 'gear-slots';
@@ -285,7 +667,7 @@ function renderBase() {
     body.appendChild(slots);
     const p = document.createElement('p');
     p.className = 'tag';
-    p.innerHTML = gearMsg ? `<b class="gold">${esc(gearMsg)}</b>` : `Stash ${d.gear.length}/${GEAR_MAX}. Tap Equip to wear it, Scrap to turn it into brains.`;
+    p.innerHTML = gearMsg ? `<b class="gold">${esc(gearMsg)}</b>` : `Stash ${d.gear.length}/${meta.gearMax()}. Tap Equip to wear it, Scrap to turn it into brains.`;
     gearMsg = '';
     body.appendChild(p);
     const grid = document.createElement('div');
@@ -574,7 +956,9 @@ function renderModes() {
   }
   const row = $('map-row');
   row.innerHTML = '';
+  row.className = 'map-row';
   const info = $('mode-info');
+  info.className = 'tag';
   for (const b of cards.querySelectorAll('button')) if (challenge) b.classList.remove('on');
   if (challenge) {
     const c = challenge;
@@ -585,6 +969,31 @@ function renderModes() {
       game.configure(d.mode);
       renderModes();
     });
+  } else if (d.mode === 'campaign') {
+    if (!meta.opUnlocked(opPick)) opPick = 0;
+    row.className = 'op-row';
+    OPS.forEach((op, i) => {
+      const open = meta.opUnlocked(i);
+      const got = d.campaign[op.id] ?? 0;
+      const b = document.createElement('button');
+      b.className = `map-chip op-chip${opPick === i ? ' on' : ''}${got ? ' done' : ''}`;
+      b.disabled = !open;
+      b.innerHTML = `<b>${i + 1}. ${esc(op.name)}</b><span class="op-stars">${open ? stars(got) : '🔒'}</span>`;
+      b.addEventListener('click', () => {
+        opPick = i;
+        renderModes();
+      });
+      row.appendChild(b);
+    });
+    const op = OPS[opPick];
+    const guns = op.guns.map((g) => WEAPONS.find((w) => w.id === g)?.name ?? g).join(', ');
+    info.className = 'tag op-brief';
+    info.innerHTML =
+      `<span class="op-head">OP ${opPick + 1} · ${esc(op.name.toUpperCase())} · ${esc(mapById(op.map).name)}</span>` +
+      `<span class="op-text">“${esc(op.brief)}”</span>` +
+      `<span class="op-goal">🎯 ${esc(goalText(op.goal))}  ·  ⭐ ${esc(star3Text(op.star3))}</span>` +
+      `<span class="op-kit">🔫 Field issue: ${esc(guns)}${op.perks?.length ? ` · ${op.perks.length} perks` : ''} · First clear +${op.reward} 🧠</span>`;
+    return;
   } else if (d.mode === 'daily') {
     const ds = dailySetup();
     const muts = ds.mutators.map((id) => MUTATORS.find((x) => x.id === id)!);
@@ -617,6 +1026,10 @@ function startRun() {
   // Fall back if a saved choice is no longer unlocked (e.g. after loading a save code).
   if (d.level < (MODES.find((m) => m.id === d.mode)?.unlock ?? 1)) d.mode = 'endless';
   if (d.level < mapById(d.map).unlock) d.map = 'lot';
+  if (d.mode === 'campaign' && !challenge) {
+    startOp(opPick);
+    return;
+  }
   if (challenge) {
     game.configure(challenge.mode, challenge);
     game.modeLabel = `CHALLENGE · ${MODES.find((m) => m.id === challenge!.mode)!.name.toUpperCase()}`;
@@ -696,7 +1109,7 @@ function renderCoop() {
   $('co-pick').classList.toggle('hidden', !!r);
   $('co-room').classList.toggle('hidden', !r);
   $<HTMLInputElement>('co-name').disabled = !!r;
-  $('co-back').textContent = r ? 'Leave room' : 'Back';
+  $('co-back').querySelector('.back-label')!.textContent = r ? 'LEAVE' : 'BACK';
   if (!r) return;
   $('co-codeview').textContent = r.code;
   const list = $('co-players');
@@ -952,6 +1365,28 @@ setInterval(() => {
   }
 }
 
+// Back from Stripe Checkout (or just opening the game): add any diamonds the server says are paid for.
+async function claimPurchases() {
+  const n = await pay.claim(meta.data.buyer);
+  if (!n) return;
+  meta.addDiamonds(n);
+  refreshMenu();
+  if (!$('base').classList.contains('hidden')) renderBase();
+  notice(`+${n.toLocaleString()} 💎 from your purchase. Thank you!`);
+  sfx.play('levelup');
+}
+{
+  const q = new URLSearchParams(location.search);
+  if (q.has('paid') || q.has('canceled')) {
+    if (q.has('canceled')) notice('Purchase cancelled. No money was taken.');
+    q.delete('paid');
+    q.delete('canceled');
+    history.replaceState(null, '', location.pathname + (q.toString() ? `?${q}` : '') + location.hash);
+  }
+  void claimPurchases();
+  setTimeout(() => void claimPurchases(), 6000); // the webhook can land a few seconds after the redirect
+}
+
 refreshMenu();
 $('play').addEventListener('click', openModes);
 $('start').addEventListener('click', startRun);
@@ -966,6 +1401,10 @@ $('again').addEventListener('click', () => {
       refreshMenu();
       show('menu');
     }
+    return;
+  }
+  if (opAfter) {
+    startOp(opAfter.next);
     return;
   }
   startRun();
@@ -988,13 +1427,42 @@ $('next-wave').addEventListener('click', () => {
   game.startWave();
   clips.pause(false);
 });
+/** Screen the pause menu was opened from between waves (perks or shop), so Resume goes back there. */
+let pausedFrom: string | null = null;
+for (const id of ['perks', 'shop'])
+  $(`${id}-back`).addEventListener('click', () => {
+    pausedFrom = id;
+    show('pause');
+  });
 $('resume').addEventListener('click', () => {
   sfx.unlock();
+  if (pausedFrom) {
+    show(pausedFrom);
+    pausedFrom = null;
+    return;
+  }
   show(null);
   game.state = 'playing';
   clips.pause(false);
 });
+$('pause-back').addEventListener('click', () => $('resume').click());
+$('over-back').addEventListener('click', () => {
+  leaveCoop();
+  game.newRun();
+  game.state = 'menu';
+  refreshMenu();
+  show('menu');
+});
+// Escape works like the on-screen back button of whichever screen is open.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const open = screens.find((s) => !$(s).classList.contains('hidden'));
+  if (!open) return;
+  $(open).querySelector<HTMLButtonElement>('.topbar .back-btn')?.click();
+  input.clearPressed(); // so the game does not also read this Escape as "pause" right after resuming
+});
 $('quit').addEventListener('click', () => {
+  pausedFrom = null;
   clips.stop();
   // Quitting still banks XP, brains and mission progress.
   if (game.wave > 0) meta.finishRun(game.summary().report, game.mode, game.map.id, game.challenge);
@@ -1037,6 +1505,12 @@ $('clips-toggle').addEventListener('click', () => {
   syncClipLabel();
 });
 syncClipLabel();
+// A tiny buzz on every menu button press so taps feel solid on phones.
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') return;
+  const b = (e.target as HTMLElement).closest('button');
+  if (b && !b.disabled) navigator.vibrate?.(8);
+});
 // Any first touch anywhere unlocks audio on mobile browsers.
 window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
 
@@ -1055,4 +1529,4 @@ if (__PWA__ && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
-if (import.meta.env.DEV) Object.assign(window, { game, clips, coop: () => room });
+if (import.meta.env.DEV) Object.assign(window, { game, clips, coop: () => room, ui: { show, showPerks, showShop, openBase, openModes, openCoop } });
