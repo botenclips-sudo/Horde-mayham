@@ -147,10 +147,17 @@ export class Input {
   }
 
   private hitButton(x: number, y: number): string | null {
+    // Generous touch slop; when two buttons are in reach, the closer one wins.
+    let best: string | null = null;
+    let bestD = Infinity;
     for (const b of this.buttons) {
-      if (Math.hypot(x - b.x, y - b.y) <= b.r + 8) return b.id;
+      const d = Math.hypot(x - b.x, y - b.y);
+      if (d <= b.r + 14 && d - b.r < bestD) {
+        best = b.id;
+        bestD = d - b.r;
+      }
     }
-    return null;
+    return best;
   }
 
   /** Movement direction, length 0..1. */

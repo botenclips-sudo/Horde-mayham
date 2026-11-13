@@ -1,4 +1,5 @@
 import './style.css';
+import './tactical.css';
 import { Sfx } from './audio';
 import { Game, RunSummary, SUITS } from './game';
 import { Input } from './input';
@@ -97,6 +98,8 @@ function showShop() {
     b.querySelector('.label')!.textContent = item.label;
     b.querySelector('.sub')!.textContent = item.sub;
     b.querySelector('.price')!.textContent = `$${item.price}`;
+    const gun = /^(buy|up):/.test(item.id) ? WEAPONS.find((w) => w.id === item.id.split(':')[1]) : undefined;
+    if (gun) b.firstElementChild!.insertAdjacentHTML('beforeend', gunStats(gun));
     b.addEventListener('click', () => {
       if (game.buy(item.id)) showShop();
     });
@@ -140,6 +143,24 @@ function showGameOver(s: RunSummary) {
   $('challenge-btn').classList.toggle('hidden', !!game.net);
   coopOverButtons();
   show('over');
+}
+
+/** Bar chart of a gun's damage, fire rate, magazine and range, scaled against the whole arsenal. */
+type Gun = (typeof WEAPONS)[number];
+const GUN_STATS: [string, (w: Gun) => number][] = [
+  ['DMG', (w) => w.damage * w.pellets],
+  ['RATE', (w) => w.fireRate],
+  ['MAG', (w) => w.mag],
+  ['RNG', (w) => w.speed * w.life],
+];
+const GUN_MAX = GUN_STATS.map(([, f]) => Math.max(...WEAPONS.map(f)));
+function gunStats(w: Gun) {
+  const rows = GUN_STATS.map(([label, f], i) => {
+    // Square root so one extreme gun (minigun rate, rocket damage) doesn't flatten everything else.
+    const pct = Math.max(6, Math.round(Math.sqrt(f(w) / GUN_MAX[i]) * 100));
+    return `<span>${label}</span><i><b style="width:${pct}%"></b></i>`;
+  });
+  return `<div class="wstats">${rows.join('')}</div>`;
 }
 
 const esc = (t: string) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
@@ -198,6 +219,7 @@ function btn(label: string, cost: number | null, onClick: () => void, cls = '') 
 function renderBase() {
   for (const b of document.querySelectorAll<HTMLButtonElement>('#base .tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
   $('b-brains').textContent = String(meta.data.brains);
+  $('base-title').textContent = tab[0].toUpperCase() + tab.slice(1);
   const body = $('base-body');
   body.innerHTML = '';
   const d = meta.data;
@@ -216,7 +238,7 @@ function renderBase() {
       const lv = meta.mastery(w.id);
       const card = document.createElement('div');
       card.className = `meta-card${owned ? '' : ' locked'}${d.loadout.includes(w.id) && owned ? ' equipped' : ''}`;
-      card.innerHTML = `<div class="name">${esc(w.name)}</div><div class="sub">Mastery ${lv}/${MASTERY_MAX}</div><div class="pips">${'■'.repeat(lv)}${'□'.repeat(MASTERY_MAX - lv)}</div>`;
+      card.innerHTML = `<div class="name">${esc(w.name)}</div><div class="sub">Mastery ${lv}/${MASTERY_MAX}</div><div class="pips">${'■'.repeat(lv)}${'□'.repeat(MASTERY_MAX - lv)}</div>${gunStats(w)}`;
       if (!owned) card.appendChild(btn('Unlock', GUN_UNLOCK[w.id], () => meta.unlockGun(w.id) && sfx.play('buy')));
       else {
         const inLo = d.loadout.slice(0, meta.slots()).includes(w.id);
@@ -696,7 +718,7 @@ function renderCoop() {
   $('co-pick').classList.toggle('hidden', !!r);
   $('co-room').classList.toggle('hidden', !r);
   $<HTMLInputElement>('co-name').disabled = !!r;
-  $('co-back').textContent = r ? 'Leave room' : 'Back';
+  $('co-back').querySelector('.back-label')!.textContent = r ? 'LEAVE' : 'BACK';
   if (!r) return;
   $('co-codeview').textContent = r.code;
   const list = $('co-players');
@@ -988,13 +1010,42 @@ $('next-wave').addEventListener('click', () => {
   game.startWave();
   clips.pause(false);
 });
+/** Screen the pause menu was opened from between waves (perks or shop), so Resume goes back there. */
+let pausedFrom: string | null = null;
+for (const id of ['perks', 'shop'])
+  $(`${id}-back`).addEventListener('click', () => {
+    pausedFrom = id;
+    show('pause');
+  });
 $('resume').addEventListener('click', () => {
   sfx.unlock();
+  if (pausedFrom) {
+    show(pausedFrom);
+    pausedFrom = null;
+    return;
+  }
   show(null);
   game.state = 'playing';
   clips.pause(false);
 });
+$('pause-back').addEventListener('click', () => $('resume').click());
+$('over-back').addEventListener('click', () => {
+  leaveCoop();
+  game.newRun();
+  game.state = 'menu';
+  refreshMenu();
+  show('menu');
+});
+// Escape works like the on-screen back button of whichever screen is open.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const open = screens.find((s) => !$(s).classList.contains('hidden'));
+  if (!open) return;
+  $(open).querySelector<HTMLButtonElement>('.topbar .back-btn')?.click();
+  input.clearPressed(); // so the game does not also read this Escape as "pause" right after resuming
+});
 $('quit').addEventListener('click', () => {
+  pausedFrom = null;
   clips.stop();
   // Quitting still banks XP, brains and mission progress.
   if (game.wave > 0) meta.finishRun(game.summary().report, game.mode, game.map.id, game.challenge);
@@ -1037,6 +1088,12 @@ $('clips-toggle').addEventListener('click', () => {
   syncClipLabel();
 });
 syncClipLabel();
+// A tiny buzz on every menu button press so taps feel solid on phones.
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') return;
+  const b = (e.target as HTMLElement).closest('button');
+  if (b && !b.disabled) navigator.vibrate?.(8);
+});
 // Any first touch anywhere unlocks audio on mobile browsers.
 window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
 
@@ -1055,4 +1112,4 @@ if (__PWA__ && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
-if (import.meta.env.DEV) Object.assign(window, { game, clips, coop: () => room });
+if (import.meta.env.DEV) Object.assign(window, { game, clips, coop: () => room, ui: { show, showPerks, showShop, openBase, openModes, openCoop } });
