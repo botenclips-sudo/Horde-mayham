@@ -1,11 +1,12 @@
 import './style.css';
 import './tactical.css';
 import { Sfx } from './audio';
-import { Game, RunSummary, SUITS } from './game';
+import { Game, OpResult, RunSummary, SUITS } from './game';
 import { Input } from './input';
 import { Challenge, dailySetup, GUN_UNLOCK, LEVEL_REWARDS, MASTERY_MAX, masteryCost, meta, MISSIONS, MODES, MUTATORS, RunResult, today, TRAINING, trainingCost, xpToNext } from './meta';
 import { MAPS, mapById } from './maps';
 import { WEAPONS } from './data';
+import { goalText, OPS, star3Text } from './campaign';
 import { challengeCode, challengeLink, isFramed, LIVE_URL, makeShareCard, parseChallenge, SaveOutcome, shareCard, shareFile } from './share';
 import { BadgeDef, BADGES } from './achievements';
 import { Clip, ClipRecorder } from './clips';
@@ -37,7 +38,8 @@ const game = new Game(canvas, input, sfx, {
     clips.pause(true);
     showPerks();
   },
-  onGameOver: (s) => setTimeout(() => showGameOver(s), 900),
+  onGameOver: (s) => setTimeout(() => (game.op ? showOpOver({ op: game.op, won: false, time: game.opProgress().t, hits: s.report.hitsTaken, hpFrac: 0, summary: s }) : showGameOver(s)), 900),
+  onOpEnd: (r) => setTimeout(() => showOpOver(r), 400),
   onPause: () => {
     clips.pause(true);
     show('pause');
@@ -123,6 +125,7 @@ let doubled = false;
 let lastRun: RunSummary | null = null;
 
 function showGameOver(s: RunSummary) {
+  overMode(null);
   const scene = game.snapshot();
   clips.finish('Last stand');
   const res = meta.finishRun(s.report, game.mode, game.map.id, game.challenge);
@@ -176,6 +179,85 @@ function gunStats(w: Gun) {
     return `<span>${label}</span><i><b style="width:${pct}%"></b></i>`;
   });
   return `<div class="wstats">${rows.join('')}</div>`;
+}
+
+// ------------------------------------------------------------------ story mode
+
+/** The op picked on the modes screen (index into OPS). */
+let opPick = Math.max(0, OPS.findIndex((o, i) => meta.opUnlocked(i) && !meta.data.campaign[o.id]));
+if (opPick < 0 || !meta.opUnlocked(opPick)) opPick = 0;
+/** What the PLAY AGAIN button does after an op: retry it, or go to the next one. */
+let opAfter: { retry: number; next: number } | null = null;
+
+const stars = (n: number) => '★'.repeat(n) + '☆'.repeat(3 - n);
+
+function startOp(i: number) {
+  const op = OPS[i];
+  if (!op || !meta.opUnlocked(i)) return;
+  opPick = i;
+  sfx.unlock();
+  goFullscreen();
+  challenge = null;
+  game.configureOp(op);
+  game.modeLabel = 'STORY';
+  runBadges = [];
+  game.newRun();
+  show(null);
+  game.startOp();
+  clips.start();
+}
+
+/** Switches the game over screen between a normal run and a story op. */
+function overMode(r: { won: boolean; next: boolean } | null) {
+  const h = document.querySelector('#over h2') as HTMLElement;
+  h.textContent = r ? (r.won ? 'Mission complete' : 'Mission failed') : 'You got eaten';
+  h.className = r?.won ? 'green' : 'red';
+  $('again').textContent = r ? (r.won && r.next ? 'NEXT MISSION ▶' : r.won ? 'PLAY AGAIN' : 'RETRY') : 'PLAY AGAIN';
+  if (!r) opAfter = null;
+}
+
+function showOpOver(r: OpResult) {
+  if (!$('over').classList.contains('hidden')) return;
+  const scene = game.snapshot();
+  clips.finish(r.won ? `${r.op.name} complete` : 'Last stand');
+  const i = OPS.findIndex((o) => o.id === r.op.id);
+  const s3 = r.op.star3;
+  const third = r.won && (s3.type === 'time' ? r.time <= s3.s : r.hits <= s3.n);
+  const got = r.won ? 1 + (r.hpFrac >= 0.5 ? 1 : 0) + (third ? 1 : 0) : 0;
+  const clear = r.won ? meta.clearOp(r.op.id, got) : { brains: 0, first: false, newStars: 0 };
+  const res = meta.finishRun(r.summary.report, 'campaign', game.map.id, null);
+  if (clear.brains) {
+    res.rewards.unshift(clear.first ? `First clear: +${clear.brains} 🧠` : `New stars: +${clear.brains} 🧠`);
+    res.brainsGained += clear.brains;
+  }
+  const badges = [...runBadges, ...res.badges];
+  runBadges = [];
+  if (res.levelsGained.length || r.won) sfx.play('levelup');
+  lastRun = r.summary;
+  const m = Math.floor(r.time / 60);
+  const sec = Math.floor(r.time % 60)
+    .toString()
+    .padStart(2, '0');
+  const row = (ok: boolean, text: string) => `<span class="${ok ? 'gold' : 'dim'}">${ok ? '★' : '☆'} ${esc(text)}</span>`;
+  $('over-stats').innerHTML =
+    `<b>Op ${i + 1}: ${esc(r.op.name)}</b> · ${esc(game.map.name)}<br>` +
+    `<span class="op-stars">${stars(got)}</span>${(meta.data.campaign[r.op.id] ?? 0) > got ? ` <span class="dim">(best ${stars(meta.data.campaign[r.op.id])})</span>` : ''}<br>` +
+    `${row(r.won, goalText(r.op.goal))}<br>${row(r.won && r.hpFrac >= 0.5, 'Finish with half your health or more')}<br>${row(third, star3Text(s3))}<br>` +
+    `<span class="dim">${m}:${sec} · ${r.hits} hits taken · ${r.summary.kills} kills</span>`;
+  $('over-rewards').innerHTML = rewardsHtml(res, badges);
+  shareCanvas = makeShareCard(r.summary, scene, meta.data.level, false, `STORY · ${r.op.name.toUpperCase()} ${stars(got)}`, badges);
+  $<HTMLImageElement>('share-img').src = shareCanvas.toDataURL('image/jpeg', 0.8);
+  $('share-msg').textContent = '';
+  $('challenge-out').classList.add('hidden');
+  $('lb-box').classList.add('hidden');
+  $('challenge-btn').classList.add('hidden');
+  const hasNext = i + 1 < OPS.length && meta.opUnlocked(i + 1);
+  overMode({ won: r.won, next: hasNext });
+  opAfter = { retry: i, next: r.won && hasNext ? i + 1 : i };
+  showing = null;
+  renderClips();
+  refreshMenu();
+  show('over');
 }
 
 const esc = (t: string) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
@@ -874,7 +956,9 @@ function renderModes() {
   }
   const row = $('map-row');
   row.innerHTML = '';
+  row.className = 'map-row';
   const info = $('mode-info');
+  info.className = 'tag';
   for (const b of cards.querySelectorAll('button')) if (challenge) b.classList.remove('on');
   if (challenge) {
     const c = challenge;
@@ -885,6 +969,31 @@ function renderModes() {
       game.configure(d.mode);
       renderModes();
     });
+  } else if (d.mode === 'campaign') {
+    if (!meta.opUnlocked(opPick)) opPick = 0;
+    row.className = 'op-row';
+    OPS.forEach((op, i) => {
+      const open = meta.opUnlocked(i);
+      const got = d.campaign[op.id] ?? 0;
+      const b = document.createElement('button');
+      b.className = `map-chip op-chip${opPick === i ? ' on' : ''}${got ? ' done' : ''}`;
+      b.disabled = !open;
+      b.innerHTML = `<b>${i + 1}. ${esc(op.name)}</b><span class="op-stars">${open ? stars(got) : '🔒'}</span>`;
+      b.addEventListener('click', () => {
+        opPick = i;
+        renderModes();
+      });
+      row.appendChild(b);
+    });
+    const op = OPS[opPick];
+    const guns = op.guns.map((g) => WEAPONS.find((w) => w.id === g)?.name ?? g).join(', ');
+    info.className = 'tag op-brief';
+    info.innerHTML =
+      `<span class="op-head">OP ${opPick + 1} · ${esc(op.name.toUpperCase())} · ${esc(mapById(op.map).name)}</span>` +
+      `<span class="op-text">“${esc(op.brief)}”</span>` +
+      `<span class="op-goal">🎯 ${esc(goalText(op.goal))}  ·  ⭐ ${esc(star3Text(op.star3))}</span>` +
+      `<span class="op-kit">🔫 Field issue: ${esc(guns)}${op.perks?.length ? ` · ${op.perks.length} perks` : ''} · First clear +${op.reward} 🧠</span>`;
+    return;
   } else if (d.mode === 'daily') {
     const ds = dailySetup();
     const muts = ds.mutators.map((id) => MUTATORS.find((x) => x.id === id)!);
@@ -917,6 +1026,10 @@ function startRun() {
   // Fall back if a saved choice is no longer unlocked (e.g. after loading a save code).
   if (d.level < (MODES.find((m) => m.id === d.mode)?.unlock ?? 1)) d.mode = 'endless';
   if (d.level < mapById(d.map).unlock) d.map = 'lot';
+  if (d.mode === 'campaign' && !challenge) {
+    startOp(opPick);
+    return;
+  }
   if (challenge) {
     game.configure(challenge.mode, challenge);
     game.modeLabel = `CHALLENGE · ${MODES.find((m) => m.id === challenge!.mode)!.name.toUpperCase()}`;
@@ -1288,6 +1401,10 @@ $('again').addEventListener('click', () => {
       refreshMenu();
       show('menu');
     }
+    return;
+  }
+  if (opAfter) {
+    startOp(opAfter.next);
     return;
   }
   startRun();

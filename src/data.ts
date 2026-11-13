@@ -33,6 +33,9 @@ export interface WeaponDef {
   harpoon?: boolean; // skewers zombies and shoves them back; slam them into a wall for bonus damage
   cluster?: boolean; // grenades burst into a ring of bomblets
   exclusive?: boolean; // diamond shop only: never in the mid-run shop unless you own it
+  charge?: number; // railgun: seconds to charge a shot while the trigger is held
+  beam?: number; // plasma cutter: a continuous beam this long that heats up on one target
+  charm?: boolean; // mind ray: enough hits turn a zombie to your side
 }
 
 export const WEAPONS: WeaponDef[] = [
@@ -55,6 +58,9 @@ export const WEAPONS: WeaponDef[] = [
   { id: 'glaive', name: 'Glaive', kind: 'bullet', damage: 46, fireRate: 1.8, mag: 6, reload: 1.7, spread: 0.02, pellets: 1, speed: 780, life: 0.5, price: 1250, upgradeBase: 360, shake: 0.1, color: '#e0f4ff', length: 26, pierce: 99, width: 5, boomerang: true },
   { id: 'harpoon', name: 'Harpoon Gun', kind: 'bullet', damage: 90, fireRate: 1.3, mag: 5, reload: 1.9, spread: 0.01, pellets: 1, speed: 1300, life: 0.55, price: 1500, upgradeBase: 420, shake: 0.24, color: '#c8d0d8', length: 36, pierce: 3, width: 3, harpoon: true },
   { id: 'cluster', name: 'Cluster Bomb', kind: 'grenade', damage: 85, fireRate: 1, mag: 4, reload: 2.4, spread: 0.04, pellets: 1, speed: 660, life: 0.55, price: 2200, upgradeBase: 600, shake: 0.28, color: '#ffcf5a', length: 32, cluster: true },
+  { id: 'railgun', name: 'Railgun', kind: 'bullet', damage: 230, fireRate: 1.6, mag: 6, reload: 2.2, spread: 0, pellets: 1, speed: 0, life: 0, price: 2500, upgradeBase: 640, shake: 0.5, color: '#7ae8ff', length: 40, charge: 0.6 },
+  { id: 'plasma', name: 'Plasma Cutter', kind: 'bullet', damage: 9, fireRate: 20, mag: 160, reload: 2.4, spread: 0, pellets: 1, speed: 0, life: 0, price: 2000, upgradeBase: 540, shake: 0.03, color: '#ff5adc', length: 32, beam: 360 },
+  { id: 'mindray', name: 'Mind Ray', kind: 'bullet', damage: 14, fireRate: 5, mag: 20, reload: 2, spread: 0.05, pellets: 1, speed: 560, life: 0.8, price: 1800, upgradeBase: 480, shake: 0.05, color: '#c77dff', length: 30, width: 7, charm: true },
   { id: 'singularity', name: 'Singularity', kind: 'grenade', damage: 170, fireRate: 0.8, mag: 3, reload: 2.6, spread: 0.02, pellets: 1, speed: 640, life: 0.5, price: 2600, upgradeBase: 680, shake: 0.3, color: '#c08aff', length: 34, vortex: true },
   { id: 'prism', name: 'Prism Laser', kind: 'bullet', damage: 34, fireRate: 5, mag: 24, reload: 1.8, spread: 0, pellets: 1, speed: 2600, life: 0.5, price: 2000, upgradeBase: 520, shake: 0.06, color: '#7af0ff', length: 34, pierce: 10, width: 3, exclusive: true },
 ];
@@ -82,13 +88,18 @@ export type ZombieKind =
   | 'icer'
   | 'roller'
   | 'mimic'
+  | 'parasite'
+  | 'mutant'
+  | 'blob'
+  | 'psyker'
   | 'egg'
   | 'boss'
   | 'brood'
   | 'juggernaut'
   | 'reaper'
   | 'sludge'
-  | 'titan';
+  | 'titan'
+  | 'zero';
 
 export interface ZombieDef {
   kind: ZombieKind;
@@ -126,6 +137,10 @@ export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
   icer: { kind: 'icer', hp: 90, speed: 80, damage: 10, radius: 16, cash: 16, body: '#a8d8f0', dark: '#4a7a9a', eye: '#e0ffff', mass: 1.3 },
   roller: { kind: 'roller', hp: 130, speed: 74, damage: 18, radius: 17, cash: 18, body: '#c8d4dc', dark: '#5a6a78', eye: '#ff6a3a', mass: 2 },
   mimic: { kind: 'mimic', hp: 150, speed: 150, damage: 20, radius: 15, cash: 30, body: '#8a5a20', dark: '#4a2e10', eye: '#ff2a2a', mass: 1.2 },
+  parasite: { kind: 'parasite', hp: 16, speed: 205, damage: 5, radius: 9, cash: 5, body: '#c8a890', dark: '#6a4a3a', eye: '#ff4a6a', mass: 0.4 },
+  mutant: { kind: 'mutant', hp: 165, speed: 76, damage: 18, radius: 19, cash: 22, body: '#b86a5a', dark: '#5a2a24', eye: '#7aff5a', mass: 2.2 },
+  blob: { kind: 'blob', hp: 95, speed: 66, damage: 12, radius: 20, cash: 10, body: '#7ad8b0', dark: '#2a6a5a', eye: '#f0ff8a', mass: 1.6 },
+  psyker: { kind: 'psyker', hp: 85, speed: 78, damage: 8, radius: 15, cash: 24, body: '#c0b0c8', dark: '#5a4a6a', eye: '#e08aff', mass: 1 },
   egg: { kind: 'egg', hp: 70, speed: 0, damage: 0, radius: 14, cash: 3, body: '#d8c89a', dark: '#8a7a4a', eye: '#d8c89a', mass: 50 },
   boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
   juggernaut: { kind: 'juggernaut', hp: 2700, speed: 46, damage: 40, radius: 56, cash: 600, body: '#5a5f66', dark: '#2a2d32', eye: '#ff3a2a', mass: 30 },
@@ -133,14 +148,15 @@ export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
   reaper: { kind: 'reaper', hp: 2500, speed: 72, damage: 32, radius: 46, cash: 650, body: '#2c2c38', dark: '#14141c', eye: '#7affea', mass: 22 },
   sludge: { kind: 'sludge', hp: 2600, speed: 54, damage: 34, radius: 52, cash: 550, body: '#6a8a2a', dark: '#34461a', eye: '#f0ff3a', mass: 26 },
   titan: { kind: 'titan', hp: 2800, speed: 50, damage: 38, radius: 58, cash: 600, body: '#9ac8e0', dark: '#3a5a74', eye: '#e0ffff', mass: 30 },
+  zero: { kind: 'zero', hp: 2900, speed: 58, damage: 36, radius: 54, cash: 700, body: '#c88a7a', dark: '#5a2a2a', eye: '#ff3ad0', mass: 28 },
 };
 
-export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT', reaper: 'THE REAPER', sludge: 'THE SLUDGE KING', titan: 'THE FROST TITAN' };
+export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT', reaper: 'THE REAPER', sludge: 'THE SLUDGE KING', titan: 'THE FROST TITAN', zero: 'PATIENT ZERO' };
 
 /** Boss waves cycle through these, one every 10 waves. */
-export const BOSS_ORDER: ZombieKind[] = ['boss', 'brood', 'juggernaut', 'reaper', 'sludge', 'titan'];
-/** Mini-boss waves (5, 15, 25...) preview the bosses you haven't met yet, at 40% health: all six show up by wave 30. */
-export const MINI_BOSS_ORDER: ZombieKind[] = ['titan', 'sludge', 'reaper', 'juggernaut', 'brood', 'boss'];
+export const BOSS_ORDER: ZombieKind[] = ['boss', 'brood', 'juggernaut', 'reaper', 'sludge', 'titan', 'zero'];
+/** Mini-boss waves (5, 15, 25, 35...) preview the bosses you haven't met yet, at 40% health. */
+export const MINI_BOSS_ORDER: ZombieKind[] = ['titan', 'zero', 'sludge', 'reaper', 'juggernaut', 'brood', 'boss'];
 export const BOSS_KINDS = new Set<ZombieKind>(BOSS_ORDER);
 
 export type EliteKind = 'fast' | 'armored' | 'splitting' | 'vampiric' | 'explosive';

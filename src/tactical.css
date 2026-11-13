@@ -121,6 +121,9 @@ body {
 
 .topbar-right {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font: 16px var(--mono);
 }
 
