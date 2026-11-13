@@ -575,6 +575,15 @@ const WEAPON_BLURB: Record<string, string> = {
   cluster: 'Bursts into a ring of bomblets',
 };
 
+/** First-run coach tips, shown one at a time until each is done. */
+const TUTORIAL = [
+  { id: 'move', touch: 'LEFT THUMB ANYWHERE: MOVE', pc: 'W A S D: MOVE' },
+  { id: 'aim', touch: 'RIGHT THUMB: AIM AND FIRE (AIM ASSIST HELPS)', pc: 'MOUSE: AIM · HOLD CLICK: FIRE' },
+  { id: 'dash', touch: 'TAP DASH TO DODGE THROUGH THEM', pc: 'SPACE: DASH THROUGH THEM' },
+  { id: 'nade', touch: 'TAP NADE TO BLOW UP A CROWD', pc: 'G: THROW A GRENADE INTO A CROWD' },
+  { id: 'clear', touch: 'CLEAR THE WAVE · THEN PICK A PERK AND SHOP', pc: 'CLEAR THE WAVE · THEN PICK A PERK AND SHOP' },
+] as const;
+
 const BOSS_COLORS: Partial<Record<ZombieKind, string>> = { boss: '#c065ff', brood: '#ffcf5a', juggernaut: '#ff6a3a', reaper: '#7affea', sludge: '#c8ff3a', titan: '#bfe8ff', zero: '#ff5adc' };
 
 const ELITE_KINDS = Object.keys(ELITES) as EliteKind[];
@@ -685,6 +694,10 @@ export class Game {
   grenadesMax = 2;
   private grenadeCount = 2;
   private p = { x: 0, y: 0, hp: 100, angle: 0, vx: 0, vy: 0 };
+  /** Touch aim assist (see assistAim). Saved per device by the pause menu toggle. */
+  aimAssist = true;
+  /** First-run coach tips: which step is showing (-1 = off) and progress toward finishing it. */
+  private tut = { step: -1, t: 0, moved: 0, kills: 0, dashed: false, nade: false, fade: 0 };
   private fireCd = 0;
   private spin = 0;
   private dashT = 0;
@@ -918,6 +931,7 @@ export class Game {
   }
 
   newRun() {
+    this.tut = { step: -1, t: 0, moved: 0, kills: 0, dashed: false, nade: false, fade: 0 };
     this.liteZombies = false;
     this.lagT = 0;
     // Permanent training from the base screen.
@@ -1599,6 +1613,7 @@ export class Game {
     this.combo = 0;
     this.comboT = 0;
     this.state = 'between';
+    if (this.tut.step === TUTORIAL.length - 1) this.finishTutorial();
     this.input.reset();
     this.hooks.onWaveCleared(this.wave);
   }
@@ -1694,6 +1709,7 @@ export class Game {
       return;
     }
     this.grenadeCount--;
+    this.tut.nade = true;
     const a = this.p.angle;
     this.grenades.push({ x: this.p.x + Math.cos(a) * 20, y: this.p.y + Math.sin(a) * 20, vx: Math.cos(a) * 560 + this.p.vx * 0.5, vy: Math.sin(a) * 560 + this.p.vy * 0.5, z: 10, vz: 260, fuse: 1.05 });
     this.sfx.play('throw');
@@ -1703,6 +1719,7 @@ export class Game {
     const p = this.p;
     const inp = this.input;
     const mv = inp.moveVec();
+    this.updateTutorial(dt, mv);
 
     // Aim
     let firing = false;
@@ -1710,7 +1727,7 @@ export class Game {
       const a = stickVec(inp.aim);
       const m = Math.hypot(a.x, a.y);
       if (m > 0.2) {
-        p.angle = Math.atan2(a.y, a.x);
+        p.angle = this.assistAim(Math.atan2(a.y, a.x));
         firing = m > 0.35;
       }
     } else if (inp.touchMode) {
@@ -1730,6 +1747,7 @@ export class Game {
       const m = Math.hypot(mv.x, mv.y);
       this.dashDir = m > 0.1 ? { x: mv.x / m, y: mv.y / m } : { x: Math.cos(p.angle), y: Math.sin(p.angle) };
       this.dashT = DASH_TIME;
+      this.tut.dashed = true;
       this.dashCd = DASH_COOLDOWN;
       this.sfx.play('dash');
       this.pull.t = 0;
@@ -4404,6 +4422,102 @@ export class Game {
     }
   }
 
+  /** First solo run only: walk a new player through the controls with one tip at a time. */
+  private updateTutorial(dt: number, mv: { x: number; y: number }) {
+    const T = this.tut;
+    if (T.step === -1) {
+      if (meta.data.tutorial || this.net !== '' || this.mode === 'campaign' || this.wave !== 1) return;
+      T.step = 0;
+      T.t = 0;
+      T.kills = this.kills;
+    }
+    if (T.step >= TUTORIAL.length) return;
+    T.t += dt;
+    if (T.fade > 0) T.fade -= dt;
+    if (Math.hypot(mv.x, mv.y) > 0.2) T.moved += dt;
+    const step = TUTORIAL[T.step];
+    const done =
+      step.id === 'move' ? T.moved > 1.2 : step.id === 'aim' ? this.kills - T.kills >= 4 : step.id === 'dash' ? T.dashed : step.id === 'nade' ? T.nade || T.t > 14 : false;
+    if (done && T.t > 1) {
+      T.step++;
+      T.t = 0;
+      T.fade = 0.5;
+      this.sfx.play('coin');
+    }
+  }
+
+  private finishTutorial() {
+    this.tut.step = TUTORIAL.length;
+    meta.data.tutorial = true;
+    meta.save();
+  }
+
+  private drawTutorial() {
+    const T = this.tut;
+    // Wait for the wave banner to clear so the two never overlap.
+    if (T.step < 0 || T.step >= TUTORIAL.length || this.state !== 'playing' || this.banner.t > 0) return;
+    const ctx = this.ctx;
+    const tip = TUTORIAL[T.step];
+    const text = this.input.touchMode ? tip.touch : tip.pc;
+    const y = Math.min(this.h * 0.3, 150);
+    ctx.save();
+    ctx.font = `600 15px ${MONO}`;
+    const w = Math.min(this.w - 40, ctx.measureText(text).width + 44);
+    const x = this.w / 2 - w / 2;
+    const pop = T.t < 0.25 ? 0.9 + (T.t / 0.25) * 0.1 : 1;
+    ctx.translate(this.w / 2, y);
+    ctx.scale(pop, pop);
+    ctx.translate(-this.w / 2, -y);
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = HUD_PLATE;
+    ctx.fillRect(x, y - 24, w, 48);
+    ctx.globalAlpha = 1;
+    brackets(ctx, x, y - 24, w, 48, 8, '#ffd23f');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffd23f';
+    ctx.font = `11px ${MONO}`;
+    ctx.fillText(`TRAINING ${T.step + 1}/${TUTORIAL.length}`, this.w / 2, y - 11);
+    ctx.fillStyle = '#f2f2e8';
+    ctx.font = `600 15px ${MONO}`;
+    ctx.fillText(text, this.w / 2, y + 9, this.w - 60);
+    ctx.restore();
+  }
+
+  /**
+   * Touch aim assist: thumbs are imprecise, so the aim stick bends toward the zombie closest to where
+   * you point (within a narrow cone, in range and in sight). Off with the setting or on desktop mice.
+   */
+  private assistAim(raw: number) {
+    if (!this.aimAssist) return raw;
+    const p = this.p;
+    const def = this.weapons[this.wi].def;
+    const range = Math.min(720, def.speed > 0 ? def.speed * def.life : 520);
+    const cone = 0.3; // ~17 degrees either side
+    let best: Zombie | null = null;
+    let bestScore = Infinity;
+    let bestDiff = 0;
+    for (const z of this.zombies) {
+      if (z.dead || offLimits(z) || z.lurk) continue;
+      const dx = z.x - p.x;
+      const dy = z.y - p.y;
+      const d = Math.hypot(dx, dy);
+      if (d > range + z.r) continue;
+      let diff = Math.atan2(dy, dx) - raw;
+      diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+      // Big zombies are easier to "point at": widen the cone by their size.
+      const lim = cone + Math.atan2(z.r, Math.max(d, 1));
+      if (Math.abs(diff) > lim) continue;
+      const score = Math.abs(diff) * 600 + d * 0.35;
+      if (score >= bestScore) continue;
+      if (this.rayWall(p.x, p.y, raw + diff, d) < d - z.r) continue; // behind a wall
+      best = z;
+      bestScore = score;
+      bestDiff = diff;
+    }
+    return best ? raw + bestDiff * 0.8 : raw;
+  }
+
   private nearestZombie(x: number, y: number, range: number, exclude: number[] = []): Zombie | null {
     let best: Zombie | null = null;
     let bd = range;
@@ -5772,7 +5886,10 @@ export class Game {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     if (this.clean) return;
     this.drawScreenFx();
-    if (playing) this.drawHud();
+    if (playing) {
+      this.drawHud();
+      this.drawTutorial();
+    }
   }
 
   /** The current scene without HUD or screen flashes, for the share card. */

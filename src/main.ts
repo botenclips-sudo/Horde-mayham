@@ -1480,6 +1480,25 @@ document.addEventListener('visibilitychange', () => {
     show('pause');
   }
 });
+// Touch aim assist, remembered per device.
+try {
+  game.aimAssist = localStorage.getItem('horde-aimassist') !== '0';
+} catch {
+  /* storage blocked: keep the default */
+}
+function syncAimLabel() {
+  $('aimassist').textContent = game.aimAssist ? '🎯 Aim assist on' : '🎯 Aim assist off';
+}
+syncAimLabel();
+$('aimassist').addEventListener('click', () => {
+  game.aimAssist = !game.aimAssist;
+  try {
+    localStorage.setItem('horde-aimassist', game.aimAssist ? '1' : '0');
+  } catch {
+    /* storage blocked */
+  }
+  syncAimLabel();
+});
 function syncSoundLabels() {
   for (const id of ['sound', 'sound2']) $(id).textContent = sfx.muted ? '🔇 Sound off' : '🔊 Sound on';
 }
