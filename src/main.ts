@@ -12,7 +12,7 @@ import { BadgeDef, BADGES } from './achievements';
 import { Clip, ClipRecorder } from './clips';
 import { gearDef, gearValue, RARITIES, RARITY_COLOR, SCRAP_VALUE } from './gear';
 import { CRATE_COST } from './meta';
-import { boardFor, cleanName, leaderboardsOn, postScore, Score, topScores } from './leaderboard';
+import { boardFor, cleanName, lbHint, leaderboardsOn, postScore, Score, topScores } from './leaderboard';
 import { NetMsg, Room } from './net';
 import { ads, AdPlacement, AdResult } from './monetize/ads';
 import { pay, PACKS } from './monetize/pay';
@@ -813,9 +813,9 @@ function renderPostScore(s: RunSummary) {
       $('lb-msg').textContent = rank ? `You're #${rank} on ${label}.` : `Posted to ${label}.`;
       $('lb-list').innerHTML = scoreRows(rows.slice(0, 5), name);
       box.querySelector('.lb-row')!.classList.add('hidden');
-    } catch {
+    } catch (e) {
       b.disabled = false;
-      $('lb-msg').textContent = "Couldn't reach the leaderboard. Try again in a moment.";
+      $('lb-msg').textContent = `Couldn't reach the leaderboard (${lbHint(e)}). Try again in a moment.`;
     }
   });
 }
@@ -830,8 +830,8 @@ async function renderRanks(body: HTMLElement) {
     try {
       const rows = await topScores(board, 10);
       if (tab === 'ranks') $(id).innerHTML = scoreRows(rows, meta.data.player);
-    } catch {
-      if (tab === 'ranks') $(id).innerHTML = '<li class="sub">Couldn\'t reach the leaderboard.</li>';
+    } catch (e) {
+      if (tab === 'ranks') $(id).innerHTML = `<li class="sub">Couldn't reach the leaderboard (${esc(lbHint(e))}).</li>`;
     }
   }
 }
