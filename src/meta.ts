@@ -5,6 +5,7 @@ import { WEAPONS, ZombieKind } from './data';
 import { MAPS } from './maps';
 import { BADGES, BadgeDef } from './achievements';
 import { emptyBonus, GearBonus, gearDef, GearItem, gearValue, RARITIES, rollGear, SCRAP_VALUE } from './gear';
+import { AD_DIAMONDS, AD_DIAMONDS_PER_DAY, BADGE_DIAMONDS, BRAIN_BUNDLE, DIAMOND_PRICE, LEVEL_DIAMONDS, missionDiamonds, REVIVE_TOKEN_MAX, skinById, STASH_BONUS, XP_BOOST_RUNS } from './diamonds';
 
 export const GEAR_MAX = 24;
 export const CRATE_COST = 150;
@@ -40,6 +41,15 @@ export interface SaveData {
   gear: GearItem[];
   equipped: { armor: string; trinket: string }; // gear uids ('' = empty)
   player: string; // name on the leaderboards
+  diamonds: number;
+  skins: string[]; // owned skin ids
+  skin: string; // equipped skin id ('' = default look)
+  stash: boolean; // bought the stash expansion
+  reviveTokens: number;
+  xpBoost: number; // runs left with double XP
+  adDay: string;
+  adDiamonds: number; // diamond ads watched on adDay
+  buyer: string; // random id that ties real-money purchases to this save
 }
 
 export interface RunRecord {
@@ -290,7 +300,28 @@ function fresh(): SaveData {
     gear: [],
     equipped: { armor: '', trinket: '' },
     player: '',
+    diamonds: 0,
+    skins: [],
+    skin: '',
+    stash: false,
+    reviveTokens: 0,
+    xpBoost: 0,
+    adDay: '',
+    adDiamonds: 0,
+    buyer: newBuyerId(),
   };
+}
+
+function newBuyerId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    // randomUUID needs a secure context; fall back to a v4-shaped id.
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 3) | 8).toString(16);
+    });
+  }
 }
 
 function sanitize(raw: unknown): SaveData {
@@ -328,7 +359,17 @@ function sanitize(raw: unknown): SaveData {
     d.gear = r.gear
       .filter((g) => g && typeof g.uid === 'string' && gearDef(g.id) && RARITIES.includes(g.rarity))
       .map((g) => ({ uid: g.uid, id: g.id, rarity: g.rarity }))
-      .slice(0, GEAR_MAX);
+      .slice(0, GEAR_MAX + STASH_BONUS);
+  d.diamonds = Math.max(0, Math.floor(num(r.diamonds, 0)));
+  if (Array.isArray(r.skins)) d.skins = r.skins.filter((x) => typeof x === 'string' && !!skinById(x));
+  if (typeof r.skin === 'string' && d.skins.includes(r.skin)) d.skin = r.skin;
+  d.stash = !!r.stash;
+  d.reviveTokens = Math.min(REVIVE_TOKEN_MAX, Math.max(0, Math.floor(num(r.reviveTokens, 0))));
+  d.xpBoost = Math.max(0, Math.floor(num(r.xpBoost, 0)));
+  if (typeof r.adDay === 'string') d.adDay = r.adDay;
+  d.adDiamonds = Math.max(0, num(r.adDiamonds, 0));
+  if (typeof r.buyer === 'string' && /^[0-9a-f-]{36}$/i.test(r.buyer)) d.buyer = r.buyer;
+  if (!d.stash) d.gear = d.gear.slice(0, GEAR_MAX);
   if (r.equipped && typeof r.equipped === 'object')
     for (const slot of ['armor', 'trinket'] as const) {
       const uid = r.equipped[slot];
@@ -343,7 +384,9 @@ export interface RunResult {
   brainsGained: number;
   levelsGained: number[];
   rewards: string[];
-  missionsDone: { text: string; reward: number }[];
+  missionsDone: { text: string; reward: number; diamonds: number }[];
+  diamondsGained: number;
+  xpBoosted: boolean;
   newBest: boolean;
   badges: BadgeDef[]; // unlocked at the end of this run (live unlocks are tracked by the caller)
   challengeBeaten: boolean;
@@ -423,7 +466,7 @@ class Meta {
   }
 
   unlockGun(id: string) {
-    if (this.data.unlocked.includes(id) || !this.spend(GUN_UNLOCK[id] ?? 0)) return false;
+    if (this.data.unlocked.includes(id) || !(id in GUN_UNLOCK) || !this.spend(GUN_UNLOCK[id])) return false;
     this.data.unlocked.push(id);
     if (this.data.loadout.length < this.slots()) this.data.loadout.push(id);
     this.save();
@@ -462,7 +505,7 @@ class Meta {
 
   /** Adds loot to the stash; when it's full the item is scrapped for brains. Returns brains given instead. */
   addGear(it: GearItem): number {
-    if (this.data.gear.length >= GEAR_MAX) {
+    if (this.data.gear.length >= this.gearMax()) {
       this.data.brains += SCRAP_VALUE[it.rarity];
       this.save();
       return SCRAP_VALUE[it.rarity];
@@ -494,10 +537,135 @@ class Meta {
 
   /** Buys a supply crate with brains: one random piece of gear. */
   buyCrate(): GearItem | null {
-    if (this.data.gear.length >= GEAR_MAX || !this.spend(CRATE_COST)) return null;
+    if (this.data.gear.length >= this.gearMax() || !this.spend(CRATE_COST)) return null;
     const it = rollGear(Math.min(30, this.data.best), 0.3);
     this.addGear(it);
     return it;
+  }
+
+  gearMax() {
+    return GEAR_MAX + (this.data.stash ? STASH_BONUS : 0);
+  }
+
+  // -------------------------------------------------------------- diamonds
+
+  spendDiamonds(cost: number) {
+    if (this.data.diamonds < cost) return false;
+    this.data.diamonds -= cost;
+    this.save();
+    return true;
+  }
+
+  addDiamonds(n: number) {
+    this.data.diamonds += Math.max(0, Math.floor(n));
+    this.save();
+  }
+
+  addBrains(n: number) {
+    this.data.brains += Math.max(0, Math.floor(n));
+    this.save();
+  }
+
+  /** Free diamond ads left today. */
+  adDiamondsLeft() {
+    if (this.data.adDay !== today()) return AD_DIAMONDS_PER_DAY;
+    return Math.max(0, AD_DIAMONDS_PER_DAY - this.data.adDiamonds);
+  }
+
+  rewardDiamondAd() {
+    const d = this.data;
+    if (d.adDay !== today()) {
+      d.adDay = today();
+      d.adDiamonds = 0;
+    }
+    if (d.adDiamonds >= AD_DIAMONDS_PER_DAY) return 0;
+    d.adDiamonds++;
+    d.diamonds += AD_DIAMONDS;
+    this.save();
+    return AD_DIAMONDS;
+  }
+
+  buySkin(id: string) {
+    const s = skinById(id);
+    if (!s || this.data.skins.includes(id) || !this.spendDiamonds(s.price)) return false;
+    this.data.skins.push(id);
+    this.data.skin = id;
+    this.save();
+    return true;
+  }
+
+  wearSkin(id: string) {
+    this.data.skin = id === '' || this.data.skins.includes(id) ? id : this.data.skin;
+    this.save();
+  }
+
+  skinColors(): [string, string, string] | null {
+    return skinById(this.data.skin)?.colors ?? null;
+  }
+
+  buyPrism() {
+    if (this.data.unlocked.includes('prism') || !this.spendDiamonds(DIAMOND_PRICE.prism)) return false;
+    this.data.unlocked.push('prism');
+    if (this.data.loadout.length < this.slots()) this.data.loadout.push('prism');
+    this.save();
+    return true;
+  }
+
+  buyStash() {
+    if (this.data.stash || !this.spendDiamonds(DIAMOND_PRICE.stash)) return false;
+    this.data.stash = true;
+    this.save();
+    return true;
+  }
+
+  /** Elite crate: always epic, sometimes legendary. */
+  buyEliteCrate(): GearItem | null {
+    if (this.data.gear.length >= this.gearMax() || !this.spendDiamonds(DIAMOND_PRICE.eliteCrate)) return null;
+    const it = rollGear(Math.min(30, this.data.best), 1);
+    it.rarity = Math.random() < 0.2 ? 'legendary' : 'epic';
+    this.addGear(it);
+    return it;
+  }
+
+  buyBrains() {
+    if (!this.spendDiamonds(DIAMOND_PRICE.brains)) return false;
+    this.addBrains(BRAIN_BUNDLE);
+    return true;
+  }
+
+  buyReviveToken() {
+    if (this.data.reviveTokens >= REVIVE_TOKEN_MAX || !this.spendDiamonds(DIAMOND_PRICE.reviveToken)) return false;
+    this.data.reviveTokens++;
+    this.save();
+    return true;
+  }
+
+  useReviveToken() {
+    if (this.data.reviveTokens <= 0) return false;
+    this.data.reviveTokens--;
+    this.save();
+    return true;
+  }
+
+  buyXpBoost() {
+    if (!this.spendDiamonds(DIAMOND_PRICE.xpBoost)) return false;
+    this.data.xpBoost += XP_BOOST_RUNS;
+    this.save();
+    return true;
+  }
+
+  /** Swaps one unfinished daily mission for a different one. */
+  rerollMission(id: string) {
+    const d = this.data;
+    const i = d.missions.findIndex((m) => m.id === id && !m.done);
+    if (i < 0) return false;
+    const taken = new Set(d.missions.map((m) => m.id));
+    const killDup = d.missions.some((m, j) => j !== i && m.id.startsWith('kill'));
+    const pool = MISSIONS.filter((m) => !taken.has(m.id) && !(killDup && m.id.startsWith('kill')));
+    if (!pool.length || !this.spendDiamonds(DIAMOND_PRICE.reroll)) return false;
+    d.missions[i] = { id: pool[Math.floor(Math.random() * pool.length)].id, progress: 0, done: false };
+    this.save();
+    return true;
   }
 
   /** Unlocks any badges this run has earned so far; pays their brains right away. */
@@ -509,6 +677,7 @@ class Meta {
     for (const b of got) {
       d.badges.push(b.id);
       d.brains += b.reward;
+      d.diamonds += BADGE_DIAMONDS;
     }
     this.save();
     return got;
@@ -519,7 +688,7 @@ class Meta {
     this.refreshMissions();
     const mdef = MODES.find((m) => m.id === mode) ?? MODES[0];
     const challengeBeaten = !!challenge && r.wave > challenge.wave;
-    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains * (1 + this.gearBonus().brains)), levelsGained: [], rewards: [], missionsDone: [], newBest: false, badges: [], challengeBeaten };
+    const res: RunResult = { xpGained: 0, brainsGained: Math.round(r.brains * mdef.brains * (1 + this.gearBonus().brains)), levelsGained: [], rewards: [], missionsDone: [], newBest: false, badges: [], challengeBeaten, diamondsGained: 0, xpBoosted: false };
     if (challengeBeaten) {
       res.brainsGained += 40;
       res.rewards.push(`Challenge beaten: +40 🧠`);
@@ -557,15 +726,23 @@ class Meta {
         m.progress = def.goal;
         m.done = true;
         res.brainsGained += def.reward;
-        res.missionsDone.push({ text: def.text, reward: def.reward });
+        const dia = missionDiamonds(def.reward);
+        res.diamondsGained += dia;
+        res.missionsDone.push({ text: def.text, reward: def.reward, diamonds: dia });
       }
     }
     res.xpGained = Math.round(r.kills + r.wave * 15 + r.bosses * 120 + r.elites * 10);
+    if (d.xpBoost > 0 && r.wave > 0) {
+      d.xpBoost--;
+      res.xpGained *= 2;
+      res.xpBoosted = true;
+    }
     d.xp += res.xpGained;
     while (d.xp >= xpToNext(d.level)) {
       d.xp -= xpToNext(d.level);
       d.level++;
       res.levelsGained.push(d.level);
+      res.diamondsGained += LEVEL_DIAMONDS;
       const rw = LEVEL_REWARDS.find((x) => x.level === d.level);
       if (rw) res.rewards.push(`Level ${d.level}: ${rw.text}`);
       else {
@@ -575,6 +752,7 @@ class Meta {
       }
     }
     d.brains += res.brainsGained;
+    d.diamonds += res.diamondsGained;
     res.badges = this.unlockBadges(r, mode, challengeBeaten);
     this.save();
     return res;

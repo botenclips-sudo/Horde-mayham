@@ -32,6 +32,7 @@ export interface WeaponDef {
   boomerang?: boolean; // the shot flies out, then curves back to you, cutting both ways
   harpoon?: boolean; // skewers zombies and shoves them back; slam them into a wall for bonus damage
   cluster?: boolean; // grenades burst into a ring of bomblets
+  exclusive?: boolean; // diamond shop only: never in the mid-run shop unless you own it
 }
 
 export const WEAPONS: WeaponDef[] = [
@@ -55,6 +56,7 @@ export const WEAPONS: WeaponDef[] = [
   { id: 'harpoon', name: 'Harpoon Gun', kind: 'bullet', damage: 90, fireRate: 1.3, mag: 5, reload: 1.9, spread: 0.01, pellets: 1, speed: 1300, life: 0.55, price: 1500, upgradeBase: 420, shake: 0.24, color: '#c8d0d8', length: 36, pierce: 3, width: 3, harpoon: true },
   { id: 'cluster', name: 'Cluster Bomb', kind: 'grenade', damage: 85, fireRate: 1, mag: 4, reload: 2.4, spread: 0.04, pellets: 1, speed: 660, life: 0.55, price: 2200, upgradeBase: 600, shake: 0.28, color: '#ffcf5a', length: 32, cluster: true },
   { id: 'singularity', name: 'Singularity', kind: 'grenade', damage: 170, fireRate: 0.8, mag: 3, reload: 2.6, spread: 0.02, pellets: 1, speed: 640, life: 0.5, price: 2600, upgradeBase: 680, shake: 0.3, color: '#c08aff', length: 34, vortex: true },
+  { id: 'prism', name: 'Prism Laser', kind: 'bullet', damage: 34, fireRate: 5, mag: 24, reload: 1.8, spread: 0, pellets: 1, speed: 2600, life: 0.5, price: 2000, upgradeBase: 520, shake: 0.06, color: '#7af0ff', length: 34, pierce: 10, width: 3, exclusive: true },
 ];
 
 export type ZombieKind =

@@ -24,6 +24,7 @@
             <div class="lvl">LV <b id="m-level">1</b></div>
             <div class="xpbar"><div id="m-xp"></div></div>
             <div class="brains">🧠 <b id="m-brains">0</b></div>
+            <div class="brains dia">💎 <b id="m-diamonds">0</b></div>
           </div>
           <div class="dossier">
             <div><span class="t-label">Best</span><b id="best">wave 0</b></div>
@@ -39,6 +40,7 @@
             <button class="base-btn" data-tab="training"><span class="bi">💪</span>Training</button>
             <button class="base-btn" data-tab="missions"><span class="bi">📋</span>Missions<span id="m-missions" class="dot hidden"></span></button>
             <button class="base-btn" data-tab="gear"><span class="bi">🎒</span>Gear</button>
+            <button class="base-btn shop-btn" data-tab="store"><span class="bi">💎</span>Shop</button>
           </div>
           <div class="util-row">
             <button class="util base-btn" data-tab="badges">🏅 Badges</button>
@@ -99,7 +101,7 @@
       <header class="topbar">
         <button id="base-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
         <div class="topbar-title"><b>HQ</b> // <span id="base-title">Armory</span></div>
-        <div class="topbar-right"><div class="brains big-brains">🧠 <b id="b-brains">0</b></div></div>
+        <div class="topbar-right"><div class="brains big-brains">🧠 <b id="b-brains">0</b></div><div class="brains big-brains dia">💎 <b id="b-diamonds">0</b></div></div>
       </header>
       <div class="panel wide base" data-code="HQ-03 // QUARTERMASTER">
         <div class="base-head">
@@ -108,6 +110,7 @@
             <button data-tab="training">Training</button>
             <button data-tab="missions">Missions</button>
             <button data-tab="gear">Gear</button>
+            <button data-tab="store">💎 Shop</button>
             <button data-tab="badges">Badges</button>
             <button data-tab="ranks">Ranks</button>
             <button data-tab="save">Save</button>
@@ -158,6 +161,26 @@
       </div>
     </div>
 
+    <div id="revive" class="overlay hidden">
+      <header class="topbar">
+        <button id="rv-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
+        <div class="topbar-title"><b>DOWN</b> // Second chance</div>
+        <div class="topbar-right"></div>
+      </header>
+      <div class="panel revive" data-code="MED-08 // REVIVE">
+        <h2 class="red">You're going down!</h2>
+        <p class="tag">One more chance this run</p>
+        <div class="rv-bar"><div id="rv-bar"></div></div>
+        <button id="rv-ad" class="big">📺 WATCH AD TO REVIVE</button>
+        <div class="row2">
+          <button id="rv-token" class="buy"></button>
+          <button id="rv-dia" class="buy dia-buy"></button>
+        </div>
+        <p id="rv-msg" class="tiny"></p>
+        <button id="rv-no" class="ghost">Give up</button>
+      </div>
+    </div>
+
     <div id="over" class="overlay hidden">
       <header class="topbar">
         <button id="over-back" class="back-btn" aria-label="Back"><span class="chev" aria-hidden="true"></span><span class="back-label">BACK</span></button>
@@ -170,6 +193,7 @@
           <div>
             <p id="over-stats" class="stats"></p>
             <div id="over-rewards" class="rewards"></div>
+            <button id="over-ad" class="ad-btn hidden"></button>
             <div id="lb-box" class="lb-box hidden"></div>
           </div>
           <div class="share">
@@ -188,6 +212,8 @@
         <button id="to-base" class="ghost">Upgrades</button>
       </div>
     </div>
+
+    <div id="notice" class="notice hidden"></div>
 
     <script type="module" src="./src/main.ts"></script>
   </body>

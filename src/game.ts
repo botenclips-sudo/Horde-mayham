@@ -407,6 +407,8 @@ export interface Hooks {
   onPause: () => void;
   /** A moment worth clipping just happened (boss kill, massacre, big combo). */
   onHighlight?: (label: string) => void;
+  /** Solo death with no Second Wind left: offer a revive (ad, token, diamonds). Call reviveNow() or endRun(). */
+  onReviveOffer?: () => void;
 }
 
 export type State = 'menu' | 'playing' | 'between' | 'paused' | 'over';
@@ -450,6 +452,7 @@ const NEIGHBORS = [
 
 // Which wave each new zombie type starts showing up, announced on the wave banner.
 const WEAPON_BLURB: Record<string, string> = {
+  prism: '💎 Exclusive: a laser that slices through 10 zombies in a line',
   flamer: 'Sets the horde on fire',
   rocket: 'Huge explosions',
   minigun: 'Spins up, shreds everything',
@@ -624,6 +627,12 @@ export class Game {
   private mood: MusicMood | '' = '';
   private report: RunReport = Game.emptyReport();
   private reviveLeft = 0;
+  /** The one paid/ad revive per run has been offered. */
+  private reviveOffered = false;
+  /** Waiting on the revive offer screen. */
+  awaitingRevive = false;
+  /** Diamond-shop skin for this player (null = the slot's normal suit). */
+  skin: string[] | null = null;
   private corpses: { x: number; y: number }[] = [];
   private nadeBlast = false;
   private cause: '' | 'train' | 'barrel' | 'vent' | 'pin' = '';
@@ -791,6 +800,9 @@ export class Game {
     this.grenadesMax = 2 + t('nades') + g.nades;
     this.grenadeCount = this.grenadesMax;
     this.reviveLeft = this.mode === 'hardcore' ? 0 : t('revive');
+    this.reviveOffered = false;
+    this.awaitingRevive = false;
+    this.skin = meta.skinColors();
     if (this.has('glass')) {
       this.stats.damage *= 2;
       this.stats.maxHp = Math.round(this.stats.maxHp * 0.5);
@@ -1081,6 +1093,7 @@ export class Game {
       }
     for (const def of WEAPONS) {
       const owned = this.weapons.find((w) => w.def.id === def.id);
+      if (!owned && def.exclusive && !meta.data.unlocked.includes(def.id)) continue;
       if (!owned) {
         const sub =
           WEAPON_BLURB[def.id] ?? `${def.pellets > 1 ? `${def.pellets}x` : ''}${def.damage} dmg, ${def.fireRate}/s`;
@@ -2678,16 +2691,23 @@ export class Game {
   }
 
   private gameOver() {
+    if (this.awaitingRevive || this.state !== 'playing') return;
     if (this.reviveLeft > 0) {
       // Second Wind: get back up and blast everything nearby away.
       this.reviveLeft--;
-      this.report.revives++;
-      this.p.hp = this.stats.maxHp * 0.5;
-      this.slowT = 1.2;
-      this.flash = { t: 0.6, color: '#ffffff', max: 0.6 };
-      this.showBanner('SECOND WIND', 'GET BACK UP', '#5dff7a');
-      this.explode(this.p.x, this.p.y, 300 * this.stats.damage, 280, 0);
-      this.sfx.play('power');
+      this.standUp('SECOND WIND');
+      return;
+    }
+    if (!this.net && this.mode !== 'hardcore' && !this.reviveOffered && this.hooks.onReviveOffer) {
+      // One more chance per run: freeze the moment of death and let the player choose.
+      this.reviveOffered = true;
+      this.awaitingRevive = true;
+      this.p.hp = 0;
+      this.state = 'paused';
+      this.addShake(0.6);
+      this.flash = { t: 0.4, color: '#a00000', max: 0.4 };
+      this.input.reset();
+      this.hooks.onReviveOffer();
       return;
     }
     if (this.net && (this.net === 'client' || this.allies.some((a) => !a.down))) {
@@ -2708,8 +2728,29 @@ export class Game {
     this.endRun();
   }
 
+  private standUp(title: string) {
+    this.report.revives++;
+    this.p.hp = this.stats.maxHp * 0.5;
+    this.slowT = 1.2;
+    this.invT = Math.max(this.invT, 1.5);
+    this.flash = { t: 0.6, color: '#ffffff', max: 0.6 };
+    this.showBanner(title, 'GET BACK UP', '#5dff7a');
+    this.explode(this.p.x, this.p.y, 300 * this.stats.damage, 280, 0);
+    this.sfx.play('power');
+  }
+
+  /** Back into the fight from the revive offer (after an ad, a token or diamonds). */
+  reviveNow() {
+    if (!this.awaitingRevive) return;
+    this.awaitingRevive = false;
+    this.state = 'playing';
+    this.input.reset();
+    this.standUp('REVIVED');
+  }
+
   /** The run is over for good: everyone down, or solo death. */
   endRun() {
+    this.awaitingRevive = false;
     if (this.state === 'over') return;
     if (this.net === 'host') this.netSend?.(null, { t: 'over' });
     this.p.hp = 0;
@@ -6122,7 +6163,7 @@ export class Game {
     const w = this.weapons[this.wi];
     for (const g of this.ghosts) {
       ctx.globalAlpha = g.life * 1.6;
-      ctx.fillStyle = SUITS[this.slot][2];
+      ctx.fillStyle = this.skin?.[2] ?? SUITS[this.slot][2];
       ctx.beginPath();
       ctx.ellipse(g.x, g.y, 13, 17, g.a, 0, Math.PI * 2);
       ctx.fill();
@@ -6158,7 +6199,7 @@ export class Game {
 
   private drawSoldier(x: number, y: number, angle: number, def: WeaponDef, spin: number, hurt: boolean, slot: number, down: boolean, revive: number) {
     const ctx = this.ctx;
-    const suit = SUITS[slot] ?? SUITS[0];
+    const suit = (slot === this.slot && this.skin) || SUITS[slot] || SUITS[0];
     ctx.save();
     ctx.translate(x, y);
     if (down) {
