@@ -22,6 +22,7 @@ export interface MissionState {
 
 export interface SaveData {
   v: number;
+  tutorial: boolean; // finished the first-run coach tips
   brains: number;
   xp: number; // XP into the current level
   level: number;
@@ -324,6 +325,7 @@ function fresh(): SaveData {
     adDiamonds: 0,
     buyer: newBuyerId(),
     campaign: {},
+    tutorial: false,
   };
 }
 
@@ -370,6 +372,8 @@ function sanitize(raw: unknown): SaveData {
       .map((x) => ({ wave: num(x.wave, 0), kills: num(x.kills, 0), mode: String(x.mode ?? 'endless'), map: String(x.map ?? 'lot'), day: String(x.day ?? '') }))
       .slice(0, 10);
   if (typeof r.player === 'string') d.player = r.player.slice(0, 16);
+  // Anyone who already played skips the first-run tips.
+  d.tutorial = r.tutorial === true || num(r.totals?.runs, 0) > 0;
   if (r.campaign && typeof r.campaign === 'object')
     for (const op of OPS) {
       const s = num((r.campaign as Record<string, unknown>)[op.id], 0);
