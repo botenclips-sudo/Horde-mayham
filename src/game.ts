@@ -18,7 +18,7 @@ const DASH_TIME = 0.18;
 const DASH_COOLDOWN = 2.2;
 const COMBO_TIME = 2.5;
 const FLASHLIGHT = 560;
-const DARKNESS = 0.86;
+const DARKNESS = 0.8; // was 0.86: zombies outside the flashlight were too hard to read on a phone screen
 
 interface Bullet {
   kind: 'bullet' | 'flame' | 'rocket' | 'frost';
@@ -865,8 +865,8 @@ export class Game {
     this.canvas.height = Math.round(this.h * this.dpr);
     this.light.width = Math.ceil(this.w / 2);
     this.light.height = Math.ceil(this.h / 2);
-    // Show roughly 460 world units across the short side of the screen.
-    this.zoom = clamp(Math.min(this.w, this.h) / 460, 0.7, 1.8);
+    // Show roughly 410 world units across the short side of the screen (460 made zombies tiny on phones).
+    this.zoom = clamp(Math.min(this.w, this.h) / 410, 0.7, 1.8);
   }
 
   /** Bakes the map's ground into one big canvas (once per map). */
@@ -8749,9 +8749,11 @@ export class Game {
     // Toasts (badges, clips)
     if (this.state === 'playing' || this.state === 'between') {
       ctx.textAlign = 'center';
-      ctx.font = `14px ${MONO}`;
+      ctx.font = `13px ${MONO}`;
+      // Stacked from the bottom edge (newest lowest), between the two thumbs, so they never cover the fight around the player.
+      const n = this.toasts.length;
       this.toasts.forEach((t, i) => {
-        const y = this.h - 120 - i * 34;
+        const y = this.h - 22 - (n - 1 - i) * 30;
         const tw = ctx.measureText(t.text).width + 28;
         ctx.globalAlpha = Math.min(1, t.t * 2, (2.6 - t.t) * 6);
         ctx.fillStyle = 'rgba(8,10,7,0.86)';

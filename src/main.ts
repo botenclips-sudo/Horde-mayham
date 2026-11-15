@@ -1000,13 +1000,14 @@ function renderModes() {
     const played = d.daily.day === today() ? d.daily : { best: 0, runs: 0 };
     info.innerHTML = `Today: <b>${esc(mapById(ds.map).name)}</b> with ${muts.map((x) => `<b>${esc(x.name)}</b> (${esc(x.desc.toLowerCase())})`).join(' and ')}.<br>${played.runs ? `Your best today: wave ${played.best}` : 'First run today pays +50 🧠'}`;
   } else {
-    info.textContent = '';
+    const cur = mapById(d.map);
+    info.innerHTML = `<b>${esc(cur.name)}</b>: ${esc(cur.desc)}`;
     for (const mp of MAPS) {
       const locked = d.level < mp.unlock;
       const b = document.createElement('button');
       b.className = `map-chip${d.map === mp.id ? ' on' : ''}`;
       b.disabled = locked;
-      b.innerHTML = `<b>${esc(mp.name)}</b><span>${locked ? `Level ${mp.unlock}` : esc(mp.desc)}</span>`;
+      b.innerHTML = `<b>${esc(mp.name)}</b><span class="${locked ? 'lock' : 'desc'}">${locked ? `🔒 Level ${mp.unlock}` : esc(mp.desc)}</span>`;
       b.addEventListener('click', () => {
         challenge = null;
         d.map = mp.id;
@@ -1471,6 +1472,16 @@ $('quit').addEventListener('click', () => {
   game.newRun();
   game.state = 'menu';
   show('menu');
+});
+// Phones held upright: the rotate card covers the screen (CSS), and a running fight pauses behind it.
+const portrait = window.matchMedia('(orientation: portrait) and (pointer: coarse)');
+portrait.addEventListener('change', () => {
+  if (portrait.matches && game.state === 'playing') {
+    game.state = 'paused';
+    input.reset();
+    clips.pause(true);
+    show('pause');
+  }
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && game.state === 'playing') {
