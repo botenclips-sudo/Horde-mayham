@@ -18,6 +18,8 @@ const DASH_TIME = 0.18;
 const DASH_COOLDOWN = 2.2;
 const COMBO_TIME = 2.5;
 const FLASHLIGHT = 560;
+/** Damage multiplier for mini-boss attacks. */
+const MINI_DMG = 0.6;
 const DARKNESS = 0.8; // was 0.86: zombies outside the flashlight were too hard to read on a phone screen
 
 interface Bullet {
@@ -439,6 +441,8 @@ interface Nova {
   r: number;
   max: number;
   hit: object[];
+  /** Thrown by a mini-boss: hits softer. */
+  mini?: boolean;
 }
 
 /** Blizzards on the Frozen Outpost (and when the Titan rages): calm, a warning, then wind and snow. */
@@ -705,6 +709,8 @@ export class Game {
   private dashDir = { x: 0, y: 0 };
   private novaCd = 0;
   private hurtFlash = 0;
+  /** Red arcs at the screen edge pointing at whatever just hurt you (angle from the player, time left). */
+  private hitMarks: { a: number; t: number }[] = [];
   private zombies: Zombie[] = [];
   private bullets: Bullet[] = [];
   private particles: Particle[] = [];
@@ -1054,6 +1060,7 @@ export class Game {
     this.burst = 0;
     this.burstT = 0;
     this.toasts = [];
+    this.hitMarks = [];
     this.killCam.t = 0;
     this.spin = 0;
     this.resetBarrels();
@@ -1815,6 +1822,7 @@ export class Game {
 
     this.novaCd -= dt;
     if (this.hurtFlash > 0) this.hurtFlash -= dt;
+    if (this.hitMarks.length) this.hitMarks = this.hitMarks.filter((m) => (m.t -= dt) > 0);
     if (p.hp < this.stats.maxHp * 0.3) {
       this.heartT -= dt;
       if (this.heartT <= 0) {
@@ -2707,7 +2715,7 @@ export class Game {
             this.spawnParticle(z.x + Math.cos(a) * z.r * 2, z.y + Math.sin(a) * z.r * 2, -Math.cos(a) * 160, -Math.sin(a) * 160, 0.35, rand(3, 5), '#dff6ff', 1, false, true);
           }
           if (T.windup <= 0) {
-            this.novas.push({ x: z.x, y: z.y, r: z.r, max: T.enraged ? 560 : 460, hit: [] });
+            this.novas.push({ x: z.x, y: z.y, r: z.r, max: T.enraged ? 560 : 460, hit: [], mini: !!z.mini });
             this.wsfx('nova');
             this.addShake(0.4);
             this.addLight(z.x, z.y, 320, 0.4, '#bfe8ff');
@@ -3700,6 +3708,9 @@ export class Game {
 
   /** Hurts the local player, or (on the co-op host) tells a guest it got hurt. */
   private hurtPlayer(amount: number, from: { x: number; y: number } | null, who: { x: number; y: number } = this.p, knock?: { x: number; y: number }) {
+    // Mini-bosses (waves 5, 15, 25, 35) hit softer than the real thing: the wave 5 Frost Titan was the first
+    // big difficulty cliff, killing a pistol player in under 30s after four waves that barely scratched them.
+    if (from && (from as Partial<Zombie>).mini) amount *= MINI_DMG;
     if (who === this.opS.gen) {
       this.hurtGen(amount);
       return;
@@ -3720,6 +3731,10 @@ export class Game {
     this.report.hitsTaken++;
     this.hitThisWave = true;
     this.hurtFlash = 0.25;
+    if (from && (from.x !== this.p.x || from.y !== this.p.y)) {
+      this.hitMarks.push({ a: Math.atan2(from.y - this.p.y, from.x - this.p.x), t: 0.7 });
+      if (this.hitMarks.length > 4) this.hitMarks.shift();
+    }
     this.addShake(0.45);
     this.sfx.play('hurt');
     this.addText(this.p.x, this.p.y - 24, `-${Math.round(dmg)}`, '#ff5a4e', 16);
@@ -4223,7 +4238,7 @@ export class Game {
       for (const t of ts) {
         if (n.hit.includes(t) || Math.abs(Math.hypot(t.x - n.x, t.y - n.y) - n.r) > NOVA_W + PLAYER_R * 0.5) continue;
         n.hit.push(t);
-        this.hurtPlayer(16 * (1 + 0.03 * this.wave), null, t);
+        this.hurtPlayer(16 * (1 + 0.03 * this.wave) * (n.mini ? MINI_DMG : 1), null, t);
         this.chillPlayer(t, 2.4, 0.45);
       }
       return n.r < n.max;
@@ -6700,6 +6715,22 @@ export class Game {
       rg.addColorStop(1, `rgba(180,0,0,${clamp(a, 0, 0.6).toFixed(2)})`);
       ctx.fillStyle = rg;
       ctx.fillRect(0, 0, this.w, this.h);
+    }
+    // Where the hit came from: a red arc on the ring around your soldier, so a bite from the dark has a direction.
+    if (this.hitMarks.length) {
+      const c = this.toScreen(this.p.x, this.p.y);
+      const rr = Math.min(this.w, this.h) * 0.3;
+      ctx.save();
+      ctx.lineCap = 'round';
+      for (const m of this.hitMarks) {
+        const f = clamp(m.t / 0.7, 0, 1);
+        ctx.strokeStyle = `rgba(255,50,40,${(0.85 * f).toFixed(2)})`;
+        ctx.lineWidth = 7 + 5 * f;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, rr + (1 - f) * 14, m.a - 0.35, m.a + 0.35);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
     const tint = this.active.rage > 0 ? '255,30,30' : this.active.freeze > 0 ? '120,210,255' : this.active.cash > 0 ? '90,255,120' : '';
     if (tint && this.state === 'playing') {

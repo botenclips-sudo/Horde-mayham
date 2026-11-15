@@ -50,6 +50,7 @@ export type SfxKind =
   | 'blink'
   | 'scythe'
   | 'acid'
+  | 'ui'
   | 'swarm'
   | 'singularity'
   | 'vortex'
@@ -383,6 +384,10 @@ export class Sfx {
         break;
       case 'combo':
         [659, 784, 988].forEach((f, i) => this.tone(now + i * 0.06, 0.1, f, f * 1.01, 0.13, 'sawtooth', bus));
+        break;
+      case 'ui':
+        // Menu tap: a short, dry click.
+        this.tone(now, 0.035, 1900, 1200, 0.07 * v, 'square', bus);
         break;
       case 'buy':
         this.tone(now, 0.08, 880, 880, 0.15, 'triangle', bus);
