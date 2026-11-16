@@ -16,6 +16,7 @@ import { boardFor, cleanName, lbHint, leaderboardsOn, postScore, Score, topScore
 import { NetMsg, Room } from './net';
 import { ads, AdPlacement, AdResult } from './monetize/ads';
 import { pay, PACKS } from './monetize/pay';
+import { FORCE_MOCK_PAY } from './monetize/config';
 import { AD_DIAMONDS, BADGE_DIAMONDS, BRAIN_BUNDLE, LEVEL_DIAMONDS, DIAMOND_PRICE, missionDiamonds, REVIVE_TOKEN_MAX, SKINS, STASH_BONUS, XP_BOOST_RUNS } from './diamonds';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -99,7 +100,10 @@ function showShop() {
   $('shop-cash').textContent = `$${Math.floor(game.cash)}`;
   const wrap = $('shop-items');
   wrap.innerHTML = '';
-  for (const item of game.shopItems()) {
+  // What you can afford comes first, so a short phone screen doesn't open on a wall of greyed-out items.
+  const items = game.shopItems();
+  items.sort((a, b) => Number(b.enabled) - Number(a.enabled));
+  for (const item of items) {
     const b = document.createElement('button');
     b.className = 'shop-item';
     b.disabled = !item.enabled;
@@ -389,10 +393,14 @@ function renderStore(body: HTMLElement) {
   free.appendChild(storeCard('⬆ Level ups & badges', `+${LEVEL_DIAMONDS} 💎 every level, +${BADGE_DIAMONDS} 💎 every badge.`));
   body.appendChild(free);
 
-  body.appendChild(storeHead('Diamond packs', pay.test ? 'TEST MODE · NO REAL MONEY' : ''));
+  // Until real payments are switched on, test purchases would hand out free diamonds on the live site,
+  // so the packs only show in dev builds or with ?mockpay.
+  const showPacks = !pay.test || import.meta.env.DEV || FORCE_MOCK_PAY;
+  body.appendChild(storeHead('Diamond packs', pay.test && showPacks ? 'TEST MODE · NO REAL MONEY' : ''));
   const packs = document.createElement('div');
   packs.className = 'meta-grid packs';
-  for (const pk of PACKS) {
+  if (!showPacks) packs.appendChild(storeCard('💎 Coming soon', 'Diamond packs open here soon. Until then, earn diamonds free from ads, missions, level ups and badges.'));
+  for (const pk of showPacks ? PACKS : []) {
     const card = storeCard(`💎 ${pk.diamonds.toLocaleString()}`, `${pk.bonus ? `<span class="green">${pk.bonus} bonus</span>` : 'Starter'}${pk.tag ? ` · <b class="gold">${pk.tag}</b>` : ''}`, 'pack');
     const b = abtn(pk.price, async (b) => {
       b.disabled = true;
@@ -1000,13 +1008,14 @@ function renderModes() {
     const played = d.daily.day === today() ? d.daily : { best: 0, runs: 0 };
     info.innerHTML = `Today: <b>${esc(mapById(ds.map).name)}</b> with ${muts.map((x) => `<b>${esc(x.name)}</b> (${esc(x.desc.toLowerCase())})`).join(' and ')}.<br>${played.runs ? `Your best today: wave ${played.best}` : 'First run today pays +50 🧠'}`;
   } else {
-    info.textContent = '';
+    const cur = mapById(d.map);
+    info.innerHTML = `<b>${esc(cur.name)}</b>: ${esc(cur.desc)}`;
     for (const mp of MAPS) {
       const locked = d.level < mp.unlock;
       const b = document.createElement('button');
       b.className = `map-chip${d.map === mp.id ? ' on' : ''}`;
       b.disabled = locked;
-      b.innerHTML = `<b>${esc(mp.name)}</b><span>${locked ? `Level ${mp.unlock}` : esc(mp.desc)}</span>`;
+      b.innerHTML = `<b>${esc(mp.name)}</b><span class="${locked ? 'lock' : 'desc'}">${locked ? `🔒 Level ${mp.unlock}` : esc(mp.desc)}</span>`;
       b.addEventListener('click', () => {
         challenge = null;
         d.map = mp.id;
@@ -1472,6 +1481,16 @@ $('quit').addEventListener('click', () => {
   game.state = 'menu';
   show('menu');
 });
+// Phones held upright: the rotate card covers the screen (CSS), and a running fight pauses behind it.
+const portrait = window.matchMedia('(orientation: portrait) and (pointer: coarse)');
+portrait.addEventListener('change', () => {
+  if (portrait.matches && game.state === 'playing') {
+    game.state = 'paused';
+    input.reset();
+    clips.pause(true);
+    show('pause');
+  }
+});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && game.state === 'playing') {
     game.state = 'paused';
@@ -1525,6 +1544,11 @@ $('clips-toggle').addEventListener('click', () => {
 });
 syncClipLabel();
 // A tiny buzz on every menu button press so taps feel solid on phones.
+// Every menu button also gets a soft click sound (mouse too).
+document.addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest('button');
+  if (b && !b.disabled && game.state !== 'playing') sfx.play('ui');
+});
 document.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'touch') return;
   const b = (e.target as HTMLElement).closest('button');

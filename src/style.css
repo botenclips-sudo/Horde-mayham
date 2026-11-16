@@ -1219,6 +1219,8 @@ button.buy.price {
 
 .notice.hidden {
   display: none;
+}
+
 /* Story mode: mission picker and briefing */
 .op-row {
   display: grid;

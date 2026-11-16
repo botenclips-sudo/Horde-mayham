@@ -679,9 +679,26 @@ a.util {
   .title-wrap {
     max-width: 780px;
     display: grid;
-    grid-template-columns: 1fr 1.15fr;
-    gap: 22px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: clamp(10px, 2.5vw, 22px);
     align-items: center;
+  }
+  /* Narrow phones: every button stays on screen (Shop and Support used to fall off the right edge). */
+  .title-right .base-row .base-btn {
+    min-width: 0;
+    padding-left: 2px;
+    padding-right: 2px;
+    font-size: clamp(10px, 1.6vw, 14px);
+  }
+  .util-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  button.util,
+  a.util {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .title-left h1 {
     font-size: clamp(40px, 7.5vw, 64px);
@@ -796,4 +813,76 @@ a.util {
   bottom: 4px;
   z-index: 3;
   filter: drop-shadow(0 -6px 10px rgba(0, 0, 0, 0.8));
+}
+
+/* Short phone screens: map chips shrink to one line so the whole map row sits above START.
+   The chosen map's description shows under the row instead. */
+@media (max-height: 500px) {
+  .map-row .map-chip {
+    min-width: 0;
+    min-height: 44px;
+    justify-content: center;
+    padding: 4px 6px;
+  }
+  .map-row .map-chip b {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 13px;
+  }
+  .map-row .map-chip span.desc {
+    display: none;
+  }
+  .modes .tag {
+    font-size: 13px;
+  }
+}
+
+/* ---------------------------------------------------------------- portrait phones: ask to rotate */
+
+.rotate-hint {
+  display: none;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  .rotate-hint {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px;
+    text-align: center;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .rotate-hint b {
+    font: 22px var(--display, 'Black Ops One', sans-serif);
+    letter-spacing: 1px;
+    color: var(--accent);
+  }
+  .rotate-hint span {
+    font: 14px var(--mono);
+    color: var(--muted);
+  }
+  .rot-phone {
+    width: 46px;
+    height: 80px;
+    margin-bottom: 14px;
+    border: 3px solid var(--accent);
+    border-radius: 8px;
+    animation: rot-phone 2s ease-in-out infinite;
+  }
+}
+
+@keyframes rot-phone {
+  0%, 25% { transform: rotate(0deg); }
+  55%, 100% { transform: rotate(-90deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rot-phone { animation: none; transform: rotate(-90deg); }
 }

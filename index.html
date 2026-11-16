@@ -8,6 +8,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Horde Mayhem</title>
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -215,6 +216,12 @@
     </div>
 
     <div id="notice" class="notice hidden"></div>
+
+    <div id="rotate" class="rotate-hint" aria-live="polite">
+      <div class="rot-phone" aria-hidden="true"></div>
+      <b>TURN YOUR PHONE SIDEWAYS</b>
+      <span>Horde Mayhem plays in landscape.</span>
+    </div>
 
     <script type="module" src="./src/main.ts"></script>
   </body>
