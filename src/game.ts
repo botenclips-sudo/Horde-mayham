@@ -123,6 +123,7 @@ interface Zombie {
   pinDmg?: number;
   gen?: number; // Mitosis blob: 0 = full size, splits twice
   latch?: number; // parasite: seconds left clinging to you
+  guard?: number; // shield brute: damage the riot shield can still soak before it breaks (0 = broken)
   latchA?: number;
   psi: number; // Mind Ray hits soaked up
   charm: number; // seconds left fighting for you
@@ -2214,7 +2215,10 @@ export class Game {
       z.jug = { slam: 3, windup: 0 };
     }
     if (kind === 'leaper') z.leap = { state: 'walk', t: rand(1, 2), dx: 0, dy: 0 };
-    if (kind === 'shield') z.face = Math.atan2(this.p.y - z.y, this.p.x - z.x);
+    if (kind === 'shield') {
+      z.face = Math.atan2(this.p.y - z.y, this.p.x - z.x);
+      z.guard = z.maxHp * 0.8;
+    }
     this.zombies.push(z);
     return z;
   }
@@ -2337,6 +2341,18 @@ export class Game {
     return best;
   }
 
+  /** Damage soaked by a shield brute's riot shield; it shatters when it runs out. */
+  private hitGuard(z: Zombie, dmg: number) {
+    if (this.net === 'client' || !z.guard) return;
+    z.guard -= dmg;
+    if (z.guard > 0) return;
+    z.guard = 0;
+    this.addText(z.x, z.y - z.r - 8, 'SHIELD BROKEN', '#ffd23f', 15);
+    for (let i = 0; i < 14; i++) this.spawnParticle(z.x + Math.cos(z.face) * z.r, z.y + Math.sin(z.face) * z.r, rand(-260, 260), rand(-260, 260), rand(0.3, 0.6), rand(3, 6), i % 2 ? '#c8dce8' : '#7a8a98', 5, true, false);
+    this.sfx.play('clank');
+    this.addShake(0.15);
+  }
+
   private updateZombies(dt: number) {
     const ts = this.targets();
     const zs = this.zombies;
@@ -2384,7 +2400,10 @@ export class Game {
       const dx = p.x - z.x;
       const dy = p.y - z.y;
       const d = Math.hypot(dx, dy) || 1;
-      const sp = z.speed * (z.slow > 0 ? 0.5 : 1);
+      // Off-screen zombies jog in faster so a wave doesn't open with 10+ seconds of empty floor while
+      // walkers cross the map. Bosses keep their own pace for their entrance.
+      const catchUp = d > 650 && !isBoss(z) ? 1.7 : 1;
+      const sp = z.speed * (z.slow > 0 ? 0.5 : 1) * catchUp;
       const dir = d > 90 && !intangible(z) ? this.flowDir(z.x, z.y) : null;
       let vx = (dir ? dir.x : dx / d) * sp;
       let vy = (dir ? dir.y : dy / d) * sp;
@@ -3423,8 +3442,9 @@ export class Game {
       this.heat = { id: -1, n: 0 };
       return;
     }
-    if (hit.def.kind === 'shield' && Math.cos(a - hit.face) < -0.35) {
+    if (hit.def.kind === 'shield' && (hit.guard ?? 1) > 0 && Math.cos(a - hit.face) < -0.35) {
       // The riot shield soaks the beam (and glows for it).
+      this.hitGuard(hit, dmg);
       if (Math.random() < 0.4) this.sfx.play('clank', 0.4);
       return;
     }
@@ -3996,8 +4016,10 @@ export class Game {
           alive = false;
           break;
         }
-        if (z.def.kind === 'shield' && b.kind === 'bullet' && Math.cos(Math.atan2(b.vy, b.vx) - z.face) < -0.35) {
-          // Bullet hit the riot shield: sparks, a clank, and it stops dead.
+        if (z.def.kind === 'shield' && (z.guard ?? 1) > 0 && b.kind === 'bullet' && Math.cos(Math.atan2(b.vy, b.vx) - z.face) < -0.35) {
+          // Bullet hit the riot shield: sparks, a clank, and it stops dead. Enough of them and the shield breaks,
+          // so a thumb player who can't flank isn't stuck in a 4-minute stalemate.
+          this.hitGuard(z, b.dmg);
           for (let i = 0; i < 4; i++) this.spawnParticle(b.x, b.y, rand(-160, 160), rand(-160, 160), 0.15, 2.5, '#fff2b0', 6, false, true);
           z.kx -= Math.cos(z.face) * 10;
           z.ky -= Math.sin(z.face) * 10;
@@ -5358,7 +5380,7 @@ export class Game {
         r(z.hp),
         r(z.maxHp),
         r(z.r),
-        (z.elite ? ELITE_KINDS.indexOf(z.elite) + 1 : 0) | (z.mini ? 8 : 0) | (z.frozenT > 0 ? 16 : 0) | (z.burn > 0 ? 32 : 0) | (z.buff > 0 ? 64 : 0) | (z.zapT > 0 ? 128 : 0) | (z.slow > 0 ? 256 : 0) | (z.dig?.state === 'under' ? 512 : 0) | (z.dig?.state === 'rise' ? 1024 : 0) | (z.ghostT > 0 ? 2048 : 0) | (z.fuse > 0 ? 4096 : 0) | ((z.reap?.windup ?? 0) > 0 ? 8192 : 0) | (z.lurk ? 16384 : 0) | ((z.titan?.windup ?? 0) > 0 ? 32768 : 0) | ((z.stun ?? 0) > 0 ? 65536 : 0) | (z.charm > 0 ? 131072 : 0) | (z.healing ? 262144 : 0) | ((z.yank?.windup ?? 0) > 0 ? 524288 : 0) | (z.latch ? 1048576 : 0),
+        (z.elite ? ELITE_KINDS.indexOf(z.elite) + 1 : 0) | (z.mini ? 8 : 0) | (z.frozenT > 0 ? 16 : 0) | (z.burn > 0 ? 32 : 0) | (z.buff > 0 ? 64 : 0) | (z.zapT > 0 ? 128 : 0) | (z.slow > 0 ? 256 : 0) | (z.dig?.state === 'under' ? 512 : 0) | (z.dig?.state === 'rise' ? 1024 : 0) | (z.ghostT > 0 ? 2048 : 0) | (z.fuse > 0 ? 4096 : 0) | ((z.reap?.windup ?? 0) > 0 ? 8192 : 0) | (z.lurk ? 16384 : 0) | ((z.titan?.windup ?? 0) > 0 ? 32768 : 0) | ((z.stun ?? 0) > 0 ? 65536 : 0) | (z.charm > 0 ? 131072 : 0) | (z.healing ? 262144 : 0) | ((z.yank?.windup ?? 0) > 0 ? 524288 : 0) | (z.latch ? 1048576 : 0) | (z.guard === 0 ? 2097152 : 0),
         z.boss ? ['walk', 'windup', 'charge'].indexOf(z.boss.state) : 0,
         z.leap ? ['walk', 'crouch', 'leap'].indexOf(z.leap.state) : 0,
         z.jug ? r(z.jug.windup * 100) : 0,
@@ -5463,6 +5485,7 @@ export class Game {
       z.charm = fl & 131072 ? 1 : 0;
       z.healing = !!(fl & 262144);
       z.latch = fl & 1048576 ? 1 : 0;
+      if (z.def.kind === 'shield') z.guard = fl & 2097152 ? 0 : 1;
       if (z.yank) z.yank.windup = fl & 524288 ? 0.5 : 0;
       if (z.zero && zf) {
         const Z = z.zero;
@@ -7731,7 +7754,7 @@ export class Game {
       ctx.arc(0, 0, r * 1.15, 0, Math.PI * 2);
       ctx.stroke();
     }
-    if (kind === 'shield') {
+    if (kind === 'shield' && z.guard !== 0) {
       // Scuffed riot shield held out front.
       const g = ctx.createLinearGradient(r * 0.9, -r, r * 1.5, r);
       g.addColorStop(0, hit ? '#fff' : 'rgba(200,220,235,0.95)');
