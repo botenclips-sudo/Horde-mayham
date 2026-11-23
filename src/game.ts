@@ -432,6 +432,8 @@ interface Mortar {
   max: number;
   /** The Frost Titan's ice boulders: bigger, and they leave a sheet of ice. */
   ice?: boolean;
+  /** Thrown by a mini-boss: hits softer (see MINI_DMG). */
+  mini?: boolean;
 }
 
 /** The Frost Titan's frost nova: a ring of cold that rolls outward. Dash through it. */
@@ -765,7 +767,7 @@ export class Game {
   private nextId = 1;
   private bladeAngle = 0;
   private droneT: number[] = [];
-  private banner = { text: '', sub: '', t: 0, color: '#fff' };
+  private banner = { text: '', sub: '', t: 0, color: '#fff', subColor: '#e0483e' };
   private shout = { text: '', t: 0, color: '#ffd23f' };
   private cashPulse = 0;
   private combo = 0;
@@ -1084,7 +1086,8 @@ export class Game {
     const miniBoss = !boss && this.wave % 10 === 5;
     this.toSpawn = 10 + this.wave * 5;
     if (boss) this.toSpawn = Math.round(this.toSpawn * (this.mode === 'bossrush' ? 0.3 : 0.5));
-    if (miniBoss) this.toSpawn = Math.round(this.toSpawn * 0.7);
+    // The first mini-boss is most players' first boss fight: keep the crowd thin so it's a duel, not a pile-on.
+    if (miniBoss) this.toSpawn = Math.round(this.toSpawn * (this.wave === 5 ? 0.45 : 0.7));
     if (this.has('horde')) this.toSpawn = Math.round(this.toSpawn * 1.5);
     // More players, more zombies.
     if (this.net === 'host') this.toSpawn = Math.round(this.toSpawn * (1 + 0.6 * this.allies.length));
@@ -1114,8 +1117,9 @@ export class Game {
 
   /** Mimics: a supply crate or two on the floor is really a zombie waiting for you to walk up. */
   private hideMimics() {
-    if (this.wave < 2 || this.mode === 'bossrush') return;
-    let n = this.wave === 2 ? 1 : Math.random() < 0.55 ? 1 : 0;
+    // Not before wave 4: a 150 HP ambusher on a pistol-only player was an early run-killer.
+    if (this.wave < 4 || this.mode === 'bossrush') return;
+    let n = this.wave === 4 ? 1 : Math.random() < 0.55 ? 1 : 0;
     if (this.wave >= 12 && Math.random() < 0.5) n++;
     if (this.wave >= 25) n++;
     const ts = this.targets();
@@ -1366,8 +1370,8 @@ export class Game {
   }
 
   /** share: on the co-op host, show it to the whole squad too. */
-  private showBanner(text: string, sub: string, color: string, share = false) {
-    this.banner = { text, sub, t: 2.4, color };
+  private showBanner(text: string, sub: string, color: string, share = false, subColor = '#e0483e') {
+    this.banner = { text, sub, t: 2.4, color, subColor };
     if (share) this.netEvent('b', text, sub, color);
   }
 
@@ -1578,7 +1582,7 @@ export class Game {
 
     if (this.clearT < 0 && this.toSpawn <= 0 && this.zombies.length === 0) {
       this.clearT = 1.6;
-      this.showBanner('WAVE CLEARED', '', '#5dff7a');
+      this.showBanner('WAVE CLEARED', `+$${this.clearBonus()} ${this.hitThisWave ? 'CLEAR BONUS' : 'FLAWLESS BONUS'}`, '#5dff7a', false, '#ffd23f');
       // Vacuum up any cash left on the floor.
       for (const pk of this.pickups) if (pk.kind !== 'health') pk.pulled = true;
     }
@@ -1591,7 +1595,8 @@ export class Game {
           if (pk.kind === 'cash') left += pk.value;
           else if (pk.kind === 'crate') this.openCrate(pk);
         }
-        const share = left / (1 + this.allies.length);
+        // Everyone gets the full clear bonus on top of their share of the floor cash.
+        const share = left / (1 + this.allies.length) + this.clearBonus();
         this.gainCash(share);
         if (this.net === 'host') this.netSend?.(null, { t: 'clear', w: this.wave, c: Math.round(share) });
         this.pickups = [];
@@ -1601,6 +1606,14 @@ export class Game {
   }
 
   /** Between-waves bookkeeping, run by the host and (on the host's word) by each guest. */
+  /**
+   * Cash for clearing a wave (x1.5 without taking a hit). Kill cash alone left the first shop visits a wall
+   * of greyed-out items: a pistol player couldn't afford a second gun until wave 4.
+   */
+  private clearBonus() {
+    return Math.round((30 + 15 * this.wave) * (this.hitThisWave ? 1 : 1.5));
+  }
+
   private waveCleared() {
     if (!this.hitThisWave) this.report.flawlessWaves++;
     this.gainBrains(1 + Math.floor(this.wave / 3));
@@ -2083,10 +2096,10 @@ export class Game {
       ['bomber', w >= 7 ? Math.min(0.06, 0.035 + (w - 7) * 0.004) : 0],
       ['burrower', w >= 16 && this.countKind('burrower') < 3 ? Math.min(0.04, 0.025 + (w - 16) * 0.003) : 0],
       ['wraith', w >= 18 && this.countKind('wraith') < 4 ? Math.min(0.05, 0.03 + (w - 18) * 0.003) : 0],
-      ['webber', w >= 4 && this.countKind('webber') < 4 ? Math.min(0.06, 0.04 + (w - 4) * 0.003) : 0],
+      ['webber', w >= 6 && this.countKind('webber') < 4 ? Math.min(0.06, 0.04 + (w - 6) * 0.003) : 0],
       ['medic', w >= 17 && this.countKind('medic') < 2 ? Math.min(0.035, 0.02 + (w - 17) * 0.003) : 0],
       ['sludger', w >= 19 && this.countKind('sludger') < 4 ? Math.min(0.045, 0.03 + (w - 19) * 0.003) : 0],
-      ['roller', w >= 3 && this.countKind('roller') < 4 ? Math.min(0.05, 0.03 + (w - 3) * 0.002) : 0],
+      ['roller', w >= 7 && this.countKind('roller') < 4 ? Math.min(0.05, 0.03 + (w - 7) * 0.002) : 0],
       // Icers are locals on the Frozen Outpost; elsewhere they turn up late.
       ['icer', this.map.id === 'outpost' ? Math.min(0.12, 0.06 + w * 0.003) : w >= 21 ? Math.min(0.05, 0.03 + (w - 21) * 0.003) : 0],
       ...this.labChances(w),
@@ -2678,7 +2691,7 @@ export class Game {
               const x = clamp(sp2.x, BORDER + 30, WORLD_W - BORDER - 30);
               const y = clamp(sp2.y, BORDER + 30, WORLD_H - BORDER - 30);
               const fl = rand(1.05, 1.3);
-              this.mortars.push({ x, y, sx: z.x, sy: z.y, t: fl, max: fl });
+              this.mortars.push({ x, y, sx: z.x, sy: z.y, t: fl, max: fl, mini: z.mini });
             }
           }
           this.wsfx('mortar');
@@ -2731,7 +2744,7 @@ export class Game {
             if (T.enraged) for (let i = 0; i < 2; i++) spots.push({ x: t.x + rand(-220, 220), y: t.y + rand(-220, 220) });
             for (const sp2 of spots) {
               const fl = rand(1.2, 1.45);
-              this.mortars.push({ x: clamp(sp2.x, BORDER + 40, WORLD_W - BORDER - 40), y: clamp(sp2.y, BORDER + 40, WORLD_H - BORDER - 40), sx: z.x, sy: z.y, t: fl, max: fl, ice: true });
+              this.mortars.push({ x: clamp(sp2.x, BORDER + 40, WORLD_W - BORDER - 40), y: clamp(sp2.y, BORDER + 40, WORLD_H - BORDER - 40), sx: z.x, sy: z.y, t: fl, max: fl, ice: true, mini: z.mini });
             }
           }
           this.wsfx('mortar');
@@ -4132,7 +4145,8 @@ export class Game {
     let dps = 0;
     this.puddles = this.puddles.filter((pd) => {
       pd.life -= dt;
-      if (Math.hypot(pd.x - p.x, pd.y - p.y) < pd.r + PLAYER_R * 0.5) dps = Math.max(dps, pd.kind === 'acid' ? 14 : pd.kind === 'sludge' ? 11 + 0.25 * this.wave : 12);
+      // Ice sheets only make you slide (see onIce); they used to fall through to 12 damage a second.
+      if (pd.kind !== 'ice' && Math.hypot(pd.x - p.x, pd.y - p.y) < pd.r + PLAYER_R * 0.5) dps = Math.max(dps, pd.kind === 'acid' ? 14 : pd.kind === 'sludge' ? 11 + 0.25 * this.wave : 12);
       return pd.life > 0;
     });
     if (dps > 0 && this.dashT <= 0 && this.invT <= 0 && !this.down) {
@@ -4157,10 +4171,10 @@ export class Game {
         b.dead = true;
         if (b.big) {
           // Fuel pump: a fireball that clears the whole forecourt.
-          this.explode(b.x, b.y, 450 * this.stats.damage, 230, 40, true);
+          this.explode(b.x, b.y, 450 * this.stats.damage, 230, 30, true);
           this.flash = { t: 0.3, color: '#ffb050', max: 0.3 };
           this.slowT = Math.max(this.slowT, 0.4);
-        } else this.explode(b.x, b.y, 240 * this.stats.damage, 150, 30, true);
+        } else this.explode(b.x, b.y, 240 * this.stats.damage, 150, 20, true);
       }
     }
   }
@@ -8814,7 +8828,7 @@ export class Game {
       ctx.fillText(this.banner.text, 0, 0);
       if (this.banner.sub) {
         ctx.font = `16px ${FONT}`;
-        ctx.fillStyle = '#e0483e';
+        ctx.fillStyle = this.banner.subColor;
         ctx.fillText(this.banner.sub, 0, 40);
       }
       ctx.restore();
