@@ -531,7 +531,7 @@ let rvTimer = 0;
 
 function offerRevive() {
   rvLeft = REVIVE_SECONDS;
-  $('rv-msg').textContent = ads.test ? 'Test ads: no ad network connected yet.' : '';
+  $('rv-msg').textContent = ads.test && import.meta.env.DEV ? 'Test ads: no ad network connected yet.' : '';
   renderRevive();
   show('revive');
   clearInterval(rvTimer);
@@ -1397,7 +1397,8 @@ async function claimPurchases() {
 }
 
 refreshMenu();
-$('play').addEventListener('click', openModes);
+// A brand-new player goes straight into a run: five modes, seven maps and a code box are a lot to read before the first shot.
+$('play').addEventListener('click', () => (meta.data.totals.runs === 0 && !challenge ? startRun() : openModes()));
 $('start').addEventListener('click', startRun);
 $('modes-back').addEventListener('click', () => show('menu'));
 $('again').addEventListener('click', () => {
