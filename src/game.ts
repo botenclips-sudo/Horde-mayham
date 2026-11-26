@@ -11,6 +11,7 @@ const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 import type { NetMsg } from './net';
 import { type OpDef, OKAFOR } from './campaign';
+import { CELL_UNITS, DEFAULT_JACKET, DOWN_UNITS, loadPlayerArt, playerFrame, walkFrame } from './playerArt';
 import { ARM_FRAMES, armsSprite, bodySprite, eggSprite, eyeSpot, hasFeet, stamp, Tint, VARIANTS, warmZombieArt } from './zombieArt';
 
 const PLAYER_R = 16;
@@ -777,6 +778,10 @@ export class Game {
   private bestCombo = 0;
   private heartT = 0;
   private ghosts: { x: number; y: number; a: number; life: number }[] = [];
+  /** Per-soldier walk distance and last position (player = -1, allies by slot), for the stride animation. */
+  private strides = new Map<number, { x: number; y: number; d: number; moving: number }>();
+  /** Recoil kick on the player's arms, set on each shot and eased back. */
+  private kick = 0;
   private flow = new Int32Array(FLOW_W * FLOW_H);
   private flowT = 0;
   /** Seconds since the last kill; drives the straggler rescue. */
@@ -851,6 +856,7 @@ export class Game {
     window.addEventListener('resize', () => this.resize());
     this.newRun();
     this.state = 'menu';
+    loadPlayerArt();
     // Paint the detailed zombie sprites a kind at a time while the title screen is up,
     // so the first wave doesn't hitch painting them mid-fight.
     const defs = Object.values(ZOMBIES);
@@ -2018,6 +2024,7 @@ export class Game {
       this.spawnParticle(p.x, p.y, Math.cos(side) * rand(90, 150), Math.sin(side) * rand(90, 150), 0.45, 2.5, '#d4a24a', 6, false, false);
     }
     this.addShake(w.def.shake * 0.5);
+    this.kick = 1;
     // Recoil
     p.vx -= Math.cos(p.angle) * 40 * w.def.shake;
     p.vy -= Math.sin(p.angle) * 40 * w.def.shake;
@@ -8136,12 +8143,13 @@ export class Game {
     }
     ctx.globalAlpha = 1;
     const hurt = this.hurtFlash > 0 && Math.floor(this.hurtFlash * 30) % 2 === 0;
-    this.drawSoldier(p.x, p.y, p.angle, w.def, this.spin, hurt, this.slot, this.down, this.reviveProg);
+    this.drawSoldier(p.x, p.y, p.angle, w.def, this.spin, hurt, this.slot, this.down, this.reviveProg, -1, this.kick);
+    this.kick = Math.max(0, this.kick - 0.12);
     if (!this.down) this.drawOrbitals();
   }
 
   private drawAllies() {
-    for (const a of this.allies) this.drawSoldier(a.x, a.y, a.angle, WEAPON_BY_ID.get(a.weapon) ?? WEAPONS[0], a.firing ? 1 : 0, false, a.slot, a.down, a.revive);
+    for (const a of this.allies) this.drawSoldier(a.x, a.y, a.angle, WEAPON_BY_ID.get(a.weapon) ?? WEAPONS[0], a.firing ? 1 : 0, false, a.slot, a.down, a.revive, a.slot, a.firing ? 0.5 + 0.5 * Math.sin(this.clock * 40) : 0);
   }
 
   /** Names and health bars over teammates, drawn above the darkness. */
@@ -8163,9 +8171,20 @@ export class Game {
     }
   }
 
-  private drawSoldier(x: number, y: number, angle: number, def: WeaponDef, spin: number, hurt: boolean, slot: number, down: boolean, revive: number) {
+  private drawSoldier(x: number, y: number, angle: number, def: WeaponDef, spin: number, hurt: boolean, slot: number, down: boolean, revive: number, who = -1, kick = 0) {
     const ctx = this.ctx;
     const suit = (slot === this.slot && this.skin) || SUITS[slot] || SUITS[0];
+    // Blender-rendered operator sprites (falls back to the flat shapes until the atlas loads).
+    const jacket = hurt ? '#ff5a4a' : who < 0 ? (this.skin?.[0] ?? DEFAULT_JACKET) : (SUITS[slot] ?? SUITS[0])[0];
+    let st = this.strides.get(who);
+    if (!st) this.strides.set(who, (st = { x, y, d: 0, moving: 0 }));
+    const step = Math.hypot(x - st.x, y - st.y);
+    if (step < 40) st.d += step; // ignore teleports and respawns
+    st.moving = step > 0.3 ? 0.25 : Math.max(0, st.moving - 1 / 60);
+    st.x = x;
+    st.y = y;
+    const lower = playerFrame(st.moving > 0 ? walkFrame(st.d) : 'idle_under', jacket);
+    const upper = playerFrame('idle_over', jacket);
     ctx.save();
     ctx.translate(x, y);
     if (down) {
@@ -8183,6 +8202,18 @@ export class Game {
         ctx.stroke();
       }
       ctx.rotate(angle);
+      const flat = playerFrame('down', jacket);
+      if (flat) {
+        // Blood pool, then the operator lying on their back (drawn a bit smaller than life).
+        ctx.fillStyle = 'rgba(90,20,14,0.8)';
+        ctx.beginPath();
+        ctx.ellipse(-2, 3, 30, 14, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const sz = DOWN_UNITS * 0.62;
+        ctx.drawImage(flat, -sz / 2, -sz / 2, sz, sz);
+        ctx.restore();
+        return;
+      }
       ctx.scale(1, 0.75);
       ctx.globalAlpha = 0.85;
       ctx.fillStyle = '#5a1a14';
@@ -8206,6 +8237,8 @@ export class Game {
     ctx.ellipse(3, 5, 17, 15, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.rotate(angle);
+    const half = CELL_UNITS / 2;
+    if (lower) ctx.drawImage(lower, -half, -half, CELL_UNITS, CELL_UNITS);
     const gl = def.length;
     const kind = def.id;
     ctx.fillStyle = '#1c1c1c';
@@ -8311,6 +8344,13 @@ export class Game {
     } else {
       ctx.fillStyle = '#353535';
       ctx.fillRect(6, -2, gl - 6, 2);
+    }
+    if (upper) {
+      // Arms, gloves and head on top of the gun; a shot kicks them back a touch.
+      const k = -kick * 2.2;
+      ctx.drawImage(upper, -half + k, -half, CELL_UNITS, CELL_UNITS);
+      ctx.restore();
+      return;
     }
     // Arms holding the gun
     ctx.fillStyle = '#c9a27e';
