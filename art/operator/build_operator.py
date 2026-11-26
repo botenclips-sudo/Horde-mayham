@@ -210,7 +210,7 @@ def strap(name, pts, w, t, m):
 # ------------------------------------------------------------------ materials
 def make_mats(sprite):
     jacket = 0.42 if sprite else 0.014
-    mat('jacket', (jacket, jacket, jacket * 1.04), rough=0.45, sheen=0.15, coat=0.08, bump=0.25, bump_scale=140)
+    mat('jacket', (jacket, jacket, jacket * 1.04), rough=0.38, sheen=0.25, bump=0.35, bump_scale=90)
     mat('jeans', (0.028, 0.028, 0.032), rough=0.85, bump=0.5, wave={'dir': 'X', 'scale': 260, 'distort': 6})
     jm = MATS['jeans']; nt = jm.node_tree; b = nt.nodes['Principled BSDF']
     tc = nt.nodes.new('ShaderNodeTexCoord')
@@ -227,7 +227,16 @@ def make_mats(sprite):
     mix.inputs['B'].default_value = (0.78, 0.64, 0.55, 1)
     nt.links.new(mix.outputs['Result'], b.inputs['Base Color'])
     mat('rip', (0.85, 0.82, 0.78), rough=0.9, bump=0.8, bump_scale=300)
-    mat('skin', (0.80, 0.62, 0.52), rough=0.45, sheen=0.2)
+    mat('skin', (0.7, 0.48, 0.38), rough=0.45, sheen=0.1)
+    sb = MATS['skin'].node_tree.nodes['Principled BSDF']
+    sb.inputs['Subsurface Weight'].default_value = 0.25
+    sb.inputs['Subsurface Radius'].default_value = (0.01, 0.004, 0.002)
+    sb.inputs['Subsurface Scale'].default_value = 0.03
+    mat('lip', (0.72, 0.42, 0.40), rough=0.35)
+    mat('sclera', (0.9, 0.88, 0.86), rough=0.15, coat=1.0)
+    mat('iris', (0.06, 0.05, 0.05), rough=0.1, coat=1.0)
+    mat('brow', (0.2, 0.2, 0.22), rough=0.7)
+    mat('blush', (0.92, 0.55, 0.5), rough=0.5)
     mat('hair', (0.42, 0.43, 0.46), rough=0.32, sheen=0.4, coat=0.2)
     hm = MATS['hair']; nt = hm.node_tree; b = nt.nodes['Principled BSDF']
     tc = nt.nodes.new('ShaderNodeTexCoord')
@@ -250,10 +259,10 @@ def make_mats(sprite):
     mat('tan_dark', (0.17, 0.13, 0.08), rough=0.6)
     mat('rubber', (0.02, 0.02, 0.02), rough=0.6)
     mat('glove', (0.012, 0.012, 0.013), rough=0.7, bump=0.3, bump_scale=200)
-    mat('lens', (1.0, 0.28, 0.05), rough=0.05, transmission=0.6, coat=1.0, emit=(1.0, 0.25, 0.02), emit_str=0.6)
+    mat('lens', (1.0, 0.35, 0.08), rough=0.03, transmission=0.92, ior=1.2, coat=1.0, emit=(1.0, 0.3, 0.04), emit_str=0.15)
     mat('frame', (0.05, 0.05, 0.05), rough=0.3)
-    mat('nylon', (0.10, 0.105, 0.095), rough=0.8, bump=0.4, wave={'dir': 'X', 'scale': 300, 'distort': 1})
-    mat('pouch', (0.17, 0.19, 0.17), rough=0.8, bump=0.35, bump_scale=220)
+    mat('nylon', (0.07, 0.075, 0.068), rough=0.92, bump=0.7, wave={'dir': 'X', 'scale': 420, 'distort': 0.5})
+    mat('pouch', (0.15, 0.165, 0.15), rough=0.93, bump=0.55, bump_scale=420)
     mat('glow', (1.0, 0.45, 0.05), rough=0.3, emit=(1.0, 0.42, 0.04), emit_str=25)
     mat('sneaker', (0.85, 0.85, 0.84), rough=0.45, bump=0.12, bump_scale=200)
     mat('sole', (0.92, 0.91, 0.88), rough=0.7)
@@ -323,78 +332,100 @@ def build_character(phase=0.0, walking=False, rifle=True, sprite=False):
     torso = skin_obj('jacket', [(0, 0, pz - 0.15), (0, 0, pz - 0.02), (0.0, 0, pz + 0.12), (0.0, 0, pz + 0.26), (0.0, 0, pz + 0.4), (-0.005, 0, pz + 0.52),
                                 (-0.01, 0, pz + 0.66), (0.005, 0.2, pz + 0.53), (0.005, -0.2, pz + 0.53)],
                      [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (5, 7), (5, 8)],
-                     [(0.215, 0.19), (0.215, 0.185), (0.21, 0.18), (0.215, 0.18), (0.22, 0.175), (0.18, 0.155), (0.088, 0.09), (0.12, 0.12), (0.12, 0.12)],
+                     [(0.19, 0.17), (0.19, 0.165), (0.185, 0.16), (0.19, 0.16), (0.195, 0.158), (0.165, 0.14), (0.08, 0.082), (0.105, 0.105), (0.105, 0.105)],
                      MATS['jacket'], sub=3)
-    quilt(torso, (0, 0, pz), (0, 0, 1), 0.095, 0.015)
+    quilt(torso, (0, 0, pz + 0.03), (0, 0, 1), 0.072, 0.017, sharp=0.22)
     parts['under'].append(torso)
     # Front zip
-    zp = prim_box('zip', (0.17, 0.0, pz + 0.3), (0.012, 0.014, 0.5), MATS['metal'], bevel=0.003, sub=0)
+    zp = prim_box('zip', (0.158, 0.0, pz + 0.2), (0.012, 0.014, 0.5), MATS['metal'], bevel=0.003, sub=0)
     parts['under'].append(zp)
 
     # Chest rig: front panel, shoulder straps crossing to the back, side pouch with an orange light.
     sz = pz + 0.42
-    panel = prim_box('rigpanel', (0.165, 0.0, sz - 0.04), (0.07, 0.28, 0.17), MATS['nylon'], bevel=0.015)
+    panel = prim_box('rigpanel', (0.15, 0.0, sz - 0.04), (0.07, 0.28, 0.17), MATS['nylon'], bevel=0.015)
     parts['under'].append(panel)
     for yy in (-0.08, 0.0, 0.08):
-        mg = prim_box(f'magp{yy}', (0.205, yy, sz - 0.02), (0.035, 0.07, 0.12), MATS['pouch'], bevel=0.008)
+        mg = prim_box(f'magp{yy}', (0.19, yy, sz - 0.02), (0.035, 0.07, 0.12), MATS['pouch'], bevel=0.008)
         parts['under'].append(mg)
-    radio = prim_box('radio', (0.19, 0.1, sz + 0.09), (0.04, 0.05, 0.08), MATS['rubber'], bevel=0.006)
+    radio = prim_box('radio', (0.175, 0.1, sz + 0.09), (0.04, 0.05, 0.08), MATS['rubber'], bevel=0.006)
     parts['under'].append(radio)
     for side in (1, -1):
-        st = strap(f'strap{side}', [(0.18, side * 0.1, sz + 0.03), (0.15, side * 0.13, pz + 0.55), (0.03, side * 0.15, pz + 0.64),
-                                    (-0.12, side * 0.13, pz + 0.56), (-0.17, side * 0.08, pz + 0.3)], 0.045, 0.008, MATS['nylon'])
+        st = strap(f'strap{side}', [(0.165, side * 0.1, sz + 0.03), (0.135, side * 0.12, pz + 0.55), (0.03, side * 0.135, pz + 0.63),
+                                    (-0.11, side * 0.12, pz + 0.55), (-0.155, side * 0.08, pz + 0.3)], 0.045, 0.008, MATS['nylon'])
         parts['under'].append(st)
-        bk = prim_box(f'buckle{side}', (0.17, side * 0.11, pz + 0.55), (0.025, 0.05, 0.03), MATS['rubber'], bevel=0.004, sub=0)
+        bk = prim_box(f'buckle{side}', (0.155, side * 0.105, pz + 0.55), (0.025, 0.05, 0.03), MATS['rubber'], bevel=0.004, sub=0)
         parts['under'].append(bk)
     # Waist belt and the big grey dump pouch on the right hip.
-    pouch = prim_box('dumppouch', (0.02, -0.25, pz - 0.05), (0.2, 0.11, 0.22), MATS['pouch'], bevel=0.03)
-    parts['under'].append(pouch)
-    zipr = tube('pouchzip', [(0.11, -0.312, pz + 0.03), (0.12, -0.31, pz - 0.05), (0.11, -0.312, pz - 0.13)], 0.004, MATS['metal'])
-    parts['under'].append(zipr)
-    flap = prim_box('pouchflap', (0.02, -0.255, pz + 0.07), (0.21, 0.118, 0.04), MATS['nylon'], bevel=0.01)
-    parts['under'].append(flap)
-    light = prim_box('stroblight', (0.095, -0.245, pz + 0.01), (0.03, 0.05, 0.06), MATS['rubber'], bevel=0.005)
-    lens = prim_box('strobglow', (0.112, -0.245, pz + 0.01), (0.008, 0.036, 0.042), MATS['glow'], bevel=0.003, sub=0)
-    lens_top = prim_box('strobglowtop', (0.095, -0.245, pz + 0.046), (0.022, 0.036, 0.008), MATS['glow'], bevel=0.002, sub=0)
-    parts['under'] += [light, lens, lens_top]
+    parts['under'] += build_pouch(Vector((0.02, -0.225, pz - 0.15)), pz)
     # Orange unit patch on the left shoulder (original 'HM' horde badge).
-    patch = prim_box('patch', (0.03, 0.29, pz + 0.48), (0.07, 0.012, 0.06), MATS['patch'], bevel=0.006, rot=(0.25, 0, 0))
+    patch = prim_box('patch', (0.03, 0.262, pz + 0.48), (0.07, 0.012, 0.06), MATS['patch'], bevel=0.006, rot=(0.25, 0, 0))
     parts['over'].append(patch)
 
     # Arms: puffy sleeves in a two-handed rifle hold. Hands match the game's grip points.
-    sh = {1: Vector((0.0, 0.215, pz + 0.53)), -1: Vector((0.0, -0.215, pz + 0.53))}
-    hand_r = Vector((0.2, -0.055, pz + 0.3))   # trigger hand (right)
-    hand_l = Vector((0.36, 0.012, pz + 0.32))  # support hand (left)
+    sh = {1: Vector((0.0, 0.195, pz + 0.53)), -1: Vector((0.0, -0.195, pz + 0.53))}
+    hand_r = Vector((0.2, -0.055 if STRIDE_SMALL else -0.03, pz + 0.3))   # trigger hand (right)
+    hand_l = Vector((0.36, 0.012 if STRIDE_SMALL else -0.03, pz + 0.32))  # support hand (left)
     elbow_r = Vector((0.03, -0.27, pz + 0.3))
     elbow_l = Vector((0.2, 0.15, pz + 0.28))
     for side, hand, elbow in ((1, hand_l, elbow_l), (-1, hand_r, elbow_r)):
         wrist = hand - (hand - elbow).normalized() * 0.07
         sl = skin_obj(f'sleeve{side}', [sh[side], sh[side].lerp(elbow, 0.5), elbow, elbow.lerp(wrist, 0.5), wrist],
                       [(0, 1), (1, 2), (2, 3), (3, 4)],
-                      [(0.092, 0.092), (0.086, 0.086), (0.078, 0.078), (0.07, 0.07), (0.058, 0.058)],
+                      [(0.078, 0.078), (0.072, 0.072), (0.064, 0.064), (0.058, 0.058), (0.05, 0.05)],
                       MATS['jacket'], sub=3)
-        quilt(sl, sh[side], elbow - sh[side], 0.08, 0.014)
+        quilt(sl, sh[side], elbow - sh[side], 0.062, 0.014, sharp=0.22)
         parts['over'].append(sl)
-        cuff = prim_cyl(f'cuff{side}', wrist, 0.05, 0.035, MATS['nylon'])
+        cuff = prim_cyl(f'cuff{side}', wrist, 0.043, 0.03, MATS['nylon'])
         cuff.rotation_euler = Euler((0, math.pi / 2, 0)).to_matrix().to_euler()
         d = (hand - wrist).normalized()
         cuff.rotation_euler = d.to_track_quat('Z', 'Y').to_euler()
         parts['over'].append(cuff)
-        # Glove: palm + knuckles + curled fingers + thumb.
-        g = skin_obj(f'glove{side}', [wrist, hand, hand + d * 0.045 + Vector((0, 0, -0.025)), hand + Vector((0, side * 0.03, 0.02))],
-                     [(0, 1), (1, 2), (1, 3)], [(0.038, 0.032), (0.045, 0.03), (0.032, 0.026), (0.016, 0.016)], MATS['glove'])
-        parts['over'].append(g)
+        parts['over'] += build_glove(side, hand, wrist)
 
     # Head, face, hair, headset, glasses.
     hz = pz + 0.72
     neck = prim_cyl('neck', (0, 0, hz - 0.12), 0.05, 0.1, MATS['skin'])
     parts['over'].append(neck)
-    head = prim_sphere('head', (0.0, 0, hz), 0.1, MATS['skin'], scale=(1.0, 0.88, 1.12))
+    head = prim_sphere('head', (0.0, 0, hz), 0.1, MATS['skin'], scale=(1.0, 0.86, 1.12), seg=64)
+    # Shape the skull into a face: tapered jaw, pointed chin, flatter cheeks, eye sockets.
+    for v in head.data.vertices:
+        c = v.co - Vector((0, 0, hz))
+        low = max(0.0, -c.z) / 0.112           # 0 at eye line .. 1 at chin
+        front = max(0.0, c.x) / 0.1
+        c.y *= 1 - 0.38 * low ** 1.3 * (0.5 + 0.5 * front)
+        c.x *= 1 - 0.12 * low * (1 - front)
+        if c.z < -0.06:
+            c.x += 0.012 * front * (low - 0.5)
+        # Shallow eye sockets
+        for ey in (0.034, -0.034):
+            d = math.hypot(c.y - ey, c.z - 0.004)
+            if c.x > 0.06 and d < 0.026:
+                c.x -= 0.006 * (1 - d / 0.026)
+        v.co = c + Vector((0, 0, hz))
     parts['over'].append(head)
-    nose = prim_sphere('nose', (0.098, 0, hz - 0.02), 0.014, MATS['skin'], scale=(1, 0.8, 1.3), seg=16)
+    # Nose: bridge + tip + nostrils.
+    nose = skin_obj('nose', [(0.094, 0, hz + 0.0), (0.103, 0, hz - 0.03), (0.099, 0, hz - 0.04)], [(0, 1), (1, 2)],
+                    [(0.0045, 0.0045), (0.0062, 0.0062), (0.005, 0.005)], MATS['skin'])
     parts['over'].append(nose)
-    mouth = tube('mouth', [(0.094, 0.018, hz - 0.058), (0.099, 0.0, hz - 0.06), (0.094, -0.018, hz - 0.057)], 0.0025, MATS['tan_dark'])
-    parts['over'].append(mouth)
+    for side in (1, -1):
+        nst = prim_sphere(f'nostril{side}', (0.096, side * 0.0065, hz - 0.04), 0.0045, MATS['skin'], scale=(1, 1, 0.7), seg=16)
+        parts['over'].append(nst)
+    # Lips: upper and lower, slightly parted in a calm half smile.
+    ul = tube('lipup', [(0.088, 0.016, hz - 0.064), (0.095, 0.0, hz - 0.062), (0.088, -0.016, hz - 0.063)], 0.0028, MATS['lip'])
+    ll = tube('liplow', [(0.086, 0.012, hz - 0.069), (0.092, 0.0, hz - 0.0705), (0.086, -0.012, hz - 0.069)], 0.0034, MATS['lip'])
+    parts['over'] += [ul, ll]
+    # Eyes (visible through the tinted lenses), brows, faint blush.
+    for side in (1, -1):
+        ey = side * 0.034
+        sc = prim_sphere(f'eye{side}', (0.086, ey, hz + 0.004), 0.016, MATS['sclera'], scale=(0.7, 1, 0.75), seg=24)
+        ir = prim_sphere(f'iris{side}', (0.0955, ey * 0.95, hz + 0.004), 0.0075, MATS['iris'], scale=(0.5, 1, 1.05), seg=16)
+        lid = tube(f'lid{side}', [(0.091, ey + 0.015, hz + 0.008), (0.098, ey, hz + 0.0145), (0.091, ey - 0.015, hz + 0.009)], 0.0018, MATS['iris'])
+        brow = tube(f'brow{side}', [(0.094, ey + 0.02, hz + 0.034), (0.1, ey, hz + 0.039), (0.096, ey - 0.018, hz + 0.036)], 0.0025, MATS['brow'])
+        parts['over'] += [sc, ir, lid, brow]
+    # Ears peek out under the cups.
+    for side in (1, -1):
+        ear = prim_sphere(f'ear{side}', (-0.005, side * 0.088, hz - 0.02), 0.022, MATS['skin'], scale=(0.8, 0.35, 1.2), seg=24)
+        parts['over'].append(ear)
     # Hair: a bob cut. Shell around the skull with a face opening and blunt bangs.
     bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=32, radius=0.118, location=(-0.008, 0, hz + 0.012))
     hair = bpy.context.active_object; hair.name = 'hair'
@@ -480,10 +511,88 @@ def build_character(phase=0.0, walking=False, rifle=True, sprite=False):
         parts['gun'] = build_rifle(hand_r, hand_l)
     return parts, pz
 
+def build_pouch(c, pz):
+    """Grey dump pouch on the right hip: soft rounded body, curved lid, zipper with pulls,
+    MOLLE webbing, a hanger strap to the belt and a small strobe with an orange glow."""
+    out = []
+    body = prim_box('pouchbody', c, (0.2, 0.1, 0.21), MATS['pouch'], bevel=0.035, sub=2)
+    # Soft bulge: push the outer face out a little.
+    bake(body)
+    for v in body.data.vertices:
+        if v.co.y < c.y - 0.02:
+            k = max(0.0, 1 - ((v.co.x - c.x) / 0.1) ** 2) * max(0.0, 1 - ((v.co.z - c.z) / 0.105) ** 2)
+            v.co.y -= 0.014 * k
+    out.append(body)
+    lid = prim_box('pouchlid', c + Vector((0, -0.004, 0.105)), (0.205, 0.112, 0.035), MATS['pouch'], bevel=0.016, sub=2)
+    lip = prim_box('pouchlidlip', c + Vector((0, -0.058, 0.078)), (0.17, 0.012, 0.05), MATS['pouch'], bevel=0.006, sub=1)
+    out += [lid, lip]
+    # Vertical zipper on the outer face, with two pulls.
+    zp = tube('pouchzip', [c + Vector((0.065, -0.066, 0.06)), c + Vector((0.072, -0.068, -0.0)), c + Vector((0.065, -0.066, -0.085))], 0.0035, MATS['metal'])
+    out.append(zp)
+    for zz in (0.04, -0.07):
+        pull = prim_box(f'zpull{zz}', c + Vector((0.073, -0.072, zz)), (0.008, 0.004, 0.03), MATS['rubber'], bevel=0.002, sub=0)
+        out.append(pull)
+    # Chevron stitching panel (a nod to the reference's tape) and MOLLE rows.
+    for i in range(3):
+        for sgn in (1, -1):
+            st = prim_box(f'chev{i}{sgn}', c + Vector((-0.03 + sgn * 0.012, -0.068, 0.03 - i * 0.025)), (0.026, 0.003, 0.004), MATS['nylon'],
+                          rot=(0, sgn * 0.6, 0), bevel=0, sub=0)
+            out.append(st)
+    for i in range(3):
+        mo = prim_box(f'molle{i}', c + Vector((0, 0.0, -0.05 + i * 0.035)), (0.012, 0.106, 0.012), MATS['nylon'], bevel=0.003, sub=0)
+        mo.location.x = c.x - 0.101
+        out.append(mo)
+    hanger = strap('pouchhanger', [c + Vector((-0.04, 0.0, 0.12)), c + Vector((-0.04, 0.03, 0.16)), c + Vector((-0.04, 0.07, 0.2))], 0.035, 0.006, MATS['nylon'])
+    out.append(hanger)
+    # Strobe on the front edge: housing, bezel, glowing element and a real light.
+    sc = c + Vector((0.108, -0.01, 0.03))
+    house = prim_box('strobe', sc, (0.026, 0.05, 0.068), MATS['rubber'], bevel=0.006, sub=1)
+    glow = prim_box('strobeglow', sc + Vector((0.013, 0, 0.004)), (0.006, 0.034, 0.046), MATS['glow'], bevel=0.003, sub=0)
+    for zz in (-0.012, 0.0, 0.012):
+        bar = prim_box(f'strobebar{zz}', sc + Vector((0.0165, 0, 0.004 + zz)), (0.002, 0.036, 0.003), MATS['rubber'], bevel=0, sub=0)
+        out.append(bar)
+    clip = prim_box('strobeclip', sc + Vector((-0.016, 0, 0.0)), (0.008, 0.02, 0.06), MATS['metal'], bevel=0.002, sub=0)
+    out += [house, glow, clip]
+    ld = bpy.data.lights.new('strobelight', 'POINT'); ld.energy = 1.2; ld.color = (1.0, 0.45, 0.05); ld.shadow_soft_size = 0.01
+    lo = link(bpy.data.objects.new('strobelight', ld)); lo.location = sc + Vector((0.03, 0, 0.004))
+    # Tall radio pouch next to it, like a second piece of kit.
+    rp = prim_box('radiopouch', c + Vector((0.13, -0.035, 0.0)), (0.045, 0.06, 0.15), MATS['pouch'], bevel=0.012, sub=1)
+    ant = tube('antenna', [c + Vector((0.13, -0.035, 0.07)), c + Vector((0.128, -0.036, 0.13)), c + Vector((0.12, -0.04, 0.17))], 0.004, MATS['rubber'])
+    out += [rp, ant]
+    return out
+
+def build_glove(side, hand, wrist):
+    """Tactical glove wrapped round a vertical grip under the hand: palm, 4 curled fingers,
+    thumb over the top, padded knuckle strip and a velcro wrist tab."""
+    out = []
+    gc = Vector((hand.x, hand.y, hand.z - 0.01))       # grip axis (vertical)
+    u = Vector((wrist.x - gc.x, wrist.y - gc.y, 0)).normalized()  # from grip toward the wrist (palm side)
+    w = Vector((-u.y, u.x, 0)) * side                  # around the grip
+    rg = 0.02
+    palm = skin_obj(f'palm{side}', [wrist, gc + u * (rg + 0.03) + Vector((0, 0, 0.012)), gc + u * (rg + 0.012) + Vector((0, 0, 0.005))],
+                    [(0, 1), (1, 2)], [(0.032, 0.026), (0.036, 0.022), (0.032, 0.02)], MATS['glove'])
+    out.append(palm)
+    for i in range(4):
+        z = 0.022 - i * 0.017
+        r0 = 0.0105 - i * 0.0008
+        pts = []
+        for k, th in enumerate((0.0, 0.9, 1.8, 2.6)):
+            dirv = u * math.cos(th) + w * math.sin(th)
+            pts.append(gc + dirv * (rg + 0.012) + Vector((0, 0, z - k * 0.002)))
+        f = skin_obj(f'finger{side}{i}', pts, [(0, 1), (1, 2), (2, 3)], [(r0, r0), (r0 * 0.95, r0 * 0.95), (r0 * 0.9, r0 * 0.9), (r0 * 0.8, r0 * 0.8)], MATS['glove'], sub=1)
+        out.append(f)
+        kn = prim_box(f'knuckle{side}{i}', gc + (u * math.cos(1.2) + w * math.sin(1.2)) * (rg + 0.022) + Vector((0, 0, z)), (0.012, 0.012, 0.012), MATS['rubber'], bevel=0.004)
+        out.append(kn)
+    th = [gc + u * (rg + 0.02) - w * 0.012 + Vector((0, 0, 0.03)), gc - w * (rg + 0.006) + Vector((0, 0, 0.034)), gc - w * (rg + 0.004) + u * -0.012 + Vector((0, 0, 0.03))]
+    out.append(skin_obj(f'thumb{side}', th, [(0, 1), (1, 2)], [(0.011, 0.011), (0.0095, 0.0095), (0.008, 0.008)], MATS['glove'], sub=1))
+    tab = prim_box(f'gtab{side}', wrist + u * 0.004 + Vector((0, 0, 0.022)), (0.03, 0.035, 0.008), MATS['nylon'], bevel=0.003)
+    out.append(tab)
+    return out
+
 def build_rifle(hand_r, hand_l):
     """Compact suppressed carbine with a camo finish. Bore along +X."""
     parts = []
-    by = 0.0
+    by = (hand_r.y + hand_l.y) / 2
     bz = hand_r.z + 0.06
     x0 = hand_r.x - 0.2
     rc = prim_box('receiver', (x0 + 0.24, by, bz), (0.26, 0.05, 0.07), MATS['camo'], bevel=0.008)
@@ -496,12 +605,12 @@ def build_rifle(hand_r, hand_l):
     optl = prim_cyl('opticlens', (x0 + 0.28, by, bz + 0.08), 0.016, 0.004, MATS['lens'], rot=(0, math.pi / 2, 0))
     mag = prim_box('mag', (x0 + 0.27, by, bz - 0.1), (0.06, 0.035, 0.15), MATS['rubber'], rot=(0, -0.18, 0), bevel=0.006)
     tag = prim_box('magtag', (x0 + 0.27, by + 0.019, bz - 0.11), (0.03, 0.002, 0.06), MATS['teal'], rot=(0, -0.18, 0), bevel=0, sub=0)
-    grip = prim_box('grip', (hand_r.x - 0.005, by, bz - 0.07), (0.035, 0.03, 0.09), MATS['rubber'], rot=(0, 0.3, 0), bevel=0.006)
+    grip = prim_box('grip', (hand_r.x - 0.005, hand_r.y, bz - 0.07), (0.035, 0.03, 0.09), MATS['rubber'], rot=(0, 0.3, 0), bevel=0.006)
     stock = prim_box('stock', (x0 - 0.02, by, bz - 0.01), (0.2, 0.04, 0.075), MATS['camo'], bevel=0.01)
     pad = prim_box('buttpad', (x0 - 0.125, by, bz - 0.01), (0.02, 0.045, 0.09), MATS['rubber'], bevel=0.005)
     sup = prim_cyl('suppressor', (x0 + 0.78, by, bz + 0.004), 0.024, 0.24, MATS['suppressor'], rot=(0, math.pi / 2, 0))
     lamp = prim_cyl('weaponlight', (x0 + 0.58, by - 0.04, bz - 0.005), 0.014, 0.07, MATS['metal'], rot=(0, math.pi / 2, 0))
-    vfg = prim_cyl('foregrip', (hand_l.x, by, bz - 0.05), 0.014, 0.06, MATS['rubber'])
+    vfg = prim_cyl('foregrip', (hand_l.x, hand_l.y, bz - 0.05), 0.014, 0.06, MATS['rubber'])
     parts += [rc, hg, rail, optic, optl, mag, tag, grip, stock, pad, sup, lamp, vfg]
     return parts
 
@@ -572,14 +681,15 @@ def showcase():
     bpy.ops.mesh.primitive_plane_add(size=12, location=(0, 0, 0))
     fl = bpy.context.active_object
     assign(fl, mat('floor', (0.05, 0.052, 0.055), rough=0.8))
-    area('key', (2.2, -2.0, 2.6), (0, 0, 1.1), 420, 1.6, (1.0, 0.95, 0.88))
+    area('key', (2.2, -2.0, 2.6), (0, 0, 1.1), 300, 1.8, (1.0, 0.95, 0.88))
     area('fill', (1.6, 2.4, 1.4), (0, 0, 1.0), 120, 2.5, (0.75, 0.85, 1.0))
     area('rim', (-2.0, 0.6, 2.4), (0, 0, 1.3), 380, 1.0, (1.0, 0.7, 0.45))
     angle = float(EXTRA[0]) if EXTRA else -32
     a = math.radians(angle)
-    d = 4.3
-    camera((math.cos(a) * d, math.sin(a) * d, 1.05), (0.05, 0, 0.88), lens=62)
-    sc.render.filepath = os.path.join(OUT, f'showcase_{int(angle)}.png')
+    d = float(os.environ.get('DIST', 4.3))
+    tz = float(os.environ.get('TZ', 0.88))
+    camera((math.cos(a) * d, math.sin(a) * d, tz + 0.17 * d / 4.3), (0.05, -0.02, tz), lens=62)
+    sc.render.filepath = os.path.join(OUT, f'showcase_{int(angle)}{os.environ.get("TAG", "")}.png')
     bpy.ops.render.render(write_still=True)
 
 def sprite_scene(ortho_units=72, res=192, samples=48):
