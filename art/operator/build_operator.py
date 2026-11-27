@@ -233,6 +233,11 @@ def make_mats(sprite):
     sb.inputs['Subsurface Radius'].default_value = (0.01, 0.004, 0.002)
     sb.inputs['Subsurface Scale'].default_value = 0.03
     mat('lip', (0.72, 0.42, 0.40), rough=0.35)
+    mat('seam', (0.075, 0.07, 0.065), rough=0.9)
+    mat('thread', (0.82, 0.8, 0.76), rough=0.9)
+    mat('elastic', (0.03, 0.03, 0.03), rough=0.8, bump=0.6, wave={'dir': 'Z', 'scale': 600, 'distort': 0})
+    mat('greyrub', (0.55, 0.55, 0.54), rough=0.6)
+    mat('velcro', (0.12, 0.125, 0.115), rough=1.0, bump=1.0, bump_scale=900)
     mat('sclera', (0.9, 0.88, 0.86), rough=0.15, coat=1.0)
     mat('iris', (0.06, 0.05, 0.05), rough=0.1, coat=1.0)
     mat('brow', (0.2, 0.2, 0.22), rough=0.7)
@@ -308,8 +313,29 @@ def build_character(phase=0.0, walking=False, rifle=True, sprite=False):
         mid2 = k.lerp(a, 0.5)
         leg = skin_obj(f'jeans{side}', [h + Vector((0, -side * 0.02, 0.06)), mid1, k, mid2, a + Vector((0, 0, 0.04))],
                        [(0, 1), (1, 2), (2, 3), (3, 4)],
-                       [(0.095, 0.095), (0.085, 0.085), (0.066, 0.068), (0.06, 0.06), (0.058, 0.058)], MATS['jeans'])
+                       [(0.095, 0.095), (0.085, 0.085), (0.066, 0.068), (0.06, 0.06), (0.064, 0.064)], MATS['jeans'])
         parts['under'].append(leg)
+        legpts = [h + Vector((0, -side * 0.02, 0.06)), mid1, k, mid2, a + Vector((0, 0, 0.04))]
+        legr = [0.095, 0.085, 0.066, 0.06, 0.058]
+        seam = tube(f'legseam{side}', [pt + Vector((0, side * r * 0.93, 0)) for pt, r in zip(legpts, legr)], 0.0022, MATS['seam'])
+        parts['under'].append(seam)
+        # Knee creases: shallow horizontal folds behind and in front of the knee.
+        for j, dz in enumerate((0.03, -0.02)):
+            cr = prim_sphere(f'crease{side}{j}', k + Vector((0.058, 0, dz)), 0.03, MATS['jeans'], scale=(0.25, 1.4, 0.16), seg=16)
+            parts['under'].append(cr)
+        # Torn rips: a skin-coloured hole with white threads across it.
+        rips = [(k + Vector((0.061, 0.0, -0.012)), 0.024)] if side > 0 else [(h.lerp(k, 0.55) + Vector((0.08, 0.0, 0)), 0.02)]
+        if side > 0:
+            rips.append((k.lerp(a, 0.55) + Vector((0.057, 0.005, 0)), 0.016))
+        for j, (rc, rr) in enumerate(rips):
+            hole = prim_sphere(f'hole{side}{j}', rc, rr, MATS['skin'], scale=(0.25, 1.0, 0.55), seg=24)
+            parts['under'].append(hole)
+            for t in range(4):
+                zz = rc.z + (t - 1.5) * rr * 0.28
+                th = tube(f'thr{side}{j}{t}', [rc + Vector((0.006, -rr * 0.95, zz - rc.z)), rc + Vector((0.009, 0, zz - rc.z - 0.002)), rc + Vector((0.006, rr * 0.95, zz - rc.z + 0.001))], 0.0013, MATS['thread'])
+                parts['under'].append(th)
+            fray = tube(f'fray{side}{j}', [rc + Vector((0.004, -rr, 0.0)), rc + Vector((0.007, 0, rr * 0.6)), rc + Vector((0.004, rr, 0.0))], 0.002, MATS['thread'])
+            parts['under'].append(fray)
         # Sneaker: foot points along X, flat on the floor (or tipped while swinging).
         foot_pitch = 0.0
         if walking:
@@ -318,14 +344,7 @@ def build_character(phase=0.0, walking=False, rifle=True, sprite=False):
         fc = a + Vector((0.055, 0, -0.04))
         rot = (0, -foot_pitch, 0)
         R = Matrix.Rotation(-foot_pitch, 3, 'Y')
-        heel = a + Vector((-0.06, 0, -0.045)); ball = a + R @ Vector((0.11, 0, -0.06)); toe = a + R @ Vector((0.175, 0, -0.065))
-        up = skin_obj(f'shoe{side}', [a + Vector((0, 0, 0.02)), heel, a + R @ Vector((0.05, 0, -0.03)), ball, toe],
-                      [(0, 1), (0, 2), (2, 3), (3, 4)], [(0.072, 0.072), (0.062, 0.062), (0.066, 0.066), (0.062, 0.062), (0.05, 0.05)], MATS['sneaker'])
-        sole = prim_box(f'sole{side}', a + R @ Vector((0.055, 0, -0.088)), (0.27, 0.105, 0.036), MATS['sole'], rot=rot, bevel=0.016)
-        strapo = prim_box(f'velcro{side}', a + Vector((0.035, 0, 0.005)), (0.06, 0.118, 0.035), MATS['sneaker'], rot=rot, bevel=0.008)
-        collar = prim_cyl(f'collar{side}', a + Vector((0, 0, 0.03)), 0.058, 0.07, MATS['sneaker'])
-        lace = prim_box(f'lace{side}', fc + Vector((0.06, 0, 0.06)), (0.09, 0.04, 0.008), MATS['sole'], rot=rot, bevel=0.002, sub=0)
-        parts['under'] += [up, sole, strapo, collar, lace]
+        parts['under'] += build_sneaker(side, a + R @ Vector((0, 0, -0.105)), R)
 
     pz = pelvis_z
     # Torso: puffer jacket with a tall collar. Wide, boxy, quilted.
@@ -342,11 +361,7 @@ def build_character(phase=0.0, walking=False, rifle=True, sprite=False):
 
     # Chest rig: front panel, shoulder straps crossing to the back, side pouch with an orange light.
     sz = pz + 0.42
-    panel = prim_box('rigpanel', (0.15, 0.0, sz - 0.04), (0.07, 0.28, 0.17), MATS['nylon'], bevel=0.015)
-    parts['under'].append(panel)
-    for yy in (-0.08, 0.0, 0.08):
-        mg = prim_box(f'magp{yy}', (0.19, yy, sz - 0.02), (0.035, 0.07, 0.12), MATS['pouch'], bevel=0.008)
-        parts['under'].append(mg)
+    parts['under'] += build_rig(sz)
     radio = prim_box('radio', (0.175, 0.1, sz + 0.09), (0.04, 0.05, 0.08), MATS['rubber'], bevel=0.006)
     parts['under'].append(radio)
     for side in (1, -1):
@@ -493,16 +508,34 @@ def build_character(phase=0.0, walking=False, rifle=True, sprite=False):
     mic = tube('micboom', [(0.0, 0.14, hz - 0.03), (0.06, 0.12, hz - 0.07), (0.1, 0.05, hz - 0.075)], 0.004, MATS['rubber'])
     micball = prim_sphere('mic', (0.105, 0.045, hz - 0.075), 0.013, MATS['rubber'], seg=16)
     parts['over'] += [mic, micball]
-    # Wraparound shooting glasses with orange lenses.
-    bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=0.108, depth=0.034, location=(0, 0, hz + 0.008), end_fill_type='NOTHING')
-    gl = bpy.context.active_object; gl.name = 'glasses'
-    gl.scale = (1.0, 0.92, 1); bpy.ops.object.transform_apply(scale=True)
-    bm = bmesh.new(); bm.from_mesh(gl.data)
-    bmesh.ops.delete(bm, geom=[v for v in bm.verts if v.co.x < 0.035], context='VERTS')
-    bm.to_mesh(gl.data); bm.free()
-    so = gl.modifiers.new('solid', 'SOLIDIFY'); so.thickness = 0.004
-    ss = gl.modifiers.new('sub', 'SUBSURF'); ss.levels = 1
-    smooth(gl); assign(gl, MATS['lens']); parts['over'].append(gl)
+    # Shooting glasses: two shaped wraparound lenses, a thin top frame, bridge and nose pads.
+    gc = Vector((0, 0, hz + 0.008))
+    for side in (1, -1):
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=96, ring_count=48, radius=0.109, location=gc)
+        ln = bpy.context.active_object; ln.name = f'lens{side}'
+        ln.scale = (1.0, 0.93, 1.0); bpy.ops.object.transform_apply(scale=True)
+        bm = bmesh.new(); bm.from_mesh(ln.data)
+        kill = []
+        for v in bm.verts:
+            c = v.co - gc
+            az = math.atan2(c.y, c.x); el = math.asin(max(-1, min(1, c.z / 0.109)))
+            az0 = side * 0.36; el0 = 0.0
+            # Rounded-rectangle lens that sweeps down a little at the outer edge.
+            du = (az - az0) / 0.31; dv = (el - el0 + 0.05 * (abs(az) - 0.36)) / (0.2 - 0.06 * max(0.0, side * (az - az0)))
+            if abs(du) ** 4 + abs(dv) ** 4 > 1 or c.x < 0:
+                kill.append(v)
+        bmesh.ops.delete(bm, geom=kill, context='VERTS')
+        bm.to_mesh(ln.data); bm.free()
+        so = ln.modifiers.new('solid', 'SOLIDIFY'); so.thickness = 0.0025
+        smooth(ln); assign(ln, MATS['lens']); parts['over'].append(ln)
+    top = [gc + Vector((math.cos(az) * 0.110, math.sin(az) * 0.110 * 0.93, 0.0215 - 0.01 * abs(az))) for az in [i / 10 * 1.4 - 0.7 for i in range(11)]]
+    parts['over'].append(tube('glassframe', top, 0.0024, MATS['frame']))
+    parts['over'].append(tube('bridge', [gc + Vector((0.106, 0.012, 0.004)), gc + Vector((0.11, 0, 0.012)), gc + Vector((0.106, -0.012, 0.004))], 0.0022, MATS['frame']))
+    for side in (1, -1):
+        pad = prim_sphere(f'nosepad{side}', gc + Vector((0.098, side * 0.009, -0.012)), 0.004, MATS['greyrub'], scale=(0.5, 0.7, 1.2), seg=12)
+        parts['over'].append(pad)
+    # Radio lead from the chest rig up to the headset.
+    parts['over'].append(tube('radiolead', [(0.18, 0.11, pz + 0.53), (0.11, 0.14, pz + 0.6), (0.02, 0.13, hz - 0.08), (-0.01, 0.13, hz - 0.05)], 0.0035, MATS['rubber']))
     for side in (1, -1):
         arm = tube(f'glassarm{side}', [(0.04, side * 0.1, hz + 0.012), (-0.03, side * 0.105, hz + 0.01)], 0.003, MATS['frame'])
         parts['over'].append(arm)
@@ -510,6 +543,120 @@ def build_character(phase=0.0, walking=False, rifle=True, sprite=False):
     if rifle:
         parts['gun'] = build_rifle(hand_r, hand_l)
     return parts, pz
+
+def curved_panel(name, x0, curve, yr, zr, thick, m, bevel=0.012):
+    """A plate that wraps the chest: x = x0 - curve * y^2."""
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    ny, nz = 14, 8
+    grid = []
+    for iz in range(nz + 1):
+        row = []
+        for iy in range(ny + 1):
+            y = yr[0] + (yr[1] - yr[0]) * iy / ny
+            z = zr[0] + (zr[1] - zr[0]) * iz / nz
+            row.append(bm.verts.new((x0 - curve * y * y, y, z)))
+        grid.append(row)
+    for iz in range(nz):
+        for iy in range(ny):
+            bm.faces.new((grid[iz][iy], grid[iz][iy + 1], grid[iz + 1][iy + 1], grid[iz + 1][iy]))
+    bm.to_mesh(me); bm.free()
+    ob = link(bpy.data.objects.new(name, me))
+    so = ob.modifiers.new('solid', 'SOLIDIFY'); so.thickness = thick; so.offset = 1
+    bv = ob.modifiers.new('bev', 'BEVEL'); bv.width = bevel; bv.segments = 3
+    ss = ob.modifiers.new('sub', 'SUBSURF'); ss.levels = 2; ss.render_levels = 2
+    smooth(ob)
+    return assign(ob, m)
+
+def build_rig(sz):
+    """Low-profile chest rig: curved front panel, three soft mag pouches with bungee
+    retention and pull tabs, a velcro admin flap with a unit patch, and side webbing."""
+    out = []
+    out.append(curved_panel('rigpanel', 0.158, 1.6, (-0.14, 0.14), (sz - 0.13, sz + 0.07), 0.022, MATS['nylon']))
+    # MOLLE rows across the panel.
+    for i in range(3):
+        zz = sz - 0.11 + i * 0.025
+        row = tube(f'rigmolle{i}', [(0.181 - 1.6 * 0.13 ** 2, -0.13, zz), (0.183, 0, zz), (0.181 - 1.6 * 0.13 ** 2, 0.13, zz)], 0.0035, MATS['elastic'])
+        out.append(row)
+    for j, yy in enumerate((-0.075, 0.0, 0.075)):
+        xb = 0.181 - 1.6 * yy * yy
+        pch = prim_box(f'magp{j}', (xb + 0.016, yy, sz - 0.03), (0.034, 0.064, 0.115), MATS['pouch'], bevel=0.014, sub=2)
+        pch.rotation_euler = (0, 0, -3.2 * yy)
+        flap = prim_box(f'magflap{j}', (xb + 0.02, yy, sz + 0.03), (0.04, 0.068, 0.03), MATS['pouch'], bevel=0.01, sub=2)
+        flap.rotation_euler = (0, 0.25, -3.2 * yy)
+        bung = prim_box(f'bungee{j}', (xb + 0.034, yy, sz - 0.005), (0.004, 0.066, 0.008), MATS['elastic'], bevel=0.002, sub=0)
+        bung.rotation_euler = (0, 0, -3.2 * yy)
+        tab = prim_box(f'pulltab{j}', (xb + 0.042, yy, sz + 0.035), (0.006, 0.018, 0.028), MATS['rubber'], bevel=0.003, sub=0)
+        out += [pch, flap, bung, tab]
+    # Admin flap above the mags with a velcro field and orange unit patch.
+    adm = curved_panel('adminflap', 0.181, 1.6, (-0.06, 0.06), (sz + 0.07, sz + 0.11), 0.01, MATS['nylon'], bevel=0.006)
+    vel = prim_box('velcrofield', (0.19, -0.02, sz + 0.09), (0.006, 0.05, 0.028), MATS['velcro'], bevel=0.002, sub=0)
+    pat = prim_box('rigpatch', (0.194, -0.02, sz + 0.09), (0.004, 0.032, 0.018), MATS['patch'], bevel=0.002, sub=0)
+    out += [adm, vel, pat]
+    # Cummerbund webbing wrapping round to the back.
+    for side in (1, -1):
+        cb = strap(f'cummer{side}', [(0.14, side * 0.14, sz - 0.08), (0.06, side * 0.19, sz - 0.08), (-0.06, side * 0.185, sz - 0.08), (-0.14, side * 0.11, sz - 0.08)],
+                   0.05, 0.007, MATS['nylon'])
+        out.append(cb)
+    return out
+
+def sneaker_profile(t):
+    """Side profile of a high-top: (width, height) at t = 0 heel .. 1 toe."""
+    w = 0.047 + 0.014 * math.sin(math.pi * min(1.0, t * 1.15))
+    sm = lambda e0, e1, x: (lambda u: u * u * (3 - 2 * u))(max(0.0, min(1.0, (x - e0) / (e1 - e0))))
+    h = 0.045 + 0.1 * (1 - sm(0.22, 0.55, t)) + 0.012 * (1 - sm(0.6, 1.0, t))
+    return w, h
+
+def shoe_shell(name, O, R, x0, x1, inflate, hscale, zlift, m):
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=48, ring_count=24, radius=1.0, location=(0, 0, 0))
+    ob = bpy.context.active_object; ob.name = name
+    for v in ob.data.vertices:
+        x, y, z = v.co
+        sq = lambda c, e: math.copysign(abs(c) ** e, c)
+        x, y, z = sq(x, 0.55), sq(y, 0.6), sq(z, 0.55)
+        t = (x + 1) / 2
+        w, h = sneaker_profile(t)
+        X = x0 + t * (x1 - x0)
+        Y = y * (w + inflate)
+        Z = zlift + (z + 1) / 2 * (h * hscale + inflate)
+        v.co = O + R @ Vector((X, Y, Z))
+    smooth(ob)
+    s = ob.modifiers.new('sub', 'SUBSURF'); s.levels = 1; s.render_levels = 1
+    return assign(ob, m)
+
+def build_sneaker(side, O, R):
+    """White leather high-top: cupsole, upper, padded collar, laces with eyelets, velcro
+    ankle strap, toe cap seam and a grey heel tab."""
+    out = []
+    P = lambda x, y, z: O + R @ Vector((x, y, z))
+    x0, x1 = -0.078, 0.205
+    out.append(shoe_shell(f'sole{side}', O, R, x0 - 0.006, x1 + 0.006, 0.006, 0.0, 0.0, MATS['sole']))
+    out[-1].scale = (1, 1, 1)
+    # Squash the sole shell to a 2.6 cm cupsole.
+    for v in out[-1].data.vertices:
+        loc = R.inverted() @ (v.co - O)
+        loc.z = min(loc.z, 0.026)
+        v.co = O + R @ loc
+    out.append(shoe_shell(f'upper{side}', O, R, x0, x1, 0.0, 1.0, 0.012, MATS['sneaker']))
+    # Padded collar ring round the ankle opening.
+    w, h = sneaker_profile(0.12)
+    bpy.ops.mesh.primitive_torus_add(major_radius=0.046, minor_radius=0.011, location=P(-0.03, 0, h + 0.012))
+    col = bpy.context.active_object; col.name = f'collar{side}'; col.scale = (1.15, 1.0, 1.0); smooth(col); assign(col, MATS['sneaker'])
+    out.append(col)
+    # Laces and eyelets down the throat.
+    for i in range(5):
+        t = 0.3 + i * 0.065
+        w, h = sneaker_profile(t)
+        x = x0 + t * (x1 - x0)
+        zt = 0.012 + h + 0.002
+        for sg in (1, -1):
+            out.append(tube(f'lace{side}{i}{sg}', [P(x - 0.009, -0.026 * sg, zt - 0.004), P(x, 0, zt + 0.003), P(x + 0.009, 0.026 * sg, zt - 0.004)], 0.0026, MATS['sole']))
+            out.append(prim_sphere(f'eyelet{side}{i}{sg}', P(x, 0.03 * sg, zt - 0.006), 0.0042, MATS['greyrub'], scale=(1, 1, 0.5), seg=12))
+    # Velcro strap over the instep.
+    t = 0.24; w, h = sneaker_profile(t); x = x0 + t * (x1 - x0)
+    out.append(strap(f'velcro{side}', [P(x, -w - 0.004, h * 0.45), P(x + 0.004, -w * 0.6, h + 0.012), P(x + 0.006, 0, h + 0.02), P(x + 0.004, w * 0.6, h + 0.012), P(x, w + 0.004, h * 0.45)], 0.032, 0.006, MATS['sneaker']))
+    out.append(prim_box(f'heeltab{side}', P(x0 - 0.002, 0, 0.14), (0.01, 0.026, 0.04), MATS['greyrub'], bevel=0.004))
+    return out
 
 def build_pouch(c, pz):
     """Grey dump pouch on the right hip: soft rounded body, curved lid, zipper with pulls,
