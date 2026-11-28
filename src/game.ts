@@ -11,6 +11,7 @@ const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 import type { NetMsg } from './net';
 import { type OpDef, OKAFOR } from './campaign';
+import { hasSwarm, loadSwarm, swarmEyeSpot, swarmFrame, swarmOn, swarmSpan, swarmWalk, SWARM_WALK } from './swarmArt';
 import { CELL_UNITS, DEFAULT_JACKET, DOWN_UNITS, loadPlayerArt, playerFrame, walkFrame } from './playerArt';
 import { ARM_FRAMES, armsSprite, bodySprite, eggSprite, eyeSpot, hasFeet, stamp, Tint, VARIANTS, warmZombieArt } from './zombieArt';
 
@@ -864,6 +865,7 @@ export class Game {
       const d = defs.shift();
       if (!d) return;
       warmZombieArt([d]);
+      if (swarmOn()) loadSwarm(d.kind);
       setTimeout(warm, 30);
     };
     setTimeout(warm, 500);
@@ -6071,7 +6073,8 @@ export class Game {
       const r = z.r;
       const c = Math.cos(z.face);
       const s = Math.sin(z.face);
-      const [fwd, side] = eyeSpot(z.def.kind);
+      const bugEyes = swarmOn() && hasSwarm(z.def.kind) ? swarmEyeSpot(z.def.kind) : null;
+      const [fwd, side] = bugEyes ?? eyeSpot(z.def.kind);
       const ex = z.x + c * r * fwd;
       const ey = z.y + s * r * fwd;
       const ox = -s * r * side;
@@ -6080,7 +6083,7 @@ export class Game {
       if (z.def.kind !== 'egg') {
         // Two hot pinpricks in the eye sockets
         ctx.fillStyle = this.active.freeze > 0 ? '#9fe8ff' : z.def.eye;
-        const es = Math.max(1, r * 0.065);
+        const es = Math.max(1, r * (bugEyes ? 0.045 : 0.065));
         ctx.fillRect(ex + ox - es, ey + oy - es, es * 2, es * 2);
         ctx.fillRect(ex - ox - es, ey - oy - es, es * 2, es * 2);
         glowDot(ex, ey, r * 0.9, z.def.eye, 0.25);
@@ -7534,6 +7537,15 @@ export class Game {
     return clamp((260 - Math.hypot(z.x - this.p.x, z.y - this.p.y)) / 120, 0.1, 1);
   }
 
+  /** The Blender swarm frame for a zombie, or null to fall back to the painted art. */
+  private swarmSprite(z: Zombie, tint: Tint, windup: boolean, hurt: number) {
+    const kind = z.def.kind;
+    loadSwarm(kind);
+    const attacking = windup || z.attackCd > 0.45 || z.reap?.windup || z.zero?.yankT;
+    const f = attacking ? SWARM_WALK : swarmWalk(z.phase);
+    return swarmFrame(kind, f, z.id % VARIANTS, tint, kind === 'blob' ? 0 : hurt);
+  }
+
   private drawZombie(z: Zombie) {
     const ctx = this.ctx;
     const r = z.r;
@@ -7602,9 +7614,22 @@ export class Game {
     const swing = Math.sin(z.phase);
     const variant = z.id % VARIANTS;
 
+    // Blender "swarm" bugs: one pre-rendered frame replaces feet, arms and body.
+    const hurtLvl = z.hp < z.maxHp * 0.4 ? 2 : z.hp < z.maxHp * 0.8 ? 1 : 0;
+    const bug = swarmOn() && hasSwarm(kind) ? this.swarmSprite(z, tint, windup, hurtLvl) : null;
+    if (bug) {
+      const span = swarmSpan(kind) * r;
+      const pulse = kind === 'bloater' ? 1 + Math.sin(this.clock * 6 + z.id) * 0.05 : kind === 'screamer' && z.abilityCd < 0.6 ? 1.08 : kind === 'blob' ? 1 + Math.sin(this.clock * 7 + z.id) * 0.04 : 1;
+      const bob = kind === 'psyker' || kind === 'wraith' ? 1 + Math.sin(this.clock * 3 + z.id) * 0.04 : 1;
+      const lunge = z.leap?.state === 'crouch' ? 0.9 : 1;
+      const s = span * pulse * bob * lunge;
+      ctx.drawImage(bug, -s / 2, -s / 2, s, s);
+    }
     // 1. What sits under the body: feet, legs, shrouds.
     const lite = this.liteZombies;
-    if (!lite && hasFeet(kind)) {
+    if (bug) {
+      /* the swarm sprite already has legs */
+    } else if (!lite && hasFeet(kind)) {
       ctx.fillStyle = flat(icy ? '#3a5a6a' : '#1c1814');
       for (const side of [-1, 1]) {
         ctx.beginPath();
@@ -7612,7 +7637,9 @@ export class Game {
         ctx.fill();
       }
     }
-    if (kind === 'dog') {
+    if (bug) {
+      /* legs, tendrils and wings are part of the swarm sprite */
+    } else if (kind === 'dog') {
       // Four jointed legs with paws, trotting.
       const step = Math.sin(z.phase * 1.6) * r * 0.35;
       ctx.strokeStyle = flat(def.dark);
@@ -7738,7 +7765,7 @@ export class Game {
     // 2. Arms reaching forward, swinging as they shamble (pre-posed frames).
     // Only lasting states recolor the arms; quick flashes show on the body alone.
     const armTint = tint === Tint.Icy || tint === Tint.Burn ? tint : Tint.None;
-    const arms = lite ? null : armsSprite(def, Math.round((z.phase / (Math.PI * 2)) * ARM_FRAMES), armTint);
+    const arms = lite || bug ? null : armsSprite(def, Math.round((z.phase / (Math.PI * 2)) * ARM_FRAMES), armTint);
     if (arms) stamp(ctx, arms, r, windup ? 1.08 : 1, 1);
 
     // 3. The detailed body, swaying a little, plus gore as it gets hurt.
@@ -7747,11 +7774,12 @@ export class Game {
     // Blobs jiggle; psykers bob as they float.
     const wob = kind === 'blob' ? Math.sin(this.clock * 7 + z.id) * 0.07 : 0;
     const bob = kind === 'psyker' ? 1 + Math.sin(this.clock * 3 + z.id) * 0.04 : 1;
-    ctx.save();
-    ctx.rotate(swing * (r >= 40 ? 0.02 : kind === 'blob' ? 0 : 0.05));
-    const hurt = z.hp < z.maxHp * 0.4 ? 2 : z.hp < z.maxHp * 0.8 ? 1 : 0;
-    stamp(ctx, bodySprite(def, variant, tint, kind === 'blob' ? 0 : hurt), r, pulse * (1 + wob) * bob, pulse * (1 - wob) * bob);
-    ctx.restore();
+    if (!bug) {
+      ctx.save();
+      ctx.rotate(swing * (r >= 40 ? 0.02 : kind === 'blob' ? 0 : 0.05));
+      stamp(ctx, bodySprite(def, variant, tint, kind === 'blob' ? 0 : hurtLvl), r, pulse * (1 + wob) * bob, pulse * (1 - wob) * bob);
+      ctx.restore();
+    }
 
     // 4. Live details on top.
     if (kind === 'titan' && z.titan?.enraged) {
@@ -7764,9 +7792,10 @@ export class Game {
     if (kind === 'shield' && z.guard !== 0) {
       // Scuffed riot shield held out front.
       const g = ctx.createLinearGradient(r * 0.9, -r, r * 1.5, r);
-      g.addColorStop(0, hit ? '#fff' : 'rgba(200,220,235,0.95)');
-      g.addColorStop(0.5, hit ? '#fff' : 'rgba(130,150,165,0.95)');
-      g.addColorStop(1, hit ? '#fff' : 'rgba(70,85,100,0.95)');
+      // Riot shield for zombies; a bony chitin face plate for the swarm.
+      g.addColorStop(0, hit ? '#fff' : bug ? 'rgba(240,222,186,0.97)' : 'rgba(200,220,235,0.95)');
+      g.addColorStop(0.5, hit ? '#fff' : bug ? 'rgba(186,150,104,0.97)' : 'rgba(130,150,165,0.95)');
+      g.addColorStop(1, hit ? '#fff' : bug ? 'rgba(110,80,50,0.97)' : 'rgba(70,85,100,0.95)');
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(r * 0.35, 0, r * 1.25, -1.05, 1.05);
@@ -7775,8 +7804,8 @@ export class Game {
       ctx.strokeStyle = '#20262c';
       ctx.lineWidth = r * 0.06;
       ctx.stroke();
-      ctx.fillStyle = 'rgba(20,30,40,0.7)';
-      ctx.fillRect(r * 1.18, -r * 0.35, r * 0.16, r * 0.7);
+      ctx.fillStyle = bug ? 'rgba(70,45,25,0.6)' : 'rgba(20,30,40,0.7)';
+      if (!bug) ctx.fillRect(r * 1.18, -r * 0.35, r * 0.16, r * 0.7);
       ctx.strokeStyle = 'rgba(255,255,255,0.45)';
       ctx.lineWidth = r * 0.04;
       ctx.beginPath();
@@ -7799,6 +7828,18 @@ export class Game {
       ];
       for (let i = 0; i < z.plates; i++) {
         const [px, py] = spots[i];
+        if (bug) {
+          // Swarm guards wear extra chitin scutes instead of metal plates.
+          ctx.fillStyle = flat('#5e7a3a');
+          ctx.beginPath();
+          ctx.ellipse(px, py, r * 0.36, r * 0.24, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = flat('#b8d878');
+          ctx.beginPath();
+          ctx.ellipse(px - r * 0.04, py - r * 0.06, r * 0.22, r * 0.1, 0, 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
         ctx.fillStyle = flat('#5a6268');
         ctx.fillRect(px - r * 0.35, py - r * 0.22, r * 0.7, r * 0.44);
         ctx.fillStyle = flat('#a8b0b8');
@@ -7840,7 +7881,7 @@ export class Game {
       }
       ctx.stroke();
     }
-    if (kind === 'screamer') {
+    if (kind === 'screamer' && !bug) {
       // Gaping mouth that stretches wide right before a scream.
       const open = z.abilityCd < 0.6;
       ctx.fillStyle = '#1a0006';
@@ -7865,7 +7906,7 @@ export class Game {
         }
       }
     }
-    if (kind === 'necro') {
+    if (kind === 'necro' && !bug) {
       // Gnarled staff with a glowing skull orb.
       ctx.strokeStyle = flat('#5a4630');
       ctx.lineWidth = r * 0.16;
@@ -7884,7 +7925,7 @@ export class Game {
       ctx.arc(r * 1.82, r * 0.78, r * 0.05, 0, Math.PI * 2);
       ctx.fill();
     }
-    if (kind === 'reaper') {
+    if (kind === 'reaper' && !bug) {
       // The scythe swings back during the wind-up.
       const wind = z.reap && z.reap.windup > 0 ? -1.3 : 0.35 * Math.sin(z.phase * 0.5);
       ctx.save();
