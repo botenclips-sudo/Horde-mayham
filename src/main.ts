@@ -1,3 +1,4 @@
+import { setSwarm, swarmOn } from './swarmArt';
 import './style.css';
 import './tactical.css';
 import { Sfx } from './audio';
@@ -1518,6 +1519,15 @@ $('aimassist').addEventListener('click', () => {
     /* storage blocked */
   }
   syncAimLabel();
+});
+// Enemy look: Blender bug swarm (default) or the classic painted zombies.
+function syncEnemyLabel() {
+  $('enemystyle').textContent = swarmOn() ? '🪲 Enemies: Swarm' : '🧟 Enemies: Classic';
+}
+syncEnemyLabel();
+$('enemystyle').addEventListener('click', () => {
+  setSwarm(!swarmOn());
+  syncEnemyLabel();
 });
 function syncSoundLabels() {
   for (const id of ['sound', 'sound2']) $(id).textContent = sfx.muted ? '🔇 Sound off' : '🔊 Sound on';

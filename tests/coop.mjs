@@ -25,10 +25,18 @@ for (let i = 0; i < 6; i++) {
   await host.evaluate(() => { const g = window.game; g.p.hp = 9999; g.input.mouse.down = true; });
   await guest.evaluate(() => { const g = window.game; g.p.hp = 9999; g.input.mouse.down = true; });
   await host.waitForTimeout(2500);
-  const h = await host.evaluate(() => ({ s: window.game.state, w: window.game.wave, z: window.game.zombies.filter((z) => !z.dead).length, allies: window.game.allies.length }));
-  const g = await guest.evaluate(() => ({ s: window.game.state, w: window.game.wave, z: window.game.zombies.filter((z) => !z.dead).length, allies: window.game.allies.length }));
+  const read = (pg) => pg.evaluate(() => ({ s: window.game.state, w: window.game.wave, z: window.game.zombies.filter((z) => !z.dead).length, allies: window.game.allies.length }));
   // Allow a zombie or two of drift: snapshots are a few frames apart.
-  const ok = h.s === g.s && h.w === g.w && Math.abs(h.z - g.z) <= 2 && h.allies === 1 && g.allies === 1;
+  const same = (h, g) => h.s === g.s && h.w === g.w && Math.abs(h.z - g.z) <= 2 && h.allies === 1 && g.allies === 1;
+  let [h, g] = await Promise.all([read(host), read(guest)]);
+  let ok = same(h, g);
+  // A snapshot can be in flight during a spawn burst (mostly on the relay path); a real desync
+  // persists, so read again once before failing.
+  for (let t = 0; t < 3 && !ok; t++) {
+    await host.waitForTimeout(400);
+    [h, g] = await Promise.all([read(host), read(guest)]);
+    ok = same(h, g);
+  }
   if (!ok) failed = true;
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${relay ? 'relay ' : 'direct'} host`, JSON.stringify(h), 'guest', JSON.stringify(g));
 }

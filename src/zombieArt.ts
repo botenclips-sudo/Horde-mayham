@@ -27,7 +27,7 @@ export interface Sprite {
 export const Tint = { None: 0, Hit: 1, Icy: 2, Burn: 3, Windup: 4, Zap: 5, Charm: 6 } as const;
 export type Tint = (typeof Tint)[keyof typeof Tint];
 
-const TINTS: Record<number, [string, number]> = {
+export const TINTS: Record<number, [string, number]> = {
   [Tint.Hit]: ['#ffffff', 0.85],
   [Tint.Icy]: ['#9fd8f0', 0.55],
   [Tint.Burn]: ['#1e0e04', 0.55],
