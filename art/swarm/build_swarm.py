@@ -42,8 +42,8 @@ def mixhex(a, b, t):
 
 MATS = {}
 
-def mat(name, color, rough=0.45, coat=0.0, coat_rough=0.12, sss=0.0, emit=None, emit_str=0.0,
-        transmission=0.0, alpha=1.0, bands=None, mottle=None, bump=0.0, bump_scale=18.0, spec=0.5, rim=None, fine=0.0, pits=0.0, ao=0.0, edge=None, cells=None, spots=None):
+def mat(name, color, rough=0.45, ior=None, coat=0.0, coat_rough=0.12, sss=0.0, emit=None, emit_str=0.0,
+        transmission=0.0, alpha=1.0, bands=None, mottle=None, bump=0.0, bump_scale=18.0, spec=0.5, rim=None, fine=0.0, pits=0.0, ao=0.0, edge=None, cells=None, spots=None, dorsal=None):
     """Principled material. `bands` adds shell-plate grooves along X (scale, groove colour),
     `mottle` a soft two-tone pattern (scale, second colour)."""
     if name in MATS:
@@ -68,6 +68,8 @@ def mat(name, color, rough=0.45, coat=0.0, coat_rough=0.12, sss=0.0, emit=None, 
         b.inputs['Emission Strength'].default_value = emit_str
     if transmission:
         b.inputs['Transmission Weight'].default_value = transmission
+    if ior:
+        b.inputs['IOR'].default_value = ior
     if alpha < 1:
         b.inputs['Alpha'].default_value = alpha
     tc = nt.nodes.new('ShaderNodeTexCoord')
@@ -195,6 +197,23 @@ def mat(name, color, rough=0.45, coat=0.0, coat_rough=0.12, sss=0.0, emit=None, 
         sr.inputs['From Max'].default_value = 0.66 - spots[2]
         nt.links.new(sn.outputs['Fac'], sr.inputs['Value'])
         over((*hexc(spots[0]), 1), sr.outputs['Result'])
+    if dorsal:
+        # Lighter back, deeper sides: a clean two-tone instead of blotchy camo.
+        geo2 = nt.nodes.new('ShaderNodeNewGeometry')
+        sep = nt.nodes.new('ShaderNodeSeparateXYZ')
+        nt.links.new(geo2.outputs['Normal'], sep.inputs['Vector'])
+        dr = nt.nodes.new('ShaderNodeMapRange')
+        dr.inputs['From Min'].default_value = 0.35
+        dr.inputs['From Max'].default_value = 1.0
+        dr.inputs['To Max'].default_value = dorsal[1]
+        nt.links.new(sep.outputs['Z'], dr.inputs['Value'])
+        over((*hexc(dorsal[0]), 1), dr.outputs['Result'])
+        sr2 = nt.nodes.new('ShaderNodeMapRange')
+        sr2.inputs['From Min'].default_value = 0.3
+        sr2.inputs['From Max'].default_value = -0.4
+        sr2.inputs['To Max'].default_value = dorsal[2]
+        nt.links.new(sep.outputs['Z'], sr2.inputs['Value'])
+        over((*hexc(dorsal[3]), 1), sr2.outputs['Result'])
     if cells:
         # Fine plated micro-structure: Voronoi cell edges dented into the shell.
         vo = nt.nodes.new('ShaderNodeTexVoronoi')
@@ -334,9 +353,9 @@ class Kit:
         light = mixhex(p['shell'], p['accent'], 0.55)
         spot = mixhex(p['shell'], p['groove'], 0.62)
         self.shell = mat('shell', p['shell'], rough=0.36, coat=k * 0.7, coat_rough=0.1, sss=0.05, bands=(9.0, p['groove']), rim=(dark, 0.45), fine=0.25,
-                         ao=0.75, edge=(light, 0.8), cells=(26, 0.25), spots=(spot, 3.5, 0.08))
+                         ao=0.75, edge=(light, 0.8), cells=(26, 0.25), dorsal=(light, 0.32, 0.45, dark))
         self.plate = mat('plate', mixhex(p['shell'], p['accent'], 0.12), rough=0.34, coat=k * 0.7, coat_rough=0.1, sss=0.04, rim=(dark, 0.5), fine=0.3, pits=0.25,
-                         ao=0.75, edge=(light, 0.8), cells=(22, 0.2), spots=(spot, 3.0, 0.1))
+                         ao=0.75, edge=(light, 0.8), cells=(22, 0.2), dorsal=(light, 0.38, 0.45, dark))
         self.accent = mat('accent', p['accent'], rough=0.32, coat=k * 0.6, sss=0.1, fine=0.2, ao=0.5, edge=('#ffffff', 0.35))
         self.skin = mat('skin', p['skin'], rough=0.5, sss=0.45, bump=0.12, bump_scale=30, fine=0.2, rim=(mixhex(p['skin'], p['groove'], 0.5), 0.5), ao=0.85)
         self.groove = mat('groove', p['groove'], rough=0.35, coat=0.5, sss=0.05, fine=0.2, ao=0.6)
@@ -814,20 +833,39 @@ def b_blob(k, t, w, a):
     eyes(k, (0.35, 0, 0.55, 0.42), n=2, size=0.14)
 
 def b_psyker(k, t, w, a):
-    # Thinker: a floating big-brained bug with tiny tucked legs and glowing lobes.
-    ellipsoid('thorax', (-0.25, 0, 0.6), (0.4, 0.35, 0.3), k.shell)
-    brain = mat('brain', k.p['skin'], rough=0.3, coat=0.8, sss=0.6, bump=0.6, bump_scale=8)
+    # Thinker: a floating jelly-dome bug. A glowing brain sits in a clear bubble on a shell
+    # collar, with soft tendrils trailing underneath. It hovers, so no legs touch the ground.
+    bob = 0.05 * math.sin(t) if w else 0
+    z0 = 0.6 + bob
+    brain = mat('brain', mixhex(k.p['skin'], '#ff8ac8', 0.35), rough=0.3, coat=0.8, sss=0.6, bump=0.6, bump_scale=8, emit=k.p['glow'], emit_str=0.45)
+    fold = mat('brainfold', mixhex(k.p['skin'], k.p['groove'], 0.2), rough=0.3, coat=0.8, sss=0.6)
     for s in (-1, 1):
-        ellipsoid(f'lobe{s}', (0.2, s * 0.25, 0.88), (0.5, 0.3, 0.32), brain)
-        # Brain folds: little curled ridges over each lobe.
+        ellipsoid(f'lobe{s}', (0.0, s * 0.17, z0 + 0.28), (0.4, 0.2, 0.24), brain)
+        for j in range(4):
+            x0 = -0.27 + j * 0.18
+            pts = [(x0, s * 0.04, z0 + 0.48 - x0 ** 2 * 0.8), (x0 + 0.05, s * 0.18, z0 + 0.52 - x0 ** 2 * 0.8), (x0 - 0.02, s * 0.32, z0 + 0.38 - x0 ** 2 * 0.8)]
+            skin(f'fold{s}{j}', pts, [0.035, 0.045, 0.03], fold, sub=2)
+    ellipsoid('fissure', (0.0, 0, z0 + 0.42), (0.38, 0.025, 0.1), k.groove, seg=24)
+    sac(k, 'core', (-0.05, 0, z0 + 0.1), 0.1)
+    dome = mat('pdome', mixhex(k.p['accent'], '#ffffff', 0.5), rough=0.03, coat=1.0, coat_rough=0.02, transmission=0.95, alpha=0.28, ior=1.2)
+    ellipsoid('dome', (0.0, 0, z0 + 0.22), (0.55, 0.5, 0.48), dome, seg=48)
+    armor('collar', (0.0, 0, z0 - 0.02), (0.62, 0.56, 0.3), k.plate, cut=-0.3, thick=0.06)
+    ellipsoid('collarlip', (0.0, 0, z0 + 0.04), (0.6, 0.55, 0.06), k.accent, seg=40)
+    for i in range(8):
+        ang = i / 8 * TAU
+        ellipsoid(f'bulb{i}', (math.cos(ang) * 0.56, math.sin(ang) * 0.52, z0 + 0.05), (0.05,) * 3, k.mark, seg=12)
+    eyes(k, (0.42, 0, z0 - 0.02, 0.3), n=2, size=0.12)
+    for i in range(6):
+        base = math.pi * 0.62 + i / 5 * math.pi * 0.76
+        pts, rad = [], []
         for j in range(5):
-            x0 = -0.2 + j * 0.2
-            pts = [(x0, s * 0.06, 1.14 - abs(x0 - 0.2) ** 2 * 0.9), (x0 + 0.07, s * 0.25, 1.2 - abs(x0 - 0.2) ** 2 * 0.9), (x0 - 0.02, s * 0.44, 1.04 - abs(x0 - 0.2) ** 2 * 0.9)]
-            skin(f'fold{s}{j}', pts, [0.045, 0.055, 0.035], mat('brainfold', mixhex(k.p['skin'], k.p['groove'], 0.15), rough=0.3, coat=0.8, sss=0.6), sub=2)
-    ellipsoid('fissure', (0.2, 0, 1.05), (0.48, 0.035, 0.12), k.groove, seg=24)
-    ellipsoid('glowlobe', (0.62, 0, 0.95), (0.1, 0.16, 0.08), k.glow, seg=24)
-    eyes(k, (0.55, 0, 0.65, 0.3), n=2, size=0.13)
-    legs(k, t, False, pairs=3, reach=0.6, hip_z=0.5, thick=0.045, knee_up=0.1)
+            u = j / 4
+            ang = base + math.sin(t + i * 1.9 + u * 3) * 0.3 * u
+            d = 0.35 + u * 0.5
+            pts.append((math.cos(ang) * d, math.sin(ang) * d, z0 - 0.15 - u * 0.3))
+            rad.append(0.07 * (1 - u * 0.7))
+        skin(f'tendril{i}', pts, rad, k.skin)
+        ellipsoid(f'ttip{i}', pts[-1], (0.04,) * 3, k.glow, seg=12)
 
 def b_egg(k, t, w, a):
     ellipsoid('egg', (0, 0, 0.6), (0.85, 0.75, 0.6), mat('eggshell', k.p['shell'], rough=0.3, coat=0.6, sss=0.5))
@@ -959,14 +997,14 @@ KINDS = {
     'parasite': (b_parasite, 'coral', 3.0, 80),
     'mutant': (b_mutant, 'coral', 4.1, 208),
     'blob': (b_blob, 'jelly', 2.6, 160),
-    'psyker': (b_psyker, 'lilac', 2.6, 128),
-    'boss': (b_boss, 'queen', 3.8, 448),
-    'juggernaut': (b_juggernaut, 'slate', 3.0, 400),
-    'brood': (b_brood, 'amber', 3.4, 400),
-    'reaper': (b_reaper, 'plum', 4.4, 448),
-    'sludge': (b_sludge, 'lime', 2.9, 384),
-    'titan': (b_titan, 'frost', 4.0, 480),
-    'zero': (b_zero, 'queen', 3.4, 400),
+    'psyker': (b_psyker, 'lilac', 3.0, 144),
+    'boss': (b_boss, 'queen', 3.8, 560),
+    'juggernaut': (b_juggernaut, 'slate', 3.0, 500),
+    'brood': (b_brood, 'amber', 3.4, 500),
+    'reaper': (b_reaper, 'plum', 4.4, 560),
+    'sludge': (b_sludge, 'lime', 2.9, 480),
+    'titan': (b_titan, 'frost', 4.0, 600),
+    'zero': (b_zero, 'queen', 3.4, 500),
 }
 WALK = 6
 
@@ -1059,7 +1097,7 @@ def render(path):
     bpy.ops.render.render(write_still=True)
 
 # ------------------------------------------------------------------ modes
-GLOW_MATS = ('glow', 'mark', 'crystal', 'ice')
+GLOW_MATS = ('glow', 'mark', 'crystal', 'ice', 'brain')
 
 def glow_pass(path):
     """Emission only: glowing sacs, bio-light markings and crystals, with everything else held

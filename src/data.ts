@@ -142,13 +142,13 @@ export const ZOMBIES: Record<ZombieKind, ZombieDef> = {
   blob: { kind: 'blob', hp: 95, speed: 66, damage: 12, radius: 20, cash: 10, body: '#7ad8b0', dark: '#2a6a5a', eye: '#f0ff8a', mass: 1.6 },
   psyker: { kind: 'psyker', hp: 85, speed: 78, damage: 8, radius: 15, cash: 24, body: '#c0b0c8', dark: '#5a4a6a', eye: '#e08aff', mass: 1 },
   egg: { kind: 'egg', hp: 70, speed: 0, damage: 0, radius: 14, cash: 3, body: '#d8c89a', dark: '#8a7a4a', eye: '#d8c89a', mass: 50 },
-  boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 48, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
-  juggernaut: { kind: 'juggernaut', hp: 2700, speed: 46, damage: 40, radius: 56, cash: 600, body: '#5a5f66', dark: '#2a2d32', eye: '#ff3a2a', mass: 30 },
-  brood: { kind: 'brood', hp: 2400, speed: 50, damage: 34, radius: 54, cash: 450, body: '#8f6a3a', dark: '#4a3218', eye: '#ffef3a', mass: 24 },
-  reaper: { kind: 'reaper', hp: 2500, speed: 72, damage: 32, radius: 46, cash: 650, body: '#2c2c38', dark: '#14141c', eye: '#7affea', mass: 22 },
-  sludge: { kind: 'sludge', hp: 2600, speed: 54, damage: 34, radius: 52, cash: 550, body: '#6a8a2a', dark: '#34461a', eye: '#f0ff3a', mass: 26 },
-  titan: { kind: 'titan', hp: 2800, speed: 50, damage: 38, radius: 58, cash: 600, body: '#9ac8e0', dark: '#3a5a74', eye: '#e0ffff', mass: 30 },
-  zero: { kind: 'zero', hp: 2900, speed: 58, damage: 36, radius: 54, cash: 700, body: '#c88a7a', dark: '#5a2a2a', eye: '#ff3ad0', mass: 28 },
+  boss: { kind: 'boss', hp: 2600, speed: 62, damage: 30, radius: 54, cash: 300, body: '#7a3f8f', dark: '#3f1f4a', eye: '#ff2040', mass: 20 },
+  juggernaut: { kind: 'juggernaut', hp: 2700, speed: 46, damage: 40, radius: 63, cash: 600, body: '#5a5f66', dark: '#2a2d32', eye: '#ff3a2a', mass: 30 },
+  brood: { kind: 'brood', hp: 2400, speed: 50, damage: 34, radius: 60, cash: 450, body: '#8f6a3a', dark: '#4a3218', eye: '#ffef3a', mass: 24 },
+  reaper: { kind: 'reaper', hp: 2500, speed: 72, damage: 32, radius: 52, cash: 650, body: '#2c2c38', dark: '#14141c', eye: '#7affea', mass: 22 },
+  sludge: { kind: 'sludge', hp: 2600, speed: 54, damage: 34, radius: 58, cash: 550, body: '#6a8a2a', dark: '#34461a', eye: '#f0ff3a', mass: 26 },
+  titan: { kind: 'titan', hp: 2800, speed: 50, damage: 38, radius: 65, cash: 600, body: '#9ac8e0', dark: '#3a5a74', eye: '#e0ffff', mass: 30 },
+  zero: { kind: 'zero', hp: 2900, speed: 58, damage: 36, radius: 60, cash: 700, body: '#c88a7a', dark: '#5a2a2a', eye: '#ff3ad0', mass: 28 },
 };
 
 export const BOSS_NAMES: Partial<Record<ZombieKind, string>> = { boss: 'THE ABOMINATION', brood: 'MOTHER BROOD', juggernaut: 'THE JUGGERNAUT', reaper: 'THE REAPER', sludge: 'THE SLUDGE KING', titan: 'THE FROST TITAN', zero: 'PATIENT ZERO' };

@@ -243,9 +243,18 @@ export function swarmFrame(kind: string, f: number, variant: number, tint: Tint,
   return out;
 }
 
-/** The width of a frame in R units. */
+/**
+ * Bosses are drawn 20% larger than their hit circle: their legs, claws and scythes already
+ * reach past it, and it makes them read as true giants next to the regular swarm.
+ */
+const BOSSES = new Set(['boss', 'juggernaut', 'brood', 'reaper', 'sludge', 'titan', 'zero']);
+export function swarmVis(kind: string) {
+  return BOSSES.has(kind) ? 1.2 : 1;
+}
+
+/** The width of a frame in R units (including the boss scale-up). */
 export function swarmSpan(kind: string) {
-  return SWARM_META[kind][0];
+  return SWARM_META[kind][0] * swarmVis(kind);
 }
 
 /** Walk frame for a zombie's stride phase (2π per stride). */
@@ -267,5 +276,8 @@ const EYES: Record<string, [number, number]> = {
 };
 
 export function swarmEyeSpot(kind: string): [number, number] | null {
-  return EYES[kind] ?? null;
+  const e = EYES[kind];
+  if (!e) return null;
+  const k = swarmVis(kind);
+  return [e[0] * k, e[1] * k];
 }
