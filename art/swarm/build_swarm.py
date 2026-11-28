@@ -43,7 +43,7 @@ def mixhex(a, b, t):
 MATS = {}
 
 def mat(name, color, rough=0.45, coat=0.0, coat_rough=0.12, sss=0.0, emit=None, emit_str=0.0,
-        transmission=0.0, alpha=1.0, bands=None, mottle=None, bump=0.0, bump_scale=18.0, spec=0.5, rim=None, fine=0.0, pits=0.0):
+        transmission=0.0, alpha=1.0, bands=None, mottle=None, bump=0.0, bump_scale=18.0, spec=0.5, rim=None, fine=0.0, pits=0.0, ao=0.0, edge=None, cells=None, spots=None):
     """Principled material. `bands` adds shell-plate grooves along X (scale, groove colour),
     `mottle` a soft two-tone pattern (scale, second colour)."""
     if name in MATS:
@@ -164,6 +164,66 @@ def mat(name, color, rough=0.45, coat=0.0, coat_rough=0.12, sss=0.0, emit=None, 
             mr.inputs['A'].default_value = (*col, 1)
         mr.inputs['B'].default_value = (*hexc(rim[0]), 1)
         base_out = mr.outputs['Result']
+    def chain_normal(bp):
+        # Keep any bump already on the surface: feed it in under the new one.
+        ln = b.inputs['Normal'].links
+        if ln:
+            nt.links.new(ln[0].from_socket, bp.inputs['Normal'])
+        nt.links.new(bp.outputs['Normal'], b.inputs['Normal'])
+    def over(color_socket_or_rgba, fac_socket, blend='MIX'):
+        nonlocal base_out
+        mx = nt.nodes.new('ShaderNodeMix'); mx.data_type = 'RGBA'; mx.blend_type = blend
+        nt.links.new(fac_socket, mx.inputs['Factor'])
+        if base_out:
+            nt.links.new(base_out, mx.inputs['A'])
+        else:
+            mx.inputs['A'].default_value = (*col, 1)
+        if isinstance(color_socket_or_rgba, tuple):
+            mx.inputs['B'].default_value = color_socket_or_rgba
+        else:
+            nt.links.new(color_socket_or_rgba, mx.inputs['B'])
+        base_out = mx.outputs['Result']
+    if spots:
+        # Chitin markings: soft-edged blotches in a second colour.
+        sn = nt.nodes.new('ShaderNodeTexNoise')
+        sn.inputs['Scale'].default_value = spots[1]
+        sn.inputs['Detail'].default_value = 3
+        sn.inputs['Distortion'].default_value = 0.4
+        nt.links.new(tc.outputs['Object'], sn.inputs['Vector'])
+        sr = nt.nodes.new('ShaderNodeMapRange')
+        sr.inputs['From Min'].default_value = 0.6 - spots[2]
+        sr.inputs['From Max'].default_value = 0.66 - spots[2]
+        nt.links.new(sn.outputs['Fac'], sr.inputs['Value'])
+        over((*hexc(spots[0]), 1), sr.outputs['Result'])
+    if cells:
+        # Fine plated micro-structure: Voronoi cell edges dented into the shell.
+        vo = nt.nodes.new('ShaderNodeTexVoronoi')
+        vo.feature = 'DISTANCE_TO_EDGE'
+        vo.inputs['Scale'].default_value = cells[0]
+        nt.links.new(tc.outputs['Object'], vo.inputs['Vector'])
+        bp = nt.nodes.new('ShaderNodeBump')
+        bp.inputs['Strength'].default_value = cells[1]
+        bp.inputs['Distance'].default_value = 0.02
+        nt.links.new(vo.outputs['Distance'], bp.inputs['Height'])
+        chain_normal(bp)
+    if edge:
+        # Worn, lighter edges on convex ridges (Cycles pointiness).
+        geo = nt.nodes.new('ShaderNodeNewGeometry')
+        er = nt.nodes.new('ShaderNodeMapRange')
+        er.inputs['From Min'].default_value = 0.52
+        er.inputs['From Max'].default_value = 0.6
+        er.inputs['To Max'].default_value = edge[1]
+        nt.links.new(geo.outputs['Pointiness'], er.inputs['Value'])
+        over((*hexc(edge[0]), 1), er.outputs['Result'])
+    if ao:
+        # Darken crevices and the gaps between plates.
+        aon = nt.nodes.new('ShaderNodeAmbientOcclusion')
+        aon.inputs['Distance'].default_value = 0.25
+        ar = nt.nodes.new('ShaderNodeMapRange')
+        ar.inputs['To Min'].default_value = ao
+        ar.inputs['To Max'].default_value = 0.0
+        nt.links.new(aon.outputs['AO'], ar.inputs['Value'])
+        over((*hexc('#0c0812'), 1), ar.outputs['Result'])
     if base_out:
         nt.links.new(base_out, b.inputs['Base Color'])
     MATS[name] = m
@@ -271,14 +331,20 @@ class Kit:
         self.p = p
         k = 0.9 if glossy else 0.4
         dark = mixhex(p['shell'], p['groove'], 0.7)
-        self.shell = mat('shell', p['shell'], rough=0.42, coat=k * 0.6, coat_rough=0.2, sss=0.04, bands=(9.0, p['groove']), rim=(dark, 0.45), fine=0.3, pits=0.2)
-        self.plate = mat('plate', mixhex(p['shell'], p['accent'], 0.12), rough=0.4, coat=k * 0.6, coat_rough=0.2, sss=0.04, rim=(dark, 0.5), fine=0.35, pits=0.25)
-        self.accent = mat('accent', p['accent'], rough=0.38, coat=k * 0.5, sss=0.1, fine=0.2)
-        self.skin = mat('skin', p['skin'], rough=0.55, sss=0.3, bump=0.12, bump_scale=30, fine=0.2, rim=(mixhex(p['skin'], p['groove'], 0.5), 0.5))
-        self.groove = mat('groove', p['groove'], rough=0.4, coat=0.4, sss=0.05, fine=0.2)
-        self.limb = mat('limb', mixhex(p['shell'], p['groove'], 0.45), rough=0.38, coat=0.5, rim=(p['groove'], 0.45), fine=0.25)
+        light = mixhex(p['shell'], p['accent'], 0.55)
+        spot = mixhex(p['shell'], p['groove'], 0.62)
+        self.shell = mat('shell', p['shell'], rough=0.36, coat=k * 0.7, coat_rough=0.1, sss=0.05, bands=(9.0, p['groove']), rim=(dark, 0.45), fine=0.25,
+                         ao=0.75, edge=(light, 0.8), cells=(26, 0.25), spots=(spot, 3.5, 0.08))
+        self.plate = mat('plate', mixhex(p['shell'], p['accent'], 0.12), rough=0.34, coat=k * 0.7, coat_rough=0.1, sss=0.04, rim=(dark, 0.5), fine=0.3, pits=0.25,
+                         ao=0.75, edge=(light, 0.8), cells=(22, 0.2), spots=(spot, 3.0, 0.1))
+        self.accent = mat('accent', p['accent'], rough=0.32, coat=k * 0.6, sss=0.1, fine=0.2, ao=0.5, edge=('#ffffff', 0.35))
+        self.skin = mat('skin', p['skin'], rough=0.5, sss=0.45, bump=0.12, bump_scale=30, fine=0.2, rim=(mixhex(p['skin'], p['groove'], 0.5), 0.5), ao=0.85)
+        self.groove = mat('groove', p['groove'], rough=0.35, coat=0.5, sss=0.05, fine=0.2, ao=0.6)
+        self.limb = mat('limb', mixhex(p['shell'], p['groove'], 0.45), rough=0.32, coat=0.6, coat_rough=0.12, rim=(p['groove'], 0.45), fine=0.25,
+                        ao=0.6, edge=(light, 0.7), cells=(30, 0.15))
+        self.tip = mat('tip', mixhex(p['groove'], '#000000', 0.35), rough=0.3, coat=0.7, ao=0.4)
         self.claw = mat('claw', '#f0e2c8', rough=0.28, coat=0.7, sss=0.15, fine=0.1)
-        self.mark = mat('mark', mixhex(p['accent'], p['glow'], 0.35), rough=0.35, coat=0.5, sss=0.2, emit=p['glow'], emit_str=0.15)
+        self.mark = mat('mark', mixhex(p['accent'], p['glow'], 0.5), rough=0.3, coat=0.6, sss=0.3, emit=p['glow'], emit_str=1.4)
         self.bone = mat('bone', '#e6d2b0', rough=0.3, coat=0.6, sss=0.1, fine=0.15)
         self.eye = mat('eye', mixhex(p['eye'], '#000000', 0.45), rough=0.04, coat=1.0, coat_rough=0.02, spec=0.9, rim=('#0a0a12', 0.6), emit=p['eye'], emit_str=0.12)
         self.pupil = mat('pupil', '#06060c', rough=0.05, coat=1.0, coat_rough=0.02)
@@ -326,10 +392,11 @@ def leg(k, name, hip, foot, thick=0.09, knee_up=0.45, out=0.25, tip=True, m=None
     side = 1 if foot.y > hip.y else -1
     knee = lerp(hip, foot, 0.42) + v(0, side * out * 0.3, knee_up)
     ankle = lerp(knee, foot, 0.75) + v(0, 0, 0.05)
-    skin(name, [hip, lerp(hip, knee, 0.55), knee], [thick * 1.15, thick * 1.25, thick * 0.8], m or k.limb, sub=2)
-    skin(name + 't', [knee, ankle], [thick * 0.8, thick * 0.55], m or k.limb, sub=2)
-    skin(name + 'f', [ankle, foot], [thick * 0.5, thick * 0.38], k.groove, sub=2)
-    ellipsoid(name + 'kn', knee, (thick * 0.85,) * 3, k.skin, seg=16)
+    skin(name, [hip, lerp(hip, knee, 0.5), knee], [thick * 1.15, thick * 1.2, thick * 0.72], m or k.limb, sub=2)
+    skin(name + 't', [knee, lerp(knee, ankle, 0.5), ankle], [thick * 0.72, thick * 0.6, thick * 0.45], m or k.limb, sub=2)
+    skin(name + 'f', [ankle, foot], [thick * 0.42, thick * 0.3], k.tip, sub=2)
+    ellipsoid(name + 'kn', knee, (thick * 0.78,) * 3, k.groove, seg=16)
+    ellipsoid(name + 'an', ankle, (thick * 0.5,) * 3, k.groove, seg=12)
     # A little spur at the knee: reads as "bug" from above.
     d = (knee - hip).normalized()
     cone(name + 'spur', knee, knee + d * thick * 1.4 + v(0, 0, thick * 0.6), thick * 0.4, k.bone, tip_r=thick * 0.1)
@@ -376,9 +443,20 @@ def shell_body(k, segs, mat_=None):
         m = k.plate if i == 0 else k.shell
         out.append(armor(f'seg{i}', (x + rx * 0.05, 0, z + rz * 0.04), (rx * 1.08, ry * 1.1, rz * 1.08), m, cut=-0.2, thick=0.06, rot=(0, 0.2, 0), lumpy=0.012))
         ellipsoid(f'ridge{i}', (x + rx * 0.05, 0, z + rz * 0.9), (rx * 0.72, ry * 0.15, rz * 0.2), k.accent, seg=24)
+        # Light lip along the back edge of the plate: makes segments read from above.
+        arc = [(x - rx * 0.72, math.sin(a_) * ry * 0.78, z + rz * 0.2 + math.cos(a_) * rz * 0.8) for a_ in [-1.25 + j * 0.3125 for j in range(9)]]
+        skin(f'lip{i}', arc, [0.022] * 9, k.accent, sub=1)
+        # Little rounded tubercles scattered over the plate.
+        rr = random.Random(i * 31 + int(rx * 100))
+        for j in range(5 if ry > 0.3 else 2):
+            a_ = rr.uniform(-1.1, 1.1)
+            px = x + rx * rr.uniform(-0.3, 0.45)
+            py = math.sin(a_) * ry * 0.78
+            pz = z + rz * (0.25 + 0.75 * math.cos(a_) * 0.95) * 1.04
+            ellipsoid(f'tub{i}{j}', (px, py, pz), (0.035, 0.035, 0.025), k.accent, seg=12, sub=0)
         if ry > 0.25:
             for s_ in (-1, 1):
-                ellipsoid(f'mark{i}{s_}', (x + rx * 0.12, s_ * ry * 0.52, z + rz * 0.66), (rx * 0.36, ry * 0.16, rz * 0.2), k.mark, seg=20, rot=(s_ * 0.55, 0, s_ * 0.25))
+                ellipsoid(f'mark{i}{s_}', (x + rx * 0.12, s_ * ry * 0.5, z + rz * 0.9), (rx * 0.3, ry * 0.12, rz * 0.1), k.mark, seg=20, rot=(s_ * 0.55, 0, s_ * 0.25))
         ellipsoid(f'belly{i}', (x, 0, z - rz * 0.4), (rx * 0.9, ry * 0.88, rz * 0.6), k.skin, seg=24)
     return out
 
@@ -459,13 +537,22 @@ def antenna(k, x, z, r, length=0.7, bulb=0.08, glow=True, droop=0.15):
         if bulb:
             ellipsoid(f'antb{s}', tip, (bulb,) * 3, k.glow if glow else k.accent, seg=20)
 
-def wings(k, size=1.0, spread=0.6, x=0.0, z=0.95, flap=0.0):
+def wings(k, size=1.0, spread=0.6, x=0.0, z=0.95, flap=0.0, eyespot=True):
+    """Soft moth-like wings with darker edges and a glowing eye-spot each, so they read from above."""
+    p = k.p
+    wm = mat('wingm', mixhex(p['accent'], p['shell'], 0.25), rough=0.45, sss=0.35, alpha=0.92, transmission=0.15,
+             mottle=(5.0, mixhex(p['accent'], p['groove'], 0.25)), rim=(mixhex(p['shell'], p['groove'], 0.6), 0.25), fine=0.2)
     for s in (-1, 1):
-        a = s * (spread + flap)
-        rot = (0, -0.12, math.pi + a)
-        cx = x - math.cos(a) * size * 0.55
-        cy = math.sin(-a) * size * -0.55 * -1
-        ellipsoid(f'wing{s}', (cx, s * abs(cy), z), (size * 0.7, size * 0.3, 0.02), k.wing, rot=rot, seg=32)
+        th = math.pi - s * (spread + flap)
+        d = Vector((math.cos(th), math.sin(th), 0))
+        c = Vector((x, s * 0.12, z)) + d * size * 0.62
+        ellipsoid(f'wing{s}', tuple(c), (size * 0.68, size * 0.36, 0.02), wm, rot=(0, 0, th), seg=40)
+        # Darker vein down the middle of the wing.
+        skin(f'wvein{s}', [(x, s * 0.12, z + 0.02), tuple(c + d * size * 0.55 + Vector((0, 0, 0.02)))], [0.025, 0.01], k.groove, sub=1)
+        if eyespot:
+            e = c + d * size * 0.18 + Vector((0, 0, 0.025))
+            ellipsoid(f'wring{s}', tuple(e), (size * 0.17, size * 0.15, 0.012), k.groove, rot=(0, 0, th), seg=24, sub=0)
+            ellipsoid(f'wspot{s}', tuple(e + Vector((0, 0, 0.008))), (size * 0.1, size * 0.09, 0.012), k.glow, rot=(0, 0, th), seg=24, sub=0)
 
 # ------------------------------------------------------------------ the swarm
 # Each builder takes (k, t, walking, attack) and builds one pose. Spans (`span`) are the width
@@ -623,8 +710,8 @@ def b_burrower(k, t, w, a):
 def b_wraith(k, t, w, a):
     # Moth: a pale fluttering moth bug with soft see-through wings. Phases in and out.
     flap = math.sin(t * 2) * 0.18 if w else 0
-    wings(k, size=1.0, spread=0.75 + (0.3 if a else 0), x=-0.1, z=0.85, flap=flap)
-    wings(k, size=0.7, spread=1.3 + (0.2 if a else 0), x=-0.3, z=0.8, flap=flap * 0.6)
+    wings(k, size=1.15, spread=0.95 + (0.3 if a else 0), x=-0.05, z=0.88, flap=flap)
+    wings(k, size=0.75, spread=1.75 + (0.2 if a else 0), x=-0.3, z=0.82, flap=flap * 0.6, eyespot=False)
     shell_body(k, [(0.0, 0.36, 0.34, 0.3, 0.6), (-0.42, 0.38, 0.3, 0.26, 0.58), (-0.8, 0.26, 0.2, 0.18, 0.55)], mat_=mat('fuzz', k.p['shell'], rough=0.8, sss=0.4, bump=0.3, bump_scale=60))
     head(k, 0.38, 0.62, 0.28, mand=0, eye_size=0.12)
     antenna(k, 0.38, 0.62, 0.28, length=0.6, bulb=0.06, droop=-0.05)
@@ -636,7 +723,7 @@ def b_webber(k, t, w, a):
     ellipsoid('thorax', (0.1, 0, 0.5), (0.4, 0.38, 0.3), k.plate)
     ellipsoid('abdomen', (-0.6, 0, 0.6), (0.6, 0.55, 0.45), k.shell)
     for i in range(3):
-        ellipsoid(f'stripe{i}', (-0.4 - i * 0.22, 0, 1.02 - i * 0.05), (0.06, 0.32 - i * 0.06, 0.04), k.accent, seg=16)
+        ellipsoid(f'stripe{i}', (-0.4 - i * 0.22, 0, 1.03 - i * 0.05), (0.06, 0.32 - i * 0.06, 0.04), k.mark, seg=16)
     sac(k, 'gland', (-1.08, 0, 0.55), 0.15)
     head(k, 0.48, 0.48, 0.26, eyes_n=4, eye_size=0.11, mand=0.3, open_=0.9 if a else 0.2)
 
@@ -801,7 +888,7 @@ def b_reaper(k, t, w, a):
     skin('neck', [(0.3, 0, 0.8), (0.55, 0, 0.95)], [0.14, 0.12], k.skin)
     head(k, 0.7, 1.0, 0.3, mand=0.3, open_=1.0 if a else 0.2)
     scythes(k, t, a, shoulder=(0.35, 0.3, 0.85), length=1.45, thick=0.09, curl=1.4)
-    wings(k, size=0.8, spread=0.2, x=-0.35, z=0.95)
+    wings(k, size=0.75, spread=0.35, x=-0.3, z=0.98, eyespot=False)
 
 def b_sludge(k, t, w, a):
     # THE GOO KING: a giant snail-slug with a crowned spiral shell.
@@ -862,7 +949,7 @@ KINDS = {
     'electric': (b_electric, 'sky', 3.0, 136),
     'bomber': (b_bomber, 'ember', 2.9, 120),
     'burrower': (b_burrower, 'sand', 3.4, 160),
-    'wraith': (b_wraith, 'lilac', 3.2, 136),
+    'wraith': (b_wraith, 'lilac', 3.8, 160),
     'webber': (b_webber, 'dusk', 3.4, 144),
     'medic': (b_medic, 'pearl', 3.0, 144),
     'sludger': (b_sludger, 'moss', 2.9, 160),
@@ -972,6 +1059,25 @@ def render(path):
     bpy.ops.render.render(write_still=True)
 
 # ------------------------------------------------------------------ modes
+GLOW_MATS = ('glow', 'mark', 'crystal', 'ice')
+
+def glow_pass(path):
+    """Emission only: glowing sacs, bio-light markings and crystals, with everything else held
+    out (so the body still hides glow behind it). The game adds this on top of its darkness."""
+    sc = bpy.context.scene
+    for o in sc.objects:
+        if o.type == 'LIGHT':
+            o.data.energy = 0
+        elif o.type in ('MESH', 'CURVE'):
+            mats = [m.name.split('.')[0] for m in o.data.materials if m]
+            if o.is_shadow_catcher:
+                o.hide_render = True
+            elif not any(m in GLOW_MATS for m in mats):
+                o.is_holdout = True
+    sc.world.node_tree.nodes['Background'].inputs['Strength'].default_value = 0
+    sc.cycles.samples = 12
+    render(path)
+
 def sprites():
     kinds = EXTRA or list(KINDS)
     samples = int(os.environ.get('SMP', 40))
@@ -987,6 +1093,7 @@ def sprites():
             build(kind, t, walking, attack)
             sprite_scene(span, cell, samples)
             render(os.path.join(OUT, kind, f'{name}.png'))
+            glow_pass(os.path.join(OUT, kind, f'{name}_glow.png'))
 
 LINEUPS = {
     'drones': ['walker', 'runner', 'crawler', 'dog', 'leaper', 'parasite', 'bomber'],

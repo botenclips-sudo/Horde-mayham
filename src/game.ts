@@ -11,7 +11,7 @@ const blockedCache = new Map<string, Uint8Array>();
 import { Input, STICK_RADIUS, stickVec } from './input';
 import type { NetMsg } from './net';
 import { type OpDef, OKAFOR } from './campaign';
-import { hasSwarm, loadSwarm, swarmEyeSpot, swarmFrame, swarmOn, swarmSpan, swarmWalk, SWARM_WALK } from './swarmArt';
+import { hasSwarm, loadSwarm, swarmEyeSpot, swarmFrame, swarmGlow, swarmOn, swarmSpan, swarmWalk, SWARM_WALK } from './swarmArt';
 import { CELL_UNITS, DEFAULT_JACKET, DOWN_UNITS, loadPlayerArt, playerFrame, walkFrame } from './playerArt';
 import { ARM_FRAMES, armsSprite, bodySprite, eggSprite, eyeSpot, hasFeet, stamp, Tint, VARIANTS, warmZombieArt } from './zombieArt';
 
@@ -95,6 +95,8 @@ interface Zombie {
   attackCd: number;
   bladeCd: number;
   phase: number;
+  /** Swarm frame drawn this tick (for the glow pass). */
+  bugF?: number;
   face: number;
   dead: boolean;
   spitCd: number;
@@ -6080,6 +6082,17 @@ export class Game {
       const ox = -s * r * side;
       const oy = c * r * side;
       if (this.crawlerAlpha(z) < 0.6 || z.lurk) continue;
+      // Swarm bio-lights: the emission-only frame, added over the darkness.
+      const glowF = bugEyes && !this.liteZombies && z.bugF !== undefined ? swarmGlow(z.def.kind, z.bugF) : null;
+      if (glowF) {
+        const span = swarmSpan(z.def.kind) * r;
+        ctx.save();
+        ctx.translate(z.x, z.y);
+        ctx.rotate(z.face);
+        ctx.globalAlpha = 0.85;
+        ctx.drawImage(glowF, -span / 2, -span / 2, span, span);
+        ctx.restore();
+      }
       if (z.def.kind !== 'egg') {
         // Two hot pinpricks in the eye sockets
         ctx.fillStyle = this.active.freeze > 0 ? '#9fe8ff' : z.def.eye;
@@ -7543,6 +7556,7 @@ export class Game {
     loadSwarm(kind);
     const attacking = windup || z.attackCd > 0.45 || z.reap?.windup || z.zero?.yankT;
     const f = attacking ? SWARM_WALK : swarmWalk(z.phase);
+    z.bugF = f;
     return swarmFrame(kind, f, z.id % VARIANTS, tint, kind === 'blob' ? 0 : hurt);
   }
 

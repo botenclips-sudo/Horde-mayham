@@ -18,6 +18,10 @@ kind in `KINDS` has a builder, a palette, the sprite span in R units and a cell 
 The sun is nearly overhead on purpose: sprites rotate with the enemy, so the baked shadow must
 stay a soft pool under the body.
 
-In game (`src/swarmArt.ts`) a frame is one drawImage. Hit/frozen/burn tints, three hue
+Each frame also gets an emission-only `_glow` render (glowing sacs, bio-light markings,
+crystals; everything else held out). The game adds it in its glow pass, after the flashlight
+darkness, so the swarm stays readable in the dark (skipped in the low-fps lite mode).
+
+In game (`src/swarmArt.ts`) a frame is one drawImage plus a soft cool rim baked around the body. Hit/frozen/burn tints, three hue
 variants and the wounded look (cracks + ichor) are baked lazily per frame. The pause menu has
 an "Enemies: Swarm / Classic" switch; classic is also the fallback while a strip loads.

@@ -22,6 +22,7 @@ interface Strip {
   img: HTMLImageElement;
   ready: boolean;
   frames: (HTMLCanvasElement | null)[];
+  glow?: Strip;
 }
 
 const strips = new Map<string, Strip>();
@@ -63,6 +64,32 @@ export function loadSwarm(kind: string) {
   };
   img.src = urls[`./assets/swarm/${kind}.webp`];
   strips.set(kind, s);
+  const gu = urls[`./assets/swarm/${kind}_glow.webp`];
+  if (gu) {
+    const gi = new Image();
+    const g: Strip = { img: gi, ready: false, frames: Array(SWARM_FRAMES).fill(null) };
+    gi.onload = () => {
+      g.ready = true;
+    };
+    gi.src = gu;
+    s.glow = g;
+  }
+}
+
+/**
+ * Emission-only frame (glowing sacs, bio-light markings, crystals) for the additive glow pass,
+ * so the swarm stays readable inside the flashlight darkness. Null if the kind has none.
+ */
+export function swarmGlow(kind: string, f: number): HTMLCanvasElement | null {
+  const g = strips.get(kind)?.glow;
+  if (!g || !g.ready) return null;
+  let c = g.frames[f];
+  if (c) return c;
+  const cell = g.img.height;
+  c = canvas(cell);
+  c.getContext('2d')!.drawImage(g.img, f * cell, 0, cell, cell, 0, 0, cell, cell);
+  g.frames[f] = c;
+  return c;
 }
 
 function canvas(n: number) {
@@ -71,14 +98,48 @@ function canvas(n: number) {
   return c;
 }
 
+/**
+ * A faint cool rim around the body (not the baked shadow), like the player's, so dark shells
+ * still separate from dark floors under the flashlight darkness.
+ */
+function rimmed(src: HTMLCanvasElement): HTMLCanvasElement {
+  const n = src.width;
+  const out = canvas(n);
+  const g = out.getContext('2d')!;
+  try {
+    const d = src.getContext('2d')!.getImageData(0, 0, n, n);
+    const px = d.data;
+    for (let i = 0; i < px.length; i += 4) {
+      const solid = px[i + 3] > 175;
+      px[i] = 196;
+      px[i + 1] = 214;
+      px[i + 2] = 255;
+      px[i + 3] = solid ? 255 : 0;
+    }
+    const m = canvas(n);
+    m.getContext('2d')!.putImageData(d, 0, 0);
+    g.globalAlpha = 0.55;
+    if ('filter' in g) g.filter = `blur(${Math.max(1, n / 110)}px)`;
+    g.drawImage(m, 0, 0);
+    g.filter = 'none';
+    g.globalAlpha = 1;
+  } catch {
+    /* tainted or no pixel access: skip the rim */
+  }
+  g.drawImage(src, 0, 0);
+  return out;
+}
+
 function rawFrame(kind: string, f: number): HTMLCanvasElement | null {
   const s = strips.get(kind);
   if (!s || !s.ready) return null;
   let c = s.frames[f];
   if (c) return c;
   const cell = SWARM_META[kind][1];
-  c = canvas(cell);
-  c.getContext('2d')!.drawImage(s.img, f * cell, 0, cell, cell, 0, 0, cell, cell);
+  const src = canvas(cell);
+  const sg = src.getContext('2d', { willReadFrequently: true })!;
+  sg.drawImage(s.img, f * cell, 0, cell, cell, 0, 0, cell, cell);
+  c = rimmed(src);
   s.frames[f] = c;
   return c;
 }
